@@ -4,6 +4,8 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
+import { CustomPackageRegistrationModule } from './custom-package-registration/custom-package-registration.module';
+import { UserModule } from './users/user.module';
 
 dotenv.config();
 
@@ -20,6 +22,8 @@ dotenv.config();
       autoLoadEntities: true,
     }),
     AuthModule,
+    CustomPackageRegistrationModule,
+    UserModule
   ],
   controllers: [AppController],
   providers: [AppService],

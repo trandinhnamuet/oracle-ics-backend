@@ -17,6 +17,12 @@ export class User {
   @Column()
   lastName: string;
 
+  @Column({ name: 'phone_number', length: 20, nullable: true })
+  phoneNumber?: string;
+
+  @Column({ length: 255, nullable: true })
+  company?: string;
+
   @Column({ default: true })
   isActive: boolean;
 
