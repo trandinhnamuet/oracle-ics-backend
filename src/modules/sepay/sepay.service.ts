@@ -15,10 +15,10 @@ export class SepayService {
       this.logger.log(`Received Sepay webhook: ${JSON.stringify(webhookData)}`);
       console.log('Sepay webhook received:', webhookData);
 
-      // Kiểm tra giao dịch có tiền vào không
-      if (webhookData.amountIn <= 0) {
-        this.logger.warn('Transaction has no money in, skipping...');
-        return { success: false, message: 'No money in' };
+      // Kiểm tra giao dịch có tiền vào không (transferType = "in" và transferAmount > 0)
+      if (webhookData.transferType !== 'in' || webhookData.transferAmount <= 0) {
+        this.logger.warn('Transaction is not money in or amount is 0, skipping...');
+        return { success: false, message: 'Not a valid incoming transaction' };
       }
 
       // Parse nội dung chuyển khoản để lấy userId và packageId

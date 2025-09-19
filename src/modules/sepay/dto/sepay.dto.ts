@@ -7,36 +7,38 @@ export class SepayWebhookDto {
   @IsString()
   gateway: string;
 
-  @IsNumber()
-  transactionDate: number;
+  @IsString()
+  transactionDate: string;
 
   @IsString()
   accountNumber: string;
 
+  @IsOptional()
   @IsString()
-  subAccount: string;
+  subAccount?: string;
 
-  @IsNumber()
-  amountIn: number;
-
-  @IsNumber()
-  amountOut: number;
-
-  @IsNumber()
-  accumulated: number;
-
+  @IsOptional()
   @IsString()
-  code: string;
+  code?: string;
 
   @IsString()
   content: string;
+
+  @IsString()
+  transferType: string;
+
+  @IsString()
+  description: string;
+
+  @IsNumber()
+  transferAmount: number;
 
   @IsOptional()
   @IsString()
   referenceCode?: string;
 
-  @IsString()
-  description: string;
+  @IsNumber()
+  accumulated: number;
 }
 
 export class CreatePaymentDto {
