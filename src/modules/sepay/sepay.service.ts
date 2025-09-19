@@ -13,6 +13,7 @@ export class SepayService {
   async handleWebhook(webhookData: SepayWebhookDto): Promise<{ success: boolean; message: string }> {
     try {
       this.logger.log(`Received Sepay webhook: ${JSON.stringify(webhookData)}`);
+      console.log('Sepay webhook received:', webhookData);
 
       // Kiểm tra giao dịch có tiền vào không
       if (webhookData.amountIn <= 0) {

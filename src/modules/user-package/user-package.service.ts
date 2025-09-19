@@ -12,18 +12,6 @@ export class UserPackageService {
   ) {}
 
   async create(createUserPackageDto: CreateUserPackageDto): Promise<UserPackage> {
-    // Check if user already subscribed to this package
-    const existingSubscription = await this.userPackageRepository.findOne({
-      where: {
-        userId: createUserPackageDto.userId,
-        packageId: createUserPackageDto.packageId,
-      },
-    });
-
-    if (existingSubscription) {
-      throw new ConflictException('User already subscribed to this package');
-    }
-
     const userPackage = this.userPackageRepository.create(createUserPackageDto);
     return await this.userPackageRepository.save(userPackage);
   }
@@ -88,21 +76,6 @@ export class UserPackageService {
 
   async update(id: number, updateUserPackageDto: UpdateUserPackageDto): Promise<UserPackage> {
     const userPackage = await this.findOne(id);
-
-    // If updating userId or packageId, check for conflicts
-    if (updateUserPackageDto.userId || updateUserPackageDto.packageId) {
-      const userId = updateUserPackageDto.userId || userPackage.userId;
-      const packageId = updateUserPackageDto.packageId || userPackage.packageId;
-
-      const existingSubscription = await this.userPackageRepository.findOne({
-        where: { userId, packageId },
-      });
-
-      if (existingSubscription && existingSubscription.id !== id) {
-        throw new ConflictException('User already subscribed to this package');
-      }
-    }
-
     Object.assign(userPackage, updateUserPackageDto);
     return await this.userPackageRepository.save(userPackage);
   }
