@@ -6,6 +6,8 @@ import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
 import { CustomPackageRegistrationModule } from './custom-package-registration/custom-package-registration.module';
 import { UserModule } from './users/user.module';
+import { UserPackageModule } from './modules/user-package/user-package.module';
+import { SepayModule } from './modules/sepay/sepay.module';
 
 dotenv.config();
 
@@ -23,7 +25,9 @@ dotenv.config();
     }),
     AuthModule,
     CustomPackageRegistrationModule,
-    UserModule
+    UserModule,
+    UserPackageModule,
+    SepayModule
   ],
   controllers: [AppController],
   providers: [AppService],
