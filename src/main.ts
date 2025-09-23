@@ -32,6 +32,9 @@ async function bootstrap() {
   };
   app.enableCors(corsOptions);
 
-  await app.listen(process.env.PORT ?? 3003);
+  // const port = process.env.PORT ?? 3003;
+  const port = 3001
+  await app.listen(3001);
+  console.log(`🚀 Server đang chạy tại http://localhost:${port}`);
 }
 bootstrap();
