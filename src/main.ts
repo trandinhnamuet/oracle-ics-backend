@@ -24,11 +24,13 @@ async function bootstrap() {
   // Enable CORS for frontend
   const corsOptions: CorsOptions = {
     origin: [
-      'http://localhost:3000', 
-      'http://localhost:5173',
-      'https://oracle-ics-frontend.vercel.app',
-      'https://oraclecloud.vn'
-    ],
+  'http://localhost:3000',
+  'http://localhost:5173',
+  'https://oracle-ics-frontend.vercel.app',
+  'https://oraclecloud.vn',
+  'http://oraclecloud.vn',
+  'https://oracle.icss.com.vn' // Thêm dòng này
+],
     credentials: true,
   };
   app.enableCors(corsOptions);
