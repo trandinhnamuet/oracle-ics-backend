@@ -21,11 +21,19 @@ async function bootstrap() {
     transform: true,
   }));
 
-  // Enable CORS for all origins
-  app.enableCors({
-    origin: true,
+  // Enable CORS for frontend
+  const corsOptions: CorsOptions = {
+    origin: [
+  'http://localhost:3000',
+  'http://localhost:5173',
+  'https://oracle-ics-frontend.vercel.app',
+  'https://oraclecloud.vn',
+  'http://oraclecloud.vn',
+  'https://oracle.icss.com.vn' // Thêm dòng này
+],
     credentials: true,
-  });
+  };
+  app.enableCors(corsOptions);
 
   // const port = process.env.PORT ?? 3003;
   const port = 3001
