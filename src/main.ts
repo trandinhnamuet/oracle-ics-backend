@@ -29,7 +29,6 @@ async function bootstrap() {
   'https://oracle-ics-frontend.vercel.app',
   'https://oraclecloud.vn',
   'http://oraclecloud.vn',
-  'https://oracle.icss.com.vn' // Thêm dòng này
 ],
     credentials: true,
   };
