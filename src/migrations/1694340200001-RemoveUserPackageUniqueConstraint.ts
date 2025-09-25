@@ -9,7 +9,7 @@ export class RemoveUserPackageUniqueConstraint1694340200000 implements Migration
     await queryRunner.createIndex(
       "user_package",
       new (require("typeorm").TableIndex)({
-        name: "IDX_USER_PACKAGE_UNIQUE",
+        name: "IDX_USERfesfsPACKAGE_UNIQUE",
         columnNames: ["user_id", "package_id"],
         isUnique: true,
       })

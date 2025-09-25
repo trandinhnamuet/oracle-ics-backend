@@ -8,6 +8,7 @@ import { CustomPackageRegistrationModule } from './custom-package-registration/c
 import { UserModule } from './users/user.module';
 import { UserPackageModule } from './modules/user-package/user-package.module';
 import { SepayModule } from './modules/sepay/sepay.module';
+import { DashboardModule } from './modules/dashboard/dashboard.module';
 
 dotenv.config();
 
@@ -27,7 +28,8 @@ dotenv.config();
     CustomPackageRegistrationModule,
     UserModule,
     UserPackageModule,
-    SepayModule
+    SepayModule,
+    DashboardModule
   ],
   controllers: [AppController],
   providers: [AppService],
