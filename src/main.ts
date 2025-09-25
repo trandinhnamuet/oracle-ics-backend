@@ -26,7 +26,8 @@ async function bootstrap() {
     origin: [
       'http://localhost:3000', 
       'http://localhost:5173',
-      'https://oracle-ics-frontend.vercel.app'
+      'https://oracle-ics-frontend.vercel.app',
+      'https://oraclecloud.vn'
     ],
     credentials: true,
   };
