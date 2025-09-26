@@ -9,6 +9,7 @@ import { UserModule } from './users/user.module';
 import { UserPackageModule } from './modules/user-package/user-package.module';
 import { SepayModule } from './modules/sepay/sepay.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
+import { ExchangeRateModule } from './modules/exchange-rate/exchange-rate.module';
 
 dotenv.config();
 
@@ -29,7 +30,8 @@ dotenv.config();
     UserModule,
     UserPackageModule,
     SepayModule,
-    DashboardModule
+    DashboardModule,
+    ExchangeRateModule
   ],
   controllers: [AppController],
   providers: [AppService],

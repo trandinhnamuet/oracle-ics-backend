@@ -184,12 +184,12 @@ export function getEbookTemplate(data: RegistrationRequests): string {
                 
                 <h3 style="color: #2c3e50;">🔥 Những tính năng nổi bật bạn sẽ được trải nghiệm:</h3>
                 <ul style="color: #34495e; padding-left: 20px;">
-                    <li>🎯 Dashboard tùy chỉnh theo nhu cầu</li>
-                    <li>📊 Báo cáo thống kê realtime</li>
-                    <li>🔔 Thông báo thông minh</li>
-                    <li>📱 Giao diện responsive trên mọi thiết bị</li>
-                    <li>🔒 Bảo mật cao cấp</li>
-                    <li>🤝 Hỗ trợ kỹ thuật 24/7</li>
+                    <li>✅ Dashboard tùy chỉnh theo nhu cầu</li>
+                    <li>✅ Báo cáo thống kê realtime</li>
+                    <li>✅ Thông báo thông minh</li>
+                    <li>✅ Giao diện responsive trên mọi thiết bị</li>
+                    <li>✅ Bảo mật cao cấp</li>
+                    <li>✅ Hỗ trợ kỹ thuật 24/7</li>
                 </ul>
                 
                 <p>Đội ngũ chúng tôi sẽ liên hệ với bạn trong thời gian sớm nhất để hỗ trợ quá trình thiết lập và sử dụng hệ thống.</p>
