@@ -13,6 +13,10 @@ export class UserService {
   ) {}
 
   async create(createUserDto: CreateUserDto): Promise<User> {
+    // Nếu không truyền role thì mặc định là 'customer'
+    if (!createUserDto.role) {
+      createUserDto.role = 'customer';
+    }
     const user = this.userRepository.create(createUserDto);
     return await this.userRepository.save(user);
   }

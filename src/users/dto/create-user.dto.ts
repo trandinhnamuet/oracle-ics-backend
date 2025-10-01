@@ -29,4 +29,9 @@ export class CreateUserDto {
   @IsOptional()
   @IsBoolean({ message: 'Trạng thái hoạt động phải là boolean' })
   isActive?: boolean = true;
+
+  @IsOptional()
+  @IsString({ message: 'Role phải là chuỗi ký tự' })
+  @MaxLength(20, { message: 'Role không được quá 20 ký tự' })
+  role?: string = 'customer';
 }

@@ -21,6 +21,15 @@ export class SepayService {
         return { success: false, message: 'Not a valid incoming transaction' };
       }
 
+      // Đã xác nhận có tiền vào
+      console.log('[SEPAY] ĐÃ NHẬN TIỀN VÀO:', {
+        id: webhookData.id,
+        amount: webhookData.transferAmount,
+        content: webhookData.content,
+        accountNumber: webhookData.accountNumber,
+        transactionDate: webhookData.transactionDate
+      });
+
       // Parse nội dung chuyển khoản để lấy userId và packageId
       const { userId, packageId } = this.parseTransferContent(webhookData.content);
       

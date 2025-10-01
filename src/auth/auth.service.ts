@@ -70,14 +70,11 @@ export class AuthService {
     const payload = { sub: user.id, email: user.email };
     const token = this.jwtService.sign(payload);
 
+    // Trả về đầy đủ các trường user (trừ password)
+    const { password: _pw, ...userWithoutPassword } = user;
     return {
       access_token: token,
-      user: {
-        id: user.id,
-        email: user.email,
-        firstName: user.firstName,
-        lastName: user.lastName,
-      },
+      user: userWithoutPassword,
     };
   }
 

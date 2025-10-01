@@ -9,23 +9,23 @@ export class UserController {
 
   @Post()
   async create(@Body() createUserDto: CreateUserDto) {
-  const user = await this.userService.create(createUserDto);
-  const { password, ...userWithoutPassword } = user;
-  return userWithoutPassword;
+    const user = await this.userService.create(createUserDto);
+    const { password, ...userWithoutPassword } = user;
+    return userWithoutPassword;
   }
 
   @Get()
   async findAll() {
-  const users = await this.userService.findAll();
-  return users.map(({ password, ...user }) => user);
+    const users = await this.userService.findAll();
+    return users.map(({ password, ...user }) => user);
   }
 
   @Get(':id')
   async findOne(@Param('id') id: string) {
-  const user = await this.userService.findOne(Number(id));
-  if (!user) return null;
-  const { password, ...userWithoutPassword } = user;
-  return userWithoutPassword;
+    const user = await this.userService.findOne(Number(id));
+    if (!user) return null;
+    const { password, ...userWithoutPassword } = user;
+    return userWithoutPassword;
   }
 
   @Patch(':id')

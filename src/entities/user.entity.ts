@@ -23,6 +23,10 @@ export class User {
   @Column({ length: 255, nullable: true })
   company?: string;
 
+
+  @Column({ length: 20, default: 'customer' })
+  role: string;
+
   @Column({ default: true })
   isActive: boolean;
 
