@@ -37,7 +37,13 @@ export class AuthService {
     await this.userRepository.save(user);
 
     // Generate JWT token
-    const payload = { sub: user.id, email: user.email };
+    const payload = { 
+      sub: user.id, 
+      email: user.email,
+      role: user.role || 'customer',
+      firstName: user.firstName,
+      lastName: user.lastName
+    };
     const token = this.jwtService.sign(payload);
 
     return {
@@ -67,7 +73,13 @@ export class AuthService {
     }
 
     // Generate JWT token
-    const payload = { sub: user.id, email: user.email };
+    const payload = { 
+      sub: user.id, 
+      email: user.email,
+      role: user.role || 'customer',
+      firstName: user.firstName,
+      lastName: user.lastName
+    };
     const token = this.jwtService.sign(payload);
 
     // Trả về đầy đủ các trường user (trừ password)

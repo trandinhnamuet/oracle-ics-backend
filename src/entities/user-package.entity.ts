@@ -25,6 +25,12 @@ export class UserPackage {
   @Column({ name: 'is_paid', default: false })
   isPaid: boolean;
 
+  @Column({ name: 'is_active', default: true })
+  isActive: boolean;
+
+  @Column({ name: 'total_paid_amount', type: 'decimal', precision: 15, scale: 2, default: 0 })
+  totalPaidAmount: number;
+
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;
 

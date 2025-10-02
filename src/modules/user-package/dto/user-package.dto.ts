@@ -12,6 +12,14 @@ export class CreateUserPackageDto {
   @IsOptional()
   @IsBoolean()
   isPaid?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+
+  @IsOptional()
+  @IsNumber()
+  totalPaidAmount?: number;
 }
 
 export class UpdateUserPackageDto {
@@ -26,6 +34,14 @@ export class UpdateUserPackageDto {
   @IsOptional()
   @IsBoolean()
   isPaid?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+
+  @IsOptional()
+  @IsNumber()
+  totalPaidAmount?: number;
 }
 
 export class UserPackageQueryDto {
@@ -40,4 +56,12 @@ export class UserPackageQueryDto {
   @IsOptional()
   @IsBoolean()
   isPaid?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+
+  @IsOptional()
+  @IsNumber()
+  totalPaidAmount?: number;
 }
