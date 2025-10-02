@@ -41,6 +41,7 @@ export class UserPackageController {
 
   @Get('user/:userId')
   findByUserId(@Param('userId', ParseIntPipe) userId: number) {
+    console.log('Fetching subscriptions for userId:', userId);
     return this.userPackageService.findByUserId(userId);
   }
 
