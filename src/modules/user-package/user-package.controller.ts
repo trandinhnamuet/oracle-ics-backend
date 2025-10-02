@@ -10,12 +10,15 @@ import {
   ParseIntPipe,
   HttpCode,
   HttpStatus,
+  Logger
 } from '@nestjs/common';
 import { UserPackageService } from './user-package.service';
 import { CreateUserPackageDto, UpdateUserPackageDto, UserPackageQueryDto } from './dto/user-package.dto';
 
 @Controller('user-packages')
 export class UserPackageController {
+  private readonly logger = new Logger(UserPackageController.name);
+
   constructor(private readonly userPackageService: UserPackageService) {}
 
   @Post()
@@ -42,6 +45,7 @@ export class UserPackageController {
   @Get('user/:userId')
   findByUserId(@Param('userId', ParseIntPipe) userId: number) {
     console.log('Fetching subscriptions for userId:', userId);
+    this.logger.log(`Fetching subscriptions for userId: ${userId}`);
     return this.userPackageService.findByUserId(userId);
   }
 
