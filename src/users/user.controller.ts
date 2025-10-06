@@ -1,7 +1,8 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, Req, Put } from '@nestjs/common';
 import { UserService } from './user.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
 @Controller('users')
 export class UserController {
@@ -39,5 +40,22 @@ export class UserController {
   async remove(@Param('id') id: string) {
     await this.userService.remove(Number(id));
     return { message: 'User deleted successfully' };
+  }
+
+  @Put(':id/avatar')
+  @UseGuards(JwtAuthGuard)
+  async updateAvatar(
+    @Param('id') id: string,
+    @Body() body: { avatarUrl: string },
+    @Req() req: any,
+  ) {
+    // Users can only update their own avatar
+    if (req.user.id !== Number(id)) {
+      throw new Error('Unauthorized');
+    }
+    
+    const user = await this.userService.updateAvatar(Number(id), body.avatarUrl);
+    const { password, ...userWithoutPassword } = user;
+    return userWithoutPassword;
   }
 }

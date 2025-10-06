@@ -30,6 +30,9 @@ export class User {
   @Column({ default: true })
   isActive: boolean;
 
+  @Column({ name: 'avatar_url', length: 500, nullable: true })
+  avatarUrl?: string;
+
   @CreateDateColumn()
   createdAt: Date;
 
