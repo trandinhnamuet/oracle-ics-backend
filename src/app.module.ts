@@ -6,11 +6,17 @@ import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
 import { CustomPackageRegistrationModule } from './custom-package-registration/custom-package-registration.module';
 import { UserModule } from './users/user.module';
-import { UserPackageModule } from './modules/user-package/user-package.module';
 import { SepayModule } from './modules/sepay/sepay.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { ExchangeRateModule } from './modules/exchange-rate/exchange-rate.module';
 import { ImageModule } from './modules/image/image.module';
+import { CloudPackageModule } from './modules/cloud-package/cloud-package.module';
+import { PaymentModule } from './modules/payment/payment.module';
+import { SubscriptionModule } from './modules/subscription/subscription.module';
+import { UserWalletModule } from './modules/user-wallet/user-wallet.module';
+import { WalletTransactionModule } from './modules/wallet-transaction/wallet-transaction.module';
+import { SubscriptionLogModule } from './modules/subscription-log/subscription-log.module';
+import { SchedulerModule } from './modules/scheduler/scheduler.module';
 
 dotenv.config();
 
@@ -29,11 +35,17 @@ dotenv.config();
     AuthModule,
     CustomPackageRegistrationModule,
     UserModule,
-    UserPackageModule,
     SepayModule,
     DashboardModule,
     ExchangeRateModule,
-    ImageModule
+    ImageModule,
+    CloudPackageModule,
+    PaymentModule,
+    SubscriptionModule,
+    UserWalletModule,
+    WalletTransactionModule,
+    SubscriptionLogModule,
+    SchedulerModule
   ],
   controllers: [AppController],
   providers: [AppService],

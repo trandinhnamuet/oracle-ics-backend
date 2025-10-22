@@ -1,13 +1,21 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { UserPackageService } from '../user-package/user-package.service';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
 import { SepayWebhookDto, CreatePaymentDto } from './dto/sepay.dto';
+import { Payment } from '../../entities/payment.entity';
+import { Subscription } from '../../entities/subscription.entity';
+import { UserWalletService } from '../user-wallet/user-wallet.service';
 
 @Injectable()
 export class SepayService {
   private readonly logger = new Logger(SepayService.name);
 
   constructor(
-    private readonly userPackageService: UserPackageService,
+    @InjectRepository(Payment)
+    private paymentRepository: Repository<Payment>,
+    @InjectRepository(Subscription)
+    private subscriptionRepository: Repository<Subscription>,
+    private userWalletService: UserWalletService,
   ) {}
 
   async handleWebhook(webhookData: SepayWebhookDto): Promise<{ success: boolean; message: string }> {
@@ -30,30 +38,67 @@ export class SepayService {
         transactionDate: webhookData.transactionDate
       });
 
-      // Parse nội dung chuyển khoản để lấy userId và packageId
-      const { userId, packageId } = this.parseTransferContent(webhookData.content);
+      // Tìm payment theo amount và thời gian gần đây (trong vòng 1 giờ)
+      const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+      const payment = await this.paymentRepository
+        .createQueryBuilder('payment')
+        .where('payment.amount = :amount', { amount: webhookData.transferAmount })
+        .andWhere('payment.status = :status', { status: 'pending' })
+        .andWhere('payment.payment_type = :type', { type: 'deposit' })
+        .orderBy('payment.id', 'DESC')
+        .getOne();
+
+      this.logger.log(`Looking for payment with amount: ${webhookData.transferAmount}`);
       
-      if (!userId || !packageId) {
-        this.logger.warn(`Cannot parse userId or packageId from content: ${webhookData.content}`);
-        return { success: false, message: 'Invalid transfer content' };
+      if (payment) {
+        // Cập nhật payment status
+        await this.paymentRepository.update(payment.id, { status: 'success' });
+        
+        // Xử lý theo loại payment
+        if (payment.payment_type === 'deposit') {
+          // Nạp tiền vào wallet
+          await this.userWalletService.addBalance(payment.user_id, payment.amount);
+          this.logger.log(`Added ${payment.amount} VND to user ${payment.user_id} wallet`);
+        } else if (payment.payment_type === 'subscription') {
+          // Kích hoạt subscription
+          if (payment.subscription_id) {
+            await this.subscriptionRepository.update(payment.subscription_id, { 
+              status: 'active' 
+            });
+            this.logger.log(`Activated subscription ${payment.subscription_id}`);
+          }
+          
+          // Tạo 2 wallet transactions: credit và debit để cân bằng
+          const userWallet = await this.userWalletService.findByUserId(payment.user_id);
+          
+          // Transaction 1: Credit (tiền vào) 
+          await this.userWalletService.createTransaction({
+            wallet_id: userWallet.id,
+            payment_id: payment.id,
+            change_amount: payment.amount, // Positive for credit
+            balance_after: userWallet.balance,
+            type: 'subscription_payment_in',
+          });
+          
+          // Transaction 2: Debit (tiền ra)
+          await this.userWalletService.createTransaction({
+            wallet_id: userWallet.id,
+            payment_id: payment.id,
+            change_amount: -payment.amount, // Negative for debit
+            balance_after: userWallet.balance,
+            type: 'subscription_payment_out',
+          });
+          
+          this.logger.log(`Created balanced wallet transactions for subscription payment`);
+        }
+        
+        this.logger.log(`Updated payment ${payment.id} to success for amount ${webhookData.transferAmount}`);
+      } else {
+        this.logger.warn(`No pending payment found for amount: ${webhookData.transferAmount}`);
+        return { success: false, message: 'No matching payment found' };
       }
 
-      // Kiểm tra xem đã có bản ghi chưa
-      const existingRecord = await this.userPackageService.findByUserAndPackage(userId, packageId);
-      
-      if (existingRecord) {
-        // Cập nhật trạng thái thanh toán
-        await this.userPackageService.markAsPaid(existingRecord.id);
-        this.logger.log(`Updated payment status for user ${userId}, package ${packageId}`);
-      } else {
-        // Tạo bản ghi mới với trạng thái đã thanh toán
-        await this.userPackageService.create({
-          userId,
-          packageId,
-          isPaid: true,
-        });
-        this.logger.log(`Created new paid subscription for user ${userId}, package ${packageId}`);
-      }
+      this.logger.log(`Payment webhook processed successfully for amount ${webhookData.transferAmount}`);
 
       return { success: true, message: 'Payment processed successfully' };
     } catch (error) {
@@ -72,16 +117,28 @@ export class SepayService {
     // Tạo URL QR Sepay
     const qrUrl = this.generateQRUrl(createPaymentDto.amount.toString(), transferContent);
 
+    // TODO: Replace with new payment logic using 6 tables
     // Tạo bản ghi user-package với trạng thái chưa thanh toán
-    await this.userPackageService.create({
-      userId: createPaymentDto.userId,
-      packageId: createPaymentDto.packageId,
-      isPaid: false,
-    });
+    // await this.userPackageService.create({
+    //   userId: createPaymentDto.userId,
+    //   packageId: createPaymentDto.packageId,
+    //   isPaid: false,
+    // });
 
-    this.logger.log(`Created payment ${paymentId} for user ${createPaymentDto.userId}, package ${createPaymentDto.packageId}`);
+    this.logger.log(`Created payment ${paymentId} for user ${createPaymentDto.userId}, package ${createPaymentDto.packageId} - Logic will be implemented with new tables`);
 
     return { paymentId, qrUrl };
+  }
+
+  private parseTransactionCode(content: string): string | null {
+    try {
+      // Tìm transaction code có format NAP + timestamp + random (ví dụ: NAP1729654321ABC123)
+      const match = content.match(/NAP\d+[A-Z0-9]+/);
+      return match ? match[0] : null;
+    } catch (error) {
+      this.logger.error(`Error parsing transaction code from content: ${content}`, error);
+      return null;
+    }
   }
 
   private parseTransferContent(content: string): { userId: number | null; packageId: number | null } {

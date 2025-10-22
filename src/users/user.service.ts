@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { User } from '../entities/user.entity';
+import { UserWallet } from '../entities/user-wallet.entity';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 
@@ -10,6 +11,8 @@ export class UserService {
   constructor(
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
+    @InjectRepository(UserWallet)
+    private readonly userWalletRepository: Repository<UserWallet>,
   ) {}
 
   async create(createUserDto: CreateUserDto): Promise<User> {
@@ -18,7 +21,23 @@ export class UserService {
       createUserDto.role = 'customer';
     }
     const user = this.userRepository.create(createUserDto);
-    return await this.userRepository.save(user);
+    const savedUser = await this.userRepository.save(user);
+
+    // Tạo user_wallet cho user mới
+    try {
+      const userWallet = this.userWalletRepository.create({
+        user_id: savedUser.id,
+        balance: 0,
+        currency: 'VND',
+        is_active: true,
+      });
+      await this.userWalletRepository.save(userWallet);
+    } catch (error) {
+      // Log error but don't fail user creation
+      console.error('Failed to create wallet for user:', savedUser.id, error);
+    }
+
+    return savedUser;
   }
 
   async findAll(): Promise<User[]> {

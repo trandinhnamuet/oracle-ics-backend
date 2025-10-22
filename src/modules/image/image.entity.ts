@@ -9,7 +9,7 @@ import {
 } from 'typeorm';
 import { User } from '../../entities/user.entity';
 
-@Entity('images', { schema: 'public' })
+@Entity('images', { schema: 'oracle' })
 export class Image {
   @PrimaryGeneratedColumn('uuid')
   id: string;

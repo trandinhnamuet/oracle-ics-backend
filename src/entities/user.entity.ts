@@ -1,6 +1,6 @@
 import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn } from 'typeorm';
 
-@Entity('users')
+@Entity('users', { schema: 'oracle' })
 export class User {
   @PrimaryGeneratedColumn()
   id: number;

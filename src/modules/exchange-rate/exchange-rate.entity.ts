@@ -1,6 +1,6 @@
 import { Entity, PrimaryGeneratedColumn, Column } from 'typeorm';
 
-@Entity('exchange_rate')
+@Entity('exchange_rate', { schema: 'oracle' })
 export class ExchangeRate {
   @PrimaryGeneratedColumn()
   id: number;

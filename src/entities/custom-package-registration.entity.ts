@@ -1,6 +1,6 @@
 import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn } from 'typeorm';
 
-@Entity('custom_package_registrations')
+@Entity('custom_package_registrations', { schema: 'oracle' })
 export class CustomPackageRegistration {
   @PrimaryGeneratedColumn()
   id: number;
