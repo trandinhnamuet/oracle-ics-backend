@@ -5,7 +5,7 @@ export class CreateImagesTable1728220000000 implements MigrationInterface {
     await queryRunner.createTable(
       new Table({
         name: 'images',
-        schema: 'public',
+        schema: 'oracle',
         columns: [
           {
             name: 'id',
@@ -82,14 +82,14 @@ export class CreateImagesTable1728220000000 implements MigrationInterface {
 
     // Add foreign key constraint
     await queryRunner.query(`
-      ALTER TABLE public.images 
+      ALTER TABLE oracle.images 
       ADD CONSTRAINT FK_IMAGES_UPLOADED_BY 
-      FOREIGN KEY (uploaded_by) REFERENCES public.users(id) 
+      FOREIGN KEY (uploaded_by) REFERENCES oracle.users(id) 
       ON DELETE SET NULL
     `);
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.dropTable('public.images');
+    await queryRunner.dropTable('oracle.images');
   }
 }

@@ -5,6 +5,7 @@ export class CreateExchangeRateTable1695650000002 implements MigrationInterface 
     await queryRunner.createTable(
       new Table({
         name: "exchange_rate",
+        schema: "oracle",
         columns: [
           {
             name: "id",
@@ -47,6 +48,6 @@ export class CreateExchangeRateTable1695650000002 implements MigrationInterface 
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.dropTable("exchange_rate");
+    await queryRunner.dropTable("oracle.exchange_rate");
   }
 }

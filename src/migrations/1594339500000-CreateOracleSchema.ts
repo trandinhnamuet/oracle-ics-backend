@@ -1,6 +1,6 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
 
-export class CreateOracleSchema20251013000000 implements MigrationInterface {
+export class CreateOracleSchema1594339500000 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`
       CREATE SCHEMA IF NOT EXISTS oracle;

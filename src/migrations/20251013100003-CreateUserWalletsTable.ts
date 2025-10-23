@@ -10,6 +10,7 @@ export class CreateUserWalletsTable20251013100003 implements MigrationInterface 
         currency VARCHAR(10) DEFAULT 'VND',
         last_payment_id UUID,
         status VARCHAR(20),
+        is_active BOOLEAN DEFAULT true NOT NULL,
         created_at TIMESTAMP DEFAULT NOW(),
         updated_at TIMESTAMP DEFAULT NOW()
       );

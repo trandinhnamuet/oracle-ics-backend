@@ -4,13 +4,14 @@ export class CreateCustomPackageRegistrationsTable1694339600000 implements Migra
 
     public async up(queryRunner: QueryRunner): Promise<void> {
         await queryRunner.query(`
-            CREATE TABLE custom_package_registrations (
+            CREATE TABLE oracle.custom_package_registrations (
                 id SERIAL PRIMARY KEY,
                 user_id INTEGER,
                 phone_number VARCHAR(20) NOT NULL,
                 email VARCHAR(255) NOT NULL,
                 company VARCHAR(255),
                 detail TEXT,
+                processed BOOLEAN DEFAULT FALSE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 created_by VARCHAR(255)
             )
@@ -18,7 +19,7 @@ export class CreateCustomPackageRegistrationsTable1694339600000 implements Migra
     }
 
     public async down(queryRunner: QueryRunner): Promise<void> {
-        await queryRunner.query(`DROP TABLE custom_package_registrations`);
+        await queryRunner.query(`DROP TABLE oracle.custom_package_registrations`);
     }
 
 }
