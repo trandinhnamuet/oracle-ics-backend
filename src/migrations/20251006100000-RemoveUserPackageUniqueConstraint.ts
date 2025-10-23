@@ -1,7 +1,7 @@
 import { MigrationInterface, QueryRunner } from "typeorm";
 
 export class RemoveUserPackageUniqueConstraint20251006100000 implements MigrationInterface {
-  public async up(queryRunner: QueryRunner): Promise<void> {
+    public async up(queryRunner: QueryRunner): Promise<void> {
         const indexExists = await queryRunner.query(`
             SELECT 1
             FROM pg_indexes
@@ -13,14 +13,14 @@ export class RemoveUserPackageUniqueConstraint20251006100000 implements Migratio
         }
     }
 
-  public async down(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.createIndex(
-      "user_package",
-      new (require("typeorm").TableIndex)({
-        name: "IDX_USER_PACKAGE_UNIQUE",
-        columnNames: ["user_id", "package_id"],
-        isUnique: true,
-      })
-    );
-  }
+    public async down(queryRunner: QueryRunner): Promise<void> {
+        await queryRunner.createIndex(
+            "user_package",
+            new (require("typeorm").TableIndex)({
+                name: "IDX_USER_PACKAGE_UNIQUE",
+                columnNames: ["user_id", "package_id"],
+                isUnique: true,
+            })
+        );
+    }
 }
