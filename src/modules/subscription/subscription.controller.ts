@@ -5,6 +5,7 @@ import {
   Body,
   Patch,
   Param,
+  Delete,
   UseGuards,
   Request,
 } from '@nestjs/common';
@@ -97,5 +98,11 @@ export class SubscriptionController {
   @UseGuards(JwtAuthGuard)
   async reactivate(@Param('id') id: string) {
     return await this.subscriptionService.reactivate(id);
+  }
+
+  @Delete(':id')
+  @UseGuards(JwtAuthGuard)
+  async remove(@Param('id') id: string) {
+    return await this.subscriptionService.remove(id);
   }
 }

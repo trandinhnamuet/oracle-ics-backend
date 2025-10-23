@@ -178,28 +178,21 @@ export class SubscriptionService {
   }
 
   async findAll(): Promise<Subscription[]> {
-    return await this.subscriptionRepository.find({
-      relations: ['user', 'cloudPackage'],
-      order: {
-        created_at: 'DESC',
-      },
-    });
-  }
-
-  async findByUser(userId: number): Promise<Subscription[]> {
     try {
       return await this.subscriptionRepository.find({
-        where: { user_id: userId },
-        relations: ['cloudPackage'],
+        relations: {
+          user: true,
+          cloudPackage: true,
+        },
         order: {
           created_at: 'DESC',
         },
       });
     } catch (error) {
-      console.error('Error in findByUser:', error);
-      // Fallback: return subscriptions without relations if there's a relation error
+      console.error('Error in findAll with relations:', error);
+      // Fallback: try with array syntax for older TypeORM versions
       return await this.subscriptionRepository.find({
-        where: { user_id: userId },
+        relations: ['user', 'cloudPackage'],
         order: {
           created_at: 'DESC',
         },
@@ -207,11 +200,60 @@ export class SubscriptionService {
     }
   }
 
+  async findByUser(userId: number): Promise<Subscription[]> {
+    try {
+      return await this.subscriptionRepository.find({
+        where: { user_id: userId },
+        relations: {
+          cloudPackage: true,
+        },
+        order: {
+          created_at: 'DESC',
+        },
+      });
+    } catch (error) {
+      console.error('Error in findByUser with relations:', error);
+      // Fallback: try with array syntax for older TypeORM versions
+      try {
+        return await this.subscriptionRepository.find({
+          where: { user_id: userId },
+          relations: ['cloudPackage'],
+          order: {
+            created_at: 'DESC',
+          },
+        });
+      } catch (fallbackError) {
+        console.error('Fallback error in findByUser:', fallbackError);
+        // Final fallback: return subscriptions without relations
+        return await this.subscriptionRepository.find({
+          where: { user_id: userId },
+          order: {
+            created_at: 'DESC',
+          },
+        });
+      }
+    }
+  }
+
   async findOne(id: string): Promise<Subscription> {
-    const subscription = await this.subscriptionRepository.findOne({
-      where: { id },
-      relations: ['user', 'cloudPackage'],
-    });
+    let subscription;
+    
+    try {
+      subscription = await this.subscriptionRepository.findOne({
+        where: { id },
+        relations: {
+          user: true,
+          cloudPackage: true,
+        },
+      });
+    } catch (error) {
+      console.error('Error in findOne with relations:', error);
+      // Fallback: try with array syntax for older TypeORM versions
+      subscription = await this.subscriptionRepository.findOne({
+        where: { id },
+        relations: ['user', 'cloudPackage'],
+      });
+    }
 
     if (!subscription) {
       throw new NotFoundException(`Subscription with ID ${id} not found`);
@@ -309,5 +351,15 @@ export class SubscriptionService {
       subscription.status = 'expired';
       await this.subscriptionRepository.save(subscription);
     }
+  }
+
+  async remove(id: string): Promise<void> {
+    const subscription = await this.findOne(id);
+    
+    // Optionally, you might want to add business logic here
+    // For example, prevent deletion of active subscriptions
+    // or refund logic for cancelled subscriptions
+    
+    await this.subscriptionRepository.remove(subscription);
   }
 }
