@@ -11,10 +11,10 @@ export class User {
   @Column()
   password: string;
 
-  @Column()
+  @Column({ name: 'first_name' })
   firstName: string;
 
-  @Column()
+  @Column({ name: 'last_name' })
   lastName: string;
 
   @Column({ name: 'phone_number', length: 20, nullable: true })
@@ -27,15 +27,15 @@ export class User {
   @Column({ length: 20, default: 'customer' })
   role: string;
 
-  @Column({ default: true })
+  @Column({ name: 'is_active', default: true })
   isActive: boolean;
 
   @Column({ name: 'avatar_url', length: 500, nullable: true })
   avatarUrl?: string;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;
 
-  @UpdateDateColumn()
+  @UpdateDateColumn({ name: 'updated_at' })
   updatedAt: Date;
 }
