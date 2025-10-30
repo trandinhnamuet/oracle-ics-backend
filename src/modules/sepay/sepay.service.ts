@@ -39,18 +39,27 @@ export class SepayService {
       });
 
       // Tìm payment theo amount và thời gian gần đây (trong vòng 1 giờ)
-      const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
       const payment = await this.paymentRepository
         .createQueryBuilder('payment')
         .where('payment.amount = :amount', { amount: webhookData.transferAmount })
         .andWhere('payment.status = :status', { status: 'pending' })
-        .andWhere('payment.payment_type = :type', { type: 'deposit' })
         .orderBy('payment.id', 'DESC')
         .getOne();
 
       this.logger.log(`Looking for payment with amount: ${webhookData.transferAmount}`);
       
+      // Debug: Log all pending payments
+      const allPendingPayments = await this.paymentRepository.find({
+        where: { status: 'pending' },
+        take: 10
+      });
+      this.logger.log(`Found ${allPendingPayments.length} pending payments in last 10 records:`);
+      allPendingPayments.forEach(p => {
+        this.logger.log(`- Payment ${p.id}: amount=${p.amount}, type=${p.payment_type}, subscription_id=${p.subscription_id}`);
+      });
+      
       if (payment) {
+        this.logger.log(`Found payment: ${payment.id}, type: ${payment.payment_type}, subscription_id: ${payment.subscription_id}`);
         // Cập nhật payment status
         await this.paymentRepository.update(payment.id, { status: 'success' });
         
