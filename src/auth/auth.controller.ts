@@ -1,7 +1,7 @@
 import { Controller, Post, Body, Res, UseGuards, Get, Req } from '@nestjs/common';
 import { Response, Request } from 'express';
 import { AuthService } from './auth.service';
-import { LoginDto, RegisterDto } from './dto/auth.dto';
+import { LoginDto, RegisterDto, VerifyOtpDto, ResendOtpDto, ForgotPasswordDto, VerifyResetOtpDto, ResetPasswordDto } from './dto/auth.dto';
 import { JwtAuthGuard } from './jwt-auth.guard';
 
 @Controller('auth')
@@ -9,18 +9,33 @@ export class AuthController {
   constructor(private authService: AuthService) {}
 
   @Post('register')
-  async register(@Body() registerDto: RegisterDto, @Res({ passthrough: true }) response: Response) {
-    const result = await this.authService.register(registerDto);
-    
-    // Set JWT token in HTTP-only cookie
-    response.cookie('access_token', result.access_token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: 24 * 60 * 60 * 1000, // 24 hours - khớp với JWT expiry
-    });
+  async register(@Body() registerDto: RegisterDto) {
+    return await this.authService.register(registerDto);
+  }
 
-    return { user: result.user };
+  @Post('verify-otp')
+  async verifyOtp(@Body() verifyOtpDto: VerifyOtpDto) {
+    return await this.authService.verifyOtp(verifyOtpDto);
+  }
+
+  @Post('resend-otp')
+  async resendOtp(@Body() resendOtpDto: ResendOtpDto) {
+    return await this.authService.resendOtp(resendOtpDto);
+  }
+
+  @Post('forgot-password')
+  async forgotPassword(@Body() forgotPasswordDto: ForgotPasswordDto) {
+    return await this.authService.forgotPassword(forgotPasswordDto);
+  }
+
+  @Post('verify-reset-otp')
+  async verifyResetOtp(@Body() verifyResetOtpDto: VerifyResetOtpDto) {
+    return await this.authService.verifyResetOtp(verifyResetOtpDto);
+  }
+
+  @Post('reset-password')
+  async resetPassword(@Body() resetPasswordDto: ResetPasswordDto) {
+    return await this.authService.resetPassword(resetPasswordDto);
   }
 
   @Post('login')

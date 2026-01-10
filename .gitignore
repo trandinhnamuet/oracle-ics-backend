@@ -57,3 +57,18 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
 # Uploaded files
 uploads/
+
+# OCI Configuration
+.config
+.oci/
+
+# Secrets and sensitive data
+secrets/
+!secrets/README.md
+!secrets/**/.gitkeep
+*.pem
+*.key
+*_rsa
+*_rsa.pub
+id_rsa*
+*.ppk

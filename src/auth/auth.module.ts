@@ -6,6 +6,7 @@ import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
 import { JwtStrategy } from './jwt.strategy';
 import { User } from '../entities/user.entity';
+import { EmailModule } from '../modules/email/email.module';
 
 @Module({
   imports: [
@@ -15,6 +16,7 @@ import { User } from '../entities/user.entity';
       secret: process.env.JWT_SECRET || 'jwt-secret-key-42jfwj2k',
       signOptions: { expiresIn: '24h' },
     }),
+    EmailModule,
   ],
   providers: [AuthService, JwtStrategy],
   controllers: [AuthController],

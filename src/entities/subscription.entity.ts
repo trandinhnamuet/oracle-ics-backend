@@ -1,6 +1,7 @@
 import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn, CreateDateColumn, UpdateDateColumn } from 'typeorm';
 import { User } from './user.entity';
 import { CloudPackage } from './cloud-package.entity';
+import { VmInstance } from './vm-instance.entity';
 
 @Entity('subscriptions', { schema: 'oracle' })
 export class Subscription {
@@ -34,6 +35,9 @@ export class Subscription {
   @Column({ type: 'json', nullable: true })
   configuration: any; // Store VM configuration
 
+  @Column({ type: 'uuid', nullable: true })
+  vm_instance_id: string; // Foreign key to vm_instances
+
   @Column({ type: 'text', nullable: true })
   notes: string;
 
@@ -50,4 +54,8 @@ export class Subscription {
   @ManyToOne(() => CloudPackage)
   @JoinColumn({ name: 'cloud_package_id' })
   cloudPackage: CloudPackage;
+
+  @ManyToOne(() => VmInstance, { nullable: true })
+  @JoinColumn({ name: 'vm_instance_id' })
+  vmInstance: VmInstance;
 }

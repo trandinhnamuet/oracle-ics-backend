@@ -27,8 +27,20 @@ export class User {
   @Column({ length: 20, default: 'customer' })
   role: string;
 
-  @Column({ name: 'is_active', default: true })
+  @Column({ name: 'is_active', default: false })
   isActive: boolean;
+
+  @Column({ name: 'email_verification_otp', length: 6, nullable: true })
+  emailVerificationOtp?: string;
+
+  @Column({ name: 'otp_expires_at', type: 'timestamp', nullable: true })
+  otpExpiresAt?: Date;
+
+  @Column({ name: 'password_reset_otp', length: 6, nullable: true })
+  passwordResetOtp?: string;
+
+  @Column({ name: 'password_reset_otp_expires_at', type: 'timestamp', nullable: true })
+  passwordResetOtpExpiresAt?: Date;
 
   @Column({ name: 'avatar_url', length: 500, nullable: true })
   avatarUrl?: string;

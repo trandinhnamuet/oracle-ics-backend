@@ -10,7 +10,7 @@ import {
 } from 'typeorm';
 import { User } from './user.entity';
 
-@Entity('user_package')
+@Entity({ name: 'user_package', schema: 'oracle' })
 @Index(['userId', 'packageId'], { unique: true })
 export class UserPackage {
   @PrimaryGeneratedColumn()

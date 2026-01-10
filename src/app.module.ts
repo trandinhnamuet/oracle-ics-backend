@@ -17,6 +17,10 @@ import { UserWalletModule } from './modules/user-wallet/user-wallet.module';
 import { WalletTransactionModule } from './modules/wallet-transaction/wallet-transaction.module';
 import { SubscriptionLogModule } from './modules/subscription-log/subscription-log.module';
 import { SchedulerModule } from './modules/scheduler/scheduler.module';
+import { OciModule } from './modules/oci/oci.module';
+import { SystemSshKeyModule } from './modules/system-ssh-key/system-ssh-key.module';
+import { VmProvisioningModule } from './modules/vm-provisioning/vm-provisioning.module';
+import { VmSubscriptionModule } from './modules/vm-subscription/vm-subscription.module';
 
 dotenv.config();
 
@@ -45,7 +49,11 @@ dotenv.config();
     UserWalletModule,
     WalletTransactionModule,
     SubscriptionLogModule,
-    SchedulerModule
+    SchedulerModule,
+    OciModule,
+    SystemSshKeyModule,
+    VmProvisioningModule,
+    VmSubscriptionModule,
   ],
   controllers: [AppController],
   providers: [AppService],
