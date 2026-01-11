@@ -94,6 +94,13 @@ export class AuthService {
     return {
       message: 'Email verified successfully. You can now login.',
       success: true,
+      user: {
+        id: user.id,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        isActive: user.isActive,
+      },
     };
   }
 
