@@ -82,23 +82,22 @@ export class VmSubscriptionService {
     // Step 1: Check subscription eligibility
     const subscription = await this.checkSubscriptionEligibility(subscriptionId, userId);
 
-    // Step 2: Check if VM already exists for this subscription
+    // Step 2: Check if VM already exists for THIS SPECIFIC SUBSCRIPTION
     let existingVm = await this.vmInstanceRepo.findOne({
-      where: { user_id: userId },
+      where: { 
+        subscription_id: subscriptionId,  // Check by subscription_id, not user_id
+        user_id: userId,
+      },
       relations: [],
     });
-
-    // For now, find the first VM or we need to add subscription_id to vm_instances table
-    const allVms = await this.vmProvisioningService.getUserVms(userId);
-    existingVm = allVms.length > 0 ? await this.vmInstanceRepo.findOne({ where: { id: allVms[0].id } }) : null;
 
     try {
       let vmResult;
       let userSshKeyPair;
 
       if (existingVm) {
-        // Reconfigure existing VM
-        this.logger.log(`Reconfiguring existing VM: ${existingVm.id}`);
+        // Reconfigure existing VM for this subscription
+        this.logger.log(`Subscription ${subscriptionId} already has VM: ${existingVm.id}`);
         
         // TODO: Implement VM reconfiguration logic
         // For now, we'll create a new VM
@@ -107,10 +106,10 @@ export class VmSubscriptionService {
         // 2. Create a new VM with new config
         // 3. Optionally preserve data
         
-        throw new BadRequestException('VM reconfiguration not yet implemented. Please delete the old VM first.');
+        throw new BadRequestException('This subscription already has a VM. VM reconfiguration not yet implemented. Please delete the old VM first.');
       } else {
-        // Create new VM
-        this.logger.log('Creating new VM for subscription');
+        // Create new VM for this subscription
+        this.logger.log(`Creating new VM for subscription ${subscriptionId}`);
 
         // Generate SSH key pair for user
         userSshKeyPair = this.generateSshKeyPair();
@@ -302,10 +301,11 @@ export class VmSubscriptionService {
    * Generate SSH key pair for user
    */
   private generateSshKeyPair() {
+    // Generate key pair in proper SSH format directly
     const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', {
       modulusLength: 4096,
       publicKeyEncoding: {
-        type: 'spki',
+        type: 'pkcs1',  // Use PKCS1 for RSA - compatible with SSH
         format: 'pem',
       },
       privateKeyEncoding: {
@@ -314,11 +314,16 @@ export class VmSubscriptionService {
       },
     });
 
-    // Convert to OpenSSH format for public key
-    const publicKeySSH = this.convertPemToOpenSSH(publicKey);
+    // Convert PEM RSA public key to SSH format properly
+    const publicKeySSH = this.convertRsaPemToOpenSSH(publicKey);
     
-    // Calculate fingerprint
-    const keyData = Buffer.from(publicKeySSH.split(' ')[1], 'base64');
+    // Calculate fingerprint from the SSH-formatted key
+    const keyParts = publicKeySSH.split(' ');
+    if (keyParts.length < 2) {
+      throw new Error('Invalid SSH public key format');
+    }
+    
+    const keyData = Buffer.from(keyParts[1], 'base64');
     const hash = crypto.createHash('md5').update(keyData).digest('hex');
     const fingerprint = hash.match(/.{2}/g)?.join(':') || '';
 
@@ -330,16 +335,75 @@ export class VmSubscriptionService {
   }
 
   /**
-   * Convert PEM public key to OpenSSH format
+   * Convert RSA PEM public key (PKCS1) to OpenSSH format
+   * OpenSSH format: "ssh-rsa [base64-encoded-key] [comment]"
    */
-  private convertPemToOpenSSH(pemPublicKey: string): string {
-    // Remove PEM headers and convert to OpenSSH format
-    const base64 = pemPublicKey
-      .replace(/-----BEGIN PUBLIC KEY-----/, '')
-      .replace(/-----END PUBLIC KEY-----/, '')
-      .replace(/\s/g, '');
+  private convertRsaPemToOpenSSH(pemPublicKey: string): string {
+    // Import the PEM key
+    const keyObject = crypto.createPublicKey(pemPublicKey);
     
-    return `ssh-rsa ${base64} user@oraclecloud`;
+    // Export as SPKI DER format
+    const spkiDer = keyObject.export({ type: 'spki', format: 'der' }) as Buffer;
+    
+    // Parse SPKI to extract RSA key components (n, e)
+    // SPKI structure for RSA contains: algorithm OID + BIT STRING with RSA public key
+    // For simplicity, we'll use the full SPKI DER in SSH format
+    
+    // SSH RSA public key format (RFC 4253):
+    // string    "ssh-rsa"
+    // mpint     e (public exponent)
+    // mpint     n (modulus)
+    
+    // For proper conversion, extract modulus and exponent from SPKI
+    const publicKeyInfo = crypto.createPublicKey(pemPublicKey);
+    const jwk = publicKeyInfo.export({ format: 'jwk' }) as any;
+    
+    // Convert JWK n and e to SSH format
+    const nBuffer = Buffer.from(jwk.n, 'base64url');
+    const eBuffer = Buffer.from(jwk.e, 'base64url');
+    
+    // Build SSH RSA public key format
+    const sshFormatBuffer = this.buildSshRsaPublicKey(eBuffer, nBuffer);
+    const base64Key = sshFormatBuffer.toString('base64');
+    
+    return `ssh-rsa ${base64Key} user@oraclecloud`;
+  }
+
+  /**
+   * Build SSH RSA public key format according to RFC 4253
+   * Format: string "ssh-rsa" + mpint e + mpint n
+   */
+  private buildSshRsaPublicKey(e: Buffer, n: Buffer): Buffer {
+    const algorithmName = 'ssh-rsa';
+    
+    // Helper to write SSH string
+    const writeString = (str: string): Buffer => {
+      const strBuf = Buffer.from(str, 'utf-8');
+      const lenBuf = Buffer.allocUnsafe(4);
+      lenBuf.writeUInt32BE(strBuf.length, 0);
+      return Buffer.concat([lenBuf, strBuf]);
+    };
+    
+    // Helper to write SSH mpint (multiple precision integer)
+    const writeMpint = (buf: Buffer): Buffer => {
+      // Add leading zero byte if high bit is set (to keep it positive)
+      let mpintBuf = buf;
+      if (buf[0] & 0x80) {
+        mpintBuf = Buffer.concat([Buffer.from([0x00]), buf]);
+      }
+      const lenBuf = Buffer.allocUnsafe(4);
+      lenBuf.writeUInt32BE(mpintBuf.length, 0);
+      return Buffer.concat([lenBuf, mpintBuf]);
+    };
+    
+    // Build the SSH public key
+    const parts = [
+      writeString(algorithmName),
+      writeMpint(e),
+      writeMpint(n),
+    ];
+    
+    return Buffer.concat(parts);
   }
 
   /**
@@ -366,7 +430,7 @@ export class VmSubscriptionService {
             .content { background-color: #f9f9f9; padding: 20px; margin: 20px 0; }
             .info-box { background-color: #e8f4f8; border-left: 4px solid #2196F3; padding: 15px; margin: 15px 0; }
             .warning { background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 15px 0; }
-            .code-block { background-color: #2d2d2d; color: #f8f8f2; padding: 15px; border-radius: 5px; overflow-x: auto; font-family: 'Courier New', monospace; font-size: 13px; }
+            .code-block { background-color: #2d2d2d; color: #f8f8f2; padding: 15px; border-radius: 5px; overflow-x: auto; font-family: 'Courier New', monospace; font-size: 13px; white-space: pre-wrap; word-wrap: break-word; }
             .button { display: inline-block; background-color: #f80000; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; margin: 10px 0; }
             .footer { text-align: center; color: #666; font-size: 12px; margin-top: 30px; }
           </style>
@@ -398,7 +462,7 @@ export class VmSubscriptionService {
               </div>
 
               <h3>🔑 Your SSH Private Key:</h3>
-              <div class="code-block">${sshKeyPair.privateKey}</div>
+              <pre class="code-block">${sshKeyPair.privateKey}</pre>
 
               <h3>📝 How to Connect:</h3>
               
