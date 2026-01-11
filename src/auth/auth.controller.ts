@@ -1,4 +1,4 @@
-import { Controller, Post, Body, Res, UseGuards, Get, Req } from '@nestjs/common';
+import { Controller, Post, Body, Res, UseGuards, Get, Req, Logger } from '@nestjs/common';
 import { Response, Request } from 'express';
 import { AuthService } from './auth.service';
 import { LoginDto, RegisterDto, VerifyOtpDto, ResendOtpDto, ForgotPasswordDto, VerifyResetOtpDto, ResetPasswordDto } from './dto/auth.dto';
@@ -6,20 +6,25 @@ import { JwtAuthGuard } from './jwt-auth.guard';
 
 @Controller('auth')
 export class AuthController {
+  private readonly logger = new Logger(AuthController.name);
+
   constructor(private authService: AuthService) {}
 
   @Post('register')
   async register(@Body() registerDto: RegisterDto) {
+    this.logger.log(`Register request: ${JSON.stringify({ email: registerDto.email })}`);
     return await this.authService.register(registerDto);
   }
 
   @Post('verify-otp')
   async verifyOtp(@Body() verifyOtpDto: VerifyOtpDto) {
+    this.logger.log(`Verify OTP request: ${JSON.stringify(verifyOtpDto)}`);
     return await this.authService.verifyOtp(verifyOtpDto);
   }
 
   @Post('resend-otp')
   async resendOtp(@Body() resendOtpDto: ResendOtpDto) {
+    this.logger.log(`Resend OTP request: ${JSON.stringify(resendOtpDto)}`);
     return await this.authService.resendOtp(resendOtpDto);
   }
 
