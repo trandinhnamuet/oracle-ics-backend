@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException, ConflictException, BadRequestException } from '@nestjs/common';
+import { Injectable, UnauthorizedException, ConflictException, BadRequestException, Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -9,6 +9,8 @@ import { EmailService } from '../modules/email/email.service';
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     @InjectRepository(User)
     private userRepository: Repository<User>,
@@ -18,10 +20,12 @@ export class AuthService {
 
   async register(registerDto: RegisterDto) {
     const { email, password, firstName, lastName } = registerDto;
+    this.logger.log(`Registration attempt for email: ${email}`);
 
     // Check if user already exists
     const existingUser = await this.userRepository.findOne({ where: { email } });
     if (existingUser) {
+      this.logger.warn(`Registration failed: User already exists - ${email}`);
       throw new ConflictException('User with this email already exists');
     }
 
@@ -32,6 +36,8 @@ export class AuthService {
     const otp = this.generateOtp();
     const otpExpiresAt = new Date();
     otpExpiresAt.setMinutes(otpExpiresAt.getMinutes() + 10); // OTP valid for 10 minutes
+
+    this.logger.log(`Generated OTP for ${email}: ${otp}, expires at: ${otpExpiresAt.toISOString()}`);
 
     // Create user with isActive = false
     const user = this.userRepository.create({
@@ -45,14 +51,21 @@ export class AuthService {
     });
 
     await this.userRepository.save(user);
+    this.logger.log(`User created successfully: ${email}, isActive: ${user.isActive}`);
 
     // Send OTP email
-    await this.emailService.sendEmailVerification({
-      to: email,
-      userName: `${firstName} ${lastName}`,
-      verificationCode: otp,
-      expirationMinutes: 10,
-    });
+    try {
+      await this.emailService.sendEmailVerification({
+        to: email,
+        userName: `${firstName} ${lastName}`,
+        verificationCode: otp,
+        expirationMinutes: 10,
+      });
+      this.logger.log(`OTP email sent successfully to ${email}`);
+    } catch (error) {
+      this.logger.error(`Failed to send OTP email to ${email}:`, error);
+      throw error;
+    }
 
     return {
       message: 'Registration successful. Please check your email for OTP verification.',
@@ -63,25 +76,32 @@ export class AuthService {
 
   async verifyOtp(verifyOtpDto: VerifyOtpDto) {
     const { email, otp } = verifyOtpDto;
+    this.logger.log(`OTP verification attempt for email: ${email}, otp: ${otp}`);
 
     // Find user
     const user = await this.userRepository.findOne({ where: { email } });
     if (!user) {
+      this.logger.warn(`OTP verification failed: User not found - ${email}`);
       throw new BadRequestException('User not found');
     }
 
+    this.logger.log(`User found: ${email}, isActive: ${user.isActive}, stored OTP: ${user.emailVerificationOtp}, expires: ${user.otpExpiresAt}`);
+
     // Check if already active
     if (user.isActive) {
+      this.logger.warn(`OTP verification failed: Email already verified - ${email}`);
       throw new BadRequestException('Email already verified');
     }
 
     // Check OTP
     if (!user.emailVerificationOtp || user.emailVerificationOtp !== otp) {
+      this.logger.warn(`OTP verification failed: Invalid OTP for ${email}. Expected: ${user.emailVerificationOtp}, Received: ${otp}`);
       throw new BadRequestException('Invalid OTP');
     }
 
     // Check OTP expiration
     if (!user.otpExpiresAt || new Date() > user.otpExpiresAt) {
+      this.logger.warn(`OTP verification failed: OTP expired for ${email}. Expiry: ${user.otpExpiresAt}, Current: ${new Date()}`);
       throw new BadRequestException('OTP has expired');
     }
 
@@ -90,6 +110,7 @@ export class AuthService {
     user.emailVerificationOtp = undefined;
     user.otpExpiresAt = undefined;
     await this.userRepository.save(user);
+    this.logger.log(`User activated successfully: ${email}`);
 
     return {
       message: 'Email verified successfully. You can now login.',
@@ -106,15 +127,17 @@ export class AuthService {
 
   async resendOtp(resendOtpDto: ResendOtpDto) {
     const { email } = resendOtpDto;
-
+    this.logger.log(`Resend OTP request for email: ${email}`);
     // Find user
     const user = await this.userRepository.findOne({ where: { email } });
     if (!user) {
+      this.logger.warn(`Resend OTP failed: User not found - ${email}`);
       throw new BadRequestException('User not found');
     }
 
     // Check if already active
     if (user.isActive) {
+      this.logger.warn(`Resend OTP failed: Email already verified - ${email}`);
       throw new BadRequestException('Email already verified');
     }
 
@@ -123,17 +146,25 @@ export class AuthService {
     const otpExpiresAt = new Date();
     otpExpiresAt.setMinutes(otpExpiresAt.getMinutes() + 10);
 
+    this.logger.log(`Generated new OTP for ${email}: ${otp}, expires at: ${otpExpiresAt.toISOString()}`);
+
     user.emailVerificationOtp = otp;
     user.otpExpiresAt = otpExpiresAt;
     await this.userRepository.save(user);
 
     // Send OTP email
-    await this.emailService.sendEmailVerification({
-      to: email,
-      userName: `${user.firstName} ${user.lastName}`,
-      verificationCode: otp,
-      expirationMinutes: 10,
-    });
+    try {
+      await this.emailService.sendEmailVerification({
+        to: email,
+        userName: `${user.firstName} ${user.lastName}`,
+        verificationCode: otp,
+        expirationMinutes: 10,
+      });
+      this.logger.log(`Resend OTP email sent successfully to ${email}`);
+    } catch (error) {
+      this.logger.error(`Failed to resend OTP email to ${email}:`, error);
+      throw error;
+    }
 
     return {
       message: 'OTP has been resent to your email',
