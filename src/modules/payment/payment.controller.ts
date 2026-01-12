@@ -35,6 +35,13 @@ export class PaymentController {
     return await this.paymentService.findAll();
   }
 
+  @Get('admin/all')
+  @UseGuards(JwtAuthGuard)
+  async getAllPaymentsForAdmin(@Request() req) {
+    // TODO: Add admin role check if needed
+    return await this.paymentService.findAll();
+  }
+
   @Get('my-payments')
   @UseGuards(JwtAuthGuard)
   async findMyPayments(@Request() req) {
@@ -69,5 +76,12 @@ export class PaymentController {
       body.transactionCode,
       body.amount,
     );
+  }
+
+  @Post('admin/:id/accept')
+  @UseGuards(JwtAuthGuard)
+  async acceptPayment(@Param('id') id: string, @Request() req) {
+    // TODO: Add admin role check if needed
+    return await this.paymentService.acceptPayment(id);
   }
 }
