@@ -163,4 +163,24 @@ export class PaymentService {
     const matches = content.match(/PAY_\d+_[a-f0-9]{8}/);
     return matches ? matches[0] : null;
   }
+
+  // Admin manually accept a pending payment
+  async acceptPayment(id: string): Promise<Payment> {
+    const payment = await this.findOne(id);
+
+    if (payment.status !== 'pending') {
+      throw new Error(`Cannot accept payment with status: ${payment.status}`);
+    }
+
+    // Update payment status to success
+    payment.status = 'success';
+    await this.paymentRepository.save(payment);
+
+    // If payment type is deposit, update user wallet
+    if (payment.payment_type === 'deposit') {
+      await this.updateUserWallet(payment);
+    }
+
+    return payment;
+  }
 }
