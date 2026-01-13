@@ -96,13 +96,23 @@ export class PaymentService {
       throw new Error(`Payment amount mismatch. Expected: ${payment.amount}, Received: ${amount}`);
     }
 
+    return await this.completePayment(payment);
+  }
+
+  // Complete payment and update wallet if needed
+  private async completePayment(payment: Payment): Promise<Payment> {
+    // Check if already completed
+    if (payment.status === 'success') {
+      return payment;
+    }
+
     // Update payment status
     payment.status = 'success';
     await this.paymentRepository.save(payment);
 
     // If payment type is deposit, update user wallet
     if (payment.payment_type === 'deposit') {
-      await this.updateUserWallet(payment);
+      
     }
 
     return payment;
@@ -172,15 +182,7 @@ export class PaymentService {
       throw new Error(`Cannot accept payment with status: ${payment.status}`);
     }
 
-    // Update payment status to success
-    payment.status = 'success';
-    await this.paymentRepository.save(payment);
-
-    // If payment type is deposit, update user wallet
-    if (payment.payment_type === 'deposit') {
-      await this.updateUserWallet(payment);
-    }
-
-    return payment;
+    // Use the same logic as successful payment processing
+    return await this.completePayment(payment);
   }
 }
