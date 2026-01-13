@@ -4,6 +4,7 @@ import { Repository } from 'typeorm';
 import { Payment } from '../../entities/payment.entity';
 import { UserWallet } from '../../entities/user-wallet.entity';
 import { WalletTransaction } from '../../entities/wallet-transaction.entity';
+import { Subscription } from '../../entities/subscription.entity';
 import { CreatePaymentDto } from './dto/create-payment.dto';
 import { UpdatePaymentDto } from './dto/update-payment.dto';
 import { v4 as uuidv4 } from 'uuid';
@@ -17,6 +18,8 @@ export class PaymentService {
     private userWalletRepository: Repository<UserWallet>,
     @InjectRepository(WalletTransaction)
     private walletTransactionRepository: Repository<WalletTransaction>,
+    @InjectRepository(Subscription)
+    private subscriptionRepository: Repository<Subscription>,
   ) {}
 
   async create(createPaymentDto: CreatePaymentDto): Promise<Payment> {
@@ -110,30 +113,58 @@ export class PaymentService {
     payment.status = 'success';
     await this.paymentRepository.save(payment);
 
-    // If payment type is deposit, update user wallet
+    // update user wallet balance if type is deposit
     if (payment.payment_type === 'deposit') {
-      
+      await this.updateUserWallet(payment);
+    }
+
+    // if payment type is subscription, change status of subscription to active
+    if (payment.payment_type === 'subscription' && payment.subscription_id) {
+      await this.activateSubscription(payment.subscription_id);
     }
 
     return payment;
   }
 
+  private async activateSubscription(subscriptionId: string): Promise<void> {
+    console.log(`[PaymentService][activateSubscription] activating subscription id=${subscriptionId}`);
+    const subscription = await this.subscriptionRepository.findOne({
+      where: { id: subscriptionId },
+    });
+
+    if (!subscription) {
+      console.warn(`[PaymentService][activateSubscription] subscription not found id=${subscriptionId}`);
+      throw new NotFoundException(`Subscription with ID ${subscriptionId} not found`);
+    }
+
+    subscription.status = 'active';
+    await this.subscriptionRepository.save(subscription);
+    console.log(`[PaymentService][activateSubscription] subscription activated id=${subscriptionId}`);
+  }
+
   private async updateUserWallet(payment: Payment): Promise<void> {
+    console.log(`[PaymentService][updateUserWallet] start paymentId=${payment.id} user_id=${payment.user_id} amount=${payment.amount}`);
     // Find user wallet
     const userWallet = await this.userWalletRepository.findOne({
       where: { user_id: payment.user_id },
     });
 
+    console.log(`[PaymentService][updateUserWallet] findOne returned ${userWallet ? 'wallet id=' + userWallet.id : 'null'}`);
+
     if (!userWallet) {
       throw new NotFoundException(`User wallet for user ${payment.user_id} not found`);
     }
 
-    const balanceBefore = userWallet.balance;
-    const balanceAfter = balanceBefore + payment.amount;
+    const balanceBefore = Number(userWallet.balance);
+    const paymentAmountNum = Number(payment.amount);
+    console.log(`[PaymentService][updateUserWallet] calculating: balanceBefore(${typeof balanceBefore})=${balanceBefore} + paymentAmount(${typeof paymentAmountNum})=${paymentAmountNum}`);
+    const balanceAfter = balanceBefore + paymentAmountNum;
+    console.log(`[PaymentService][updateUserWallet] balanceAfter=${balanceAfter}`);
 
     // Update wallet balance
     userWallet.balance = balanceAfter;
-    await this.userWalletRepository.save(userWallet);
+    const savedWallet = await this.userWalletRepository.save(userWallet);
+    console.log(`[PaymentService][updateUserWallet] userWallet saved id=${savedWallet.id} balanceBefore=${balanceBefore} paymentAmount=${paymentAmountNum} balanceAfter=${balanceAfter} savedBalance=${savedWallet.balance}`);
 
     // Create wallet transaction record
     const walletTransaction = this.walletTransactionRepository.create({
@@ -144,7 +175,8 @@ export class PaymentService {
       type: 'deposit',
     });
 
-    await this.walletTransactionRepository.save(walletTransaction);
+    const savedTx = await this.walletTransactionRepository.save(walletTransaction);
+    console.log(`[PaymentService][updateUserWallet] walletTransaction saved id=${savedTx.id} wallet_id=${savedTx.wallet_id} change_amount=${savedTx.change_amount}`);
   }
 
   async handleSepayCallback(data: any): Promise<any> {
@@ -183,6 +215,7 @@ export class PaymentService {
     }
 
     // Use the same logic as successful payment processing
+    // This will handle both deposit (update wallet) and subscription (activate subscription) payments
     return await this.completePayment(payment);
   }
 }
