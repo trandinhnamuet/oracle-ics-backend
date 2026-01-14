@@ -70,15 +70,26 @@ export class SubscriptionService {
     // Get user wallet (sử dụng UserWalletService để auto-create nếu cần)
     const userWallet = await this.userWalletService.findByUserId(userId);
 
-    // Check balance
-    if (userWallet.balance < cloudPackage.cost_vnd) {
+    // Check balance - Convert to number for accurate comparison
+    const currentBalance = parseFloat(userWallet.balance.toString());
+    const packageCost = parseFloat(cloudPackage.cost_vnd.toString());
+    
+    console.log('[SubscriptionService][createWithAccountBalance] Balance check:', {
+      userId,
+      cloudPackageId,
+      currentBalance,
+      packageCost,
+      sufficient: currentBalance >= packageCost
+    });
+
+    if (currentBalance < packageCost) {
       throw new BadRequestException('Insufficient balance');
     }
 
     // Deduct balance using UserWalletService
-    const balanceBefore = userWallet.balance;
-    const balanceAfter = balanceBefore - cloudPackage.cost_vnd;
-    await this.userWalletService.deductBalance(userId, cloudPackage.cost_vnd);
+    const balanceBefore = currentBalance;
+    const balanceAfter = balanceBefore - packageCost;
+    await this.userWalletService.deductBalance(userId, packageCost);
 
     // Create wallet transaction với cấu trúc mới
     const paymentId = crypto.randomUUID();
@@ -86,7 +97,7 @@ export class SubscriptionService {
     const walletTransaction = this.walletTransactionRepository.create({
       wallet_id: userWallet.id,
       payment_id: paymentId,
-      change_amount: -cloudPackage.cost_vnd, // Negative for debit
+      change_amount: -packageCost, // Negative for debit
       balance_after: balanceAfter,
       type: 'subscription_payment',
     });
@@ -105,7 +116,7 @@ export class SubscriptionService {
       end_date: endDate,
       status: 'active',
       auto_renew: autoRenew,
-      amount_paid: cloudPackage.cost_vnd,
+      amount_paid: packageCost,
       months_paid: 1,
     });
 
@@ -316,7 +327,11 @@ export class SubscriptionService {
       // Get user wallet (sử dụng UserWalletService để auto-create nếu cần)
       const userWallet = await this.userWalletService.findByUserId(subscription.user_id);
 
-      if (userWallet.balance < subscription.cloudPackage.cost_vnd) {
+      // Convert to number for accurate comparison
+      const currentBalance = parseFloat(userWallet.balance.toString());
+      const packageCost = parseFloat(subscription.cloudPackage.cost_vnd.toString());
+
+      if (currentBalance < packageCost) {
         // Insufficient balance, expire subscription
         subscription.status = 'expired';
         await this.subscriptionRepository.save(subscription);
@@ -324,16 +339,16 @@ export class SubscriptionService {
       }
 
       // Deduct balance using UserWalletService
-      const balanceBefore = userWallet.balance;
-      const balanceAfter = balanceBefore - subscription.cloudPackage.cost_vnd;
-      await this.userWalletService.deductBalance(subscription.user_id, subscription.cloudPackage.cost_vnd);
+      const balanceBefore = currentBalance;
+      const balanceAfter = balanceBefore - packageCost;
+      await this.userWalletService.deductBalance(subscription.user_id, packageCost);
 
       // Create wallet transaction với cấu trúc mới
       const renewalPaymentId = crypto.randomUUID();
       const walletTransaction = this.walletTransactionRepository.create({
         wallet_id: userWallet.id,
         payment_id: renewalPaymentId,
-        change_amount: -subscription.cloudPackage.cost_vnd, // Negative for debit
+        change_amount: -packageCost, // Negative for debit
         balance_after: balanceAfter,
         type: 'auto_renewal',
       });
