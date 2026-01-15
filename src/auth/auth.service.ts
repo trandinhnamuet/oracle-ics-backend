@@ -1,11 +1,19 @@
 import { Injectable, UnauthorizedException, ConflictException, BadRequestException, Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, LessThan } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
 import { User } from '../entities/user.entity';
+import { UserSession } from './user-session.entity';
 import { LoginDto, RegisterDto, VerifyOtpDto, ResendOtpDto, ForgotPasswordDto, VerifyResetOtpDto, ResetPasswordDto } from './dto/auth.dto';
 import { EmailService } from '../modules/email/email.service';
+
+interface JwtPayload {
+  sub: string;
+  email: string;
+  role: string;
+}
 
 @Injectable()
 export class AuthService {
@@ -14,7 +22,10 @@ export class AuthService {
   constructor(
     @InjectRepository(User)
     private userRepository: Repository<User>,
+    @InjectRepository(UserSession)
+    private readonly sessionRepository: Repository<UserSession>,
     private jwtService: JwtService,
+    private readonly configService: ConfigService,
     private emailService: EmailService,
   ) {}
 
@@ -176,7 +187,99 @@ export class AuthService {
     return Math.floor(100000 + Math.random() * 900000).toString();
   }
 
-  async login(loginDto: LoginDto) {
+  // ==================== SESSION MANAGEMENT ====================
+
+  async hashRefreshToken(refreshToken: string): Promise<string> {
+    return bcrypt.hash(refreshToken, 12);
+  }
+
+  async validateRefreshToken(
+    plainToken: string,
+    hashedToken: string,
+  ): Promise<boolean> {
+    return bcrypt.compare(plainToken, hashedToken);
+  }
+
+  async createSession(
+    userId: string,
+    refreshToken: string,
+    userAgent: string,
+    ipAddress: string,
+  ): Promise<UserSession> {
+    const refreshTokenHash = await this.hashRefreshToken(refreshToken);
+
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + 30); // 30 days
+
+    const session = this.sessionRepository.create({
+      userId,
+      refreshTokenHash,
+      userAgent,
+      ipAddress,
+      expiresAt,
+    });
+
+    return this.sessionRepository.save(session);
+  }
+
+  async findSessionByToken(
+    userId: string,
+    refreshToken: string,
+  ): Promise<UserSession | null> {
+    const sessions = await this.sessionRepository.find({
+      where: { userId },
+    });
+
+    for (const session of sessions) {
+      const isValid = await this.validateRefreshToken(
+        refreshToken,
+        session.refreshTokenHash,
+      );
+      if (isValid) {
+        return session;
+      }
+    }
+
+    return null;
+  }
+
+  async deleteSession(sessionId: string): Promise<void> {
+    await this.sessionRepository.delete(sessionId);
+  }
+
+  async deleteAllUserSessions(userId: string): Promise<void> {
+    await this.sessionRepository.delete({ userId });
+  }
+
+  async cleanupExpiredSessions(): Promise<void> {
+    await this.sessionRepository.delete({
+      expiresAt: LessThan(new Date()),
+    });
+  }
+
+  generateTokens(user: User): {
+    accessToken: string;
+    refreshToken: string;
+  } {
+    const payload: JwtPayload = {
+      sub: user.id.toString(),
+      email: user.email,
+      role: user.role || 'customer',
+    };
+
+    const accessToken = this.jwtService.sign(payload, {
+      expiresIn: '10s',
+    });
+
+    const refreshToken = this.jwtService.sign(payload, {
+      secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
+      expiresIn: '30d',
+    });
+
+    return { accessToken, refreshToken };
+  }
+
+  async login(loginDto: LoginDto, userAgent: string, ipAddress: string) {
     const { email, password } = loginDto;
 
     // Find user
@@ -196,21 +299,18 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials');
     }
 
-    // Generate JWT token
-    const payload = { 
-      sub: user.id, 
-      email: user.email,
-      role: user.role || 'customer',
-      firstName: user.firstName,
-      lastName: user.lastName
-    };
-    const token = this.jwtService.sign(payload);
+    // Generate JWT tokens
+    const { accessToken, refreshToken } = this.generateTokens(user);
 
-    // Trả về đầy đủ các trường user (trừ password)
-    const { password: _pw, ...userWithoutPassword } = user;
+    // Create session
+    await this.createSession(user.id.toString(), refreshToken, userAgent, ipAddress);
+
+    // Return user info without sensitive data
+    const { password: _pw, refreshToken: _rt, ...userWithoutSensitive } = user;
     return {
-      access_token: token,
-      user: userWithoutPassword,
+      accessToken,
+      refreshToken,
+      user: userWithoutSensitive,
     };
   }
 
@@ -220,6 +320,65 @@ export class AuthService {
       throw new UnauthorizedException('User not found');
     }
     return user;
+  }
+
+  async refresh(
+    refreshToken: string,
+    userAgent: string,
+    ipAddress: string,
+  ): Promise<{ accessToken: string; refreshToken: string }> {
+    let payload: JwtPayload;
+    try {
+      payload = this.jwtService.verify<JwtPayload>(refreshToken, {
+        secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
+      });
+    } catch {
+      throw new UnauthorizedException('Invalid refresh token');
+    }
+
+    const session = await this.findSessionByToken(payload.sub, refreshToken);
+    if (!session) {
+      throw new UnauthorizedException('Session not found');
+    }
+
+    if (new Date() > session.expiresAt) {
+      await this.deleteSession(session.id);
+      throw new UnauthorizedException('Session expired');
+    }
+
+    const user = await this.userRepository.findOne({ 
+      where: { id: parseInt(payload.sub) } 
+    });
+    if (!user) {
+      throw new UnauthorizedException('User not found');
+    }
+
+    // Token rotation: delete old session
+    await this.deleteSession(session.id);
+
+    // Generate new tokens
+    const tokens = this.generateTokens(user);
+
+    // Create new session
+    await this.createSession(
+      user.id.toString(),
+      tokens.refreshToken,
+      userAgent,
+      ipAddress,
+    );
+
+    return tokens;
+  }
+
+  async logout(userId: string, refreshToken: string): Promise<void> {
+    const session = await this.findSessionByToken(userId, refreshToken);
+    if (session) {
+      await this.deleteSession(session.id);
+    }
+  }
+
+  async logoutAll(userId: string): Promise<void> {
+    await this.deleteAllUserSessions(userId);
   }
 
   /**
