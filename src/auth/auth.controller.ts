@@ -1,6 +1,7 @@
-import { Controller, Post, Body, Res, UseGuards, Get, Req, Logger } from '@nestjs/common';
+import { Controller, Post, Body, Res, UseGuards, Get, Req, Logger, UnauthorizedException, HttpCode, HttpStatus } from '@nestjs/common';
 import { Response, Request } from 'express';
 import { AuthService } from './auth.service';
+import { ConfigService } from '@nestjs/config';
 import { LoginDto, RegisterDto, VerifyOtpDto, ResendOtpDto, ForgotPasswordDto, VerifyResetOtpDto, ResetPasswordDto } from './dto/auth.dto';
 import { JwtAuthGuard } from './jwt-auth.guard';
 
@@ -8,7 +9,20 @@ import { JwtAuthGuard } from './jwt-auth.guard';
 export class AuthController {
   private readonly logger = new Logger(AuthController.name);
 
-  constructor(private authService: AuthService) {}
+  constructor(
+    private authService: AuthService,
+    private readonly configService: ConfigService,
+  ) {}
+
+  private getCookieOptions(maxAge?: number) {
+    return {
+      httpOnly: true,
+      secure: this.configService.get('NODE_ENV') === 'production',
+      sameSite: 'strict' as const,
+      maxAge: maxAge || 30 * 24 * 60 * 60 * 1000, // 30 days
+      path: '/',
+    };
+  }
 
   @Post('register')
   async register(@Body() registerDto: RegisterDto) {
@@ -44,28 +58,113 @@ export class AuthController {
   }
 
   @Post('login')
-  async login(@Body() loginDto: LoginDto, @Res({ passthrough: true }) response: Response) {
-    const result = await this.authService.login(loginDto);
-    
-    // Set JWT token in HTTP-only cookie
-    response.cookie('access_token', result.access_token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: 24 * 60 * 60 * 1000, // 24 hours - khớp với JWT expiry
-    });
+  @HttpCode(HttpStatus.OK)
+  async login(
+    @Body() loginDto: LoginDto, 
+    @Req() req: Request,
+    @Res({ passthrough: true }) response: Response
+  ) {
+    const userAgent = req.headers['user-agent'] || '';
+    const ipAddress =
+      (req.headers['x-forwarded-for'] as string) ||
+      req.socket.remoteAddress ||
+      '';
 
-    return { user: result.user };
+    const result = await this.authService.login(loginDto, userAgent, ipAddress);
+    
+    // Set refresh token as httpOnly cookie
+    response.cookie('refreshToken', result.refreshToken, this.getCookieOptions());
+
+    return {
+      accessToken: result.accessToken,
+      user: result.user,
+    };
+  }
+
+  @Post('refresh')
+  @HttpCode(HttpStatus.OK)
+  async refresh(
+    @Req() req: Request,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const refreshToken = req.cookies?.refreshToken as string | undefined;
+    if (!refreshToken) {
+      throw new UnauthorizedException('Refresh token not found');
+    }
+
+    const userAgent = req.headers['user-agent'] || '';
+    const ipAddress =
+      (req.headers['x-forwarded-for'] as string) ||
+      req.socket.remoteAddress ||
+      '';
+
+    const tokens = await this.authService.refresh(
+      refreshToken,
+      userAgent,
+      ipAddress,
+    );
+
+    // Set new refresh token as httpOnly cookie (token rotation)
+    response.cookie('refreshToken', tokens.refreshToken, this.getCookieOptions());
+
+    return {
+      accessToken: tokens.accessToken,
+    };
   }
 
   @Post('logout')
-  async logout(@Res({ passthrough: true }) response: Response) {
-    response.clearCookie('access_token');
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async logout(@Req() req: Request, @Res({ passthrough: true }) response: Response) {
+    const refreshToken = req.cookies?.refreshToken as string | undefined;
+    const userId = (req.user as any)?.sub as string;
+
+    if (refreshToken) {
+      await this.authService.logout(userId, refreshToken);
+    }
+
+    // Clear refresh token cookie
+    response.clearCookie('refreshToken', {
+      httpOnly: true,
+      secure: this.configService.get('NODE_ENV') === 'production',
+      sameSite: 'strict',
+      path: '/',
+    });
+
     return { message: 'Logged out successfully' };
   }
 
+  @Post('logout-all')
   @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async logoutAll(
+    @Req() req: Request,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const userId = (req.user as any)?.sub as string;
+
+    await this.authService.logoutAll(userId);
+
+    // Clear refresh token cookie
+    response.clearCookie('refreshToken', {
+      httpOnly: true,
+      secure: this.configService.get('NODE_ENV') === 'production',
+      sameSite: 'strict',
+      path: '/',
+    });
+
+    return { message: 'Logged out from all devices successfully' };
+  }
+
+  @Post('me')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  getCurrentUser(@Req() req: Request) {
+    return { user: req.user };
+  }
+
   @Get('profile')
+  @UseGuards(JwtAuthGuard)
   getProfile(@Req() req: Request) {
     return req.user;
   }
