@@ -42,6 +42,12 @@ export class User {
   @Column({ name: 'password_reset_otp_expires_at', type: 'timestamp', nullable: true })
   passwordResetOtpExpiresAt?: Date;
 
+  @Column({ name: 'refresh_token', length: 500, nullable: true })
+  refreshToken?: string;
+
+  @Column({ name: 'refresh_token_expires_at', type: 'timestamp', nullable: true })
+  refreshTokenExpiresAt?: Date;
+
   @Column({ name: 'avatar_url', length: 500, nullable: true })
   avatarUrl?: string;
 
