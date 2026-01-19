@@ -65,12 +65,9 @@ export class AuthController {
     @Res({ passthrough: true }) response: Response
   ) {
     const userAgent = req.headers['user-agent'] || '';
-    const ipAddress =
-      (req.headers['x-forwarded-for'] as string) ||
-      req.socket.remoteAddress ||
-      '';
-
-    const result = await this.authService.login(loginDto, userAgent, ipAddress);
+    
+    // Extract real IP from proxy headers
+    const result = await this.authService.login(loginDto, userAgent, req);
     
     // Set refresh token as httpOnly cookie
     response.cookie('refreshToken', result.refreshToken, this.getCookieOptions());
@@ -93,15 +90,11 @@ export class AuthController {
     }
 
     const userAgent = req.headers['user-agent'] || '';
-    const ipAddress =
-      (req.headers['x-forwarded-for'] as string) ||
-      req.socket.remoteAddress ||
-      '';
 
     const tokens = await this.authService.refresh(
       refreshToken,
       userAgent,
-      ipAddress,
+      req,
     );
 
     // Set new refresh token as httpOnly cookie (token rotation)
