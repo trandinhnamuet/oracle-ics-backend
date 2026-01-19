@@ -14,6 +14,10 @@ async function bootstrap() {
 
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
 
+  // Trust proxy - CRITICAL for getting real IP behind nginx/load balancer
+  // This tells Express to trust the X-Forwarded-* headers
+  app.set('trust proxy', true);
+
   // Serve static files from uploads directory
   app.useStaticAssets(join(__dirname, '..', 'uploads'), {
     prefix: '/uploads/',
