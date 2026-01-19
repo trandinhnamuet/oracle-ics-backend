@@ -91,8 +91,10 @@ export class AuthService {
   }
 
   async verifyOtp(verifyOtpDto: VerifyOtpDto) {
-    const { email, otp } = verifyOtpDto;
-    this.logger.log(`OTP verification attempt for email: ${email}, otp: ${otp}`);
+    const { email, otp, ipv4: ipv4Raw, ipv6: ipv6Raw } = verifyOtpDto;
+    const ipv4 = ipv4Raw || null;
+    const ipv6 = ipv6Raw || null;
+    this.logger.log(`OTP verification attempt for email: ${email}, otp: ${otp}, ipv4: ${ipv4}, ipv6: ${ipv6}`);
 
     // Find user
     const user = await this.userRepository.findOne({ where: { email } });
@@ -127,6 +129,37 @@ export class AuthService {
     user.otpExpiresAt = undefined;
     await this.userRepository.save(user);
     this.logger.log(`User activated successfully: ${email}`);
+
+    // Record OTP verification in login history (for admin users only)
+    if (user.role === 'admin') {
+      try {
+        const geo = GeolocationUtil.getLocationFromIP(ipv4 || ipv6);
+        await this.adminLoginHistoryService.recordLogin({
+          adminId: user.id,
+          username: user.email,
+          role: user.role,
+          loginTime: new Date(),
+          loginStatus: 'success',
+          ipV4: ipv4,
+          ipV6: ipv6,
+          country: geo.country,
+          city: geo.city,
+          isp: null,
+          browser: 'Unknown',
+          os: 'Unknown',
+          deviceType: 'unknown',
+          userAgent: null,
+          twoFaStatus: 'not_enabled',
+          sessionId: this.generateSessionId(),
+          isNewDevice: false,
+          failedAttemptsBeforeSuccess: 0,
+        });
+        this.logger.log(`Recorded OTP verification for admin ${email}: IP ${ipv4 || ipv6}`);
+      } catch (error) {
+        this.logger.error('Failed to record OTP verification in login history', error);
+        // Don't throw error - verification should succeed even if history recording fails
+      }
+    }
 
     return {
       message: 'Email verified successfully. You can now login.',
@@ -401,10 +434,22 @@ export class AuthService {
   }
 
   async login(loginDto: LoginDto, userAgent: string, request: any) {
-    const { email, password } = loginDto;
+    const { email, password, ipv4: ipv4Raw, ipv6: ipv6Raw } = loginDto;
+    const ipv4Frontend = ipv4Raw || null;
+    const ipv6Frontend = ipv6Raw || null;
 
-    // Extract real IP from request
-    const { ipV4, ipV6 } = this.extractIpAddress(request);
+    // Use IP from frontend (ipify.org - public IP) if provided, otherwise extract from request headers
+    let ipV4: string | null = ipv4Frontend;
+    let ipV6: string | null = ipv6Frontend;
+    
+    if (!ipV4 && !ipV6) {
+      // Fallback to extracting from request headers
+      const extracted = this.extractIpAddress(request);
+      ipV4 = extracted.ipV4;
+      ipV6 = extracted.ipV6;
+    }
+
+    this.logger.debug(`Login attempt - Email: ${email}, IPv4: ${ipV4}, IPv6: ${ipV6}, Source: ${ipv4Frontend ? 'frontend' : 'headers'}`);
 
     // Find user
     const user = await this.userRepository.findOne({ where: { email } });
