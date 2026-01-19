@@ -10,11 +10,14 @@ import { User } from '../entities/user.entity';
 import { UserSession } from './user-session.entity';
 import { SessionCleanupService } from './session-cleanup.service';
 import { EmailModule } from '../modules/email/email.module';
+import { AdminLoginHistory } from '../entities/admin-login-history.entity';
+import { AdminLoginHistoryService } from './admin-login-history.service';
+import { AdminLoginHistoryController } from './admin-login-history.controller';
 
 @Module({
   imports: [
     ConfigModule,
-    TypeOrmModule.forFeature([User, UserSession]),
+    TypeOrmModule.forFeature([User, UserSession, AdminLoginHistory]),
     PassportModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
@@ -26,8 +29,8 @@ import { EmailModule } from '../modules/email/email.module';
     }),
     EmailModule,
   ],
-  providers: [AuthService, JwtStrategy, SessionCleanupService],
-  controllers: [AuthController],
-  exports: [AuthService],
+  providers: [AuthService, JwtStrategy, SessionCleanupService, AdminLoginHistoryService],
+  controllers: [AuthController, AdminLoginHistoryController],
+  exports: [AuthService, AdminLoginHistoryService],
 })
 export class AuthModule {}
