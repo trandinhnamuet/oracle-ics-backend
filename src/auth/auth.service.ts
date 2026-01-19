@@ -4,10 +4,13 @@ import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, LessThan } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
+import { UAParser } from 'ua-parser-js';
 import { User } from '../entities/user.entity';
 import { UserSession } from './user-session.entity';
 import { LoginDto, RegisterDto, VerifyOtpDto, ResendOtpDto, ForgotPasswordDto, VerifyResetOtpDto, ResetPasswordDto } from './dto/auth.dto';
 import { EmailService } from '../modules/email/email.service';
+import { AdminLoginHistoryService } from './admin-login-history.service';
+import { CreateAdminLoginHistoryDto } from './dto/admin-login-history.dto';
 
 interface JwtPayload {
   sub: string;
@@ -27,6 +30,7 @@ export class AuthService {
     private jwtService: JwtService,
     private readonly configService: ConfigService,
     private emailService: EmailService,
+    private adminLoginHistoryService: AdminLoginHistoryService,
   ) {}
 
   async register(registerDto: RegisterDto) {
@@ -187,6 +191,79 @@ export class AuthService {
     return Math.floor(100000 + Math.random() * 900000).toString();
   }
 
+  // ==================== CLIENT INFO EXTRACTION ====================
+
+  private parseUserAgent(userAgentString: string): {
+    browser: string;
+    os: string;
+    deviceType: 'desktop' | 'mobile' | 'tablet' | 'unknown';
+  } {
+    try {
+      const parser = new UAParser(userAgentString);
+      const result = parser.getResult();
+
+      const browser = `${result.browser.name || 'Unknown'} ${result.browser.version || ''}`.trim();
+      const os = `${result.os.name || 'Unknown'} ${result.os.version || ''}`.trim();
+      
+      let deviceType: 'desktop' | 'mobile' | 'tablet' | 'unknown' = 'unknown';
+      if (result.device.type === 'mobile') deviceType = 'mobile';
+      else if (result.device.type === 'tablet') deviceType = 'tablet';
+      else if (!result.device.type) deviceType = 'desktop';
+
+      return { browser, os, deviceType };
+    } catch (error) {
+      this.logger.error('Error parsing user agent', error);
+      return {
+        browser: 'Unknown',
+        os: 'Unknown',
+        deviceType: 'unknown',
+      };
+    }
+  }
+
+  private extractIpAddress(request: any): { ipV4: string | null; ipV6: string | null } {
+    let ipV4: string | null = null;
+    let ipV6: string | null = null;
+
+    // Try to get IP from x-forwarded-for header (for proxies/load balancers)
+    let ip = request.headers['x-forwarded-for'] || request['x-forwarded-for'];
+    if (typeof ip === 'string') {
+      const ips = ip.split(',').map((i: string) => i.trim());
+      ip = ips[0];
+    }
+
+    // Fallback to connection remoteAddress
+    if (!ip) {
+      ip = request.connection?.remoteAddress || request.socket?.remoteAddress;
+    }
+
+    // Parse IPv4 vs IPv6
+    if (ip) {
+      if (ip.includes('.') && !ip.includes(':')) {
+        // Pure IPv4
+        ipV4 = ip;
+      } else if (ip.includes(':')) {
+        // IPv6 or IPv4-mapped IPv6
+        if (ip.includes('::ffff:')) {
+          // IPv4-mapped IPv6 like ::ffff:192.0.2.1
+          ipV4 = ip.split('::ffff:')[1];
+        } else if (ip === '::1' || ip === 'localhost') {
+          // Localhost - treat as IPv4
+          ipV4 = '127.0.0.1';
+        } else {
+          // Pure IPv6
+          ipV6 = ip;
+        }
+      }
+    }
+
+    return { ipV4, ipV6 };
+  }
+
+  private generateSessionId(): string {
+    return `sess_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  }
+
   // ==================== SESSION MANAGEMENT ====================
 
   async hashRefreshToken(refreshToken: string): Promise<string> {
@@ -284,7 +361,37 @@ export class AuthService {
 
     // Find user
     const user = await this.userRepository.findOne({ where: { email } });
+    
+    // Record failed login attempt if user not found
     if (!user) {
+      try {
+        const { ipV4, ipV6 } = this.extractIpAddress({ headers: { 'x-forwarded-for': ipAddress } });
+        const { browser, os, deviceType } = this.parseUserAgent(userAgent);
+        
+        await this.adminLoginHistoryService.recordLogin({
+          adminId: null,
+          username: email,
+          role: 'unknown',
+          loginTime: new Date(),
+          loginStatus: 'failed',
+          ipV4,
+          ipV6,
+          country: null,
+          city: null,
+          isp: null,
+          browser,
+          os,
+          deviceType,
+          userAgent,
+          twoFaStatus: 'not_enabled',
+          sessionId: this.generateSessionId(),
+          isNewDevice: false,
+          failedAttemptsBeforeSuccess: 1,
+        });
+      } catch (error) {
+        this.logger.error('Failed to record login attempt for non-existent user', error);
+      }
+
       throw new UnauthorizedException('Invalid credentials');
     }
 
@@ -296,14 +403,79 @@ export class AuthService {
     // Check password
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
+      // Record failed login
+      try {
+        const { ipV4, ipV6 } = this.extractIpAddress({ headers: { 'x-forwarded-for': ipAddress } });
+        const { browser, os, deviceType } = this.parseUserAgent(userAgent);
+        
+        await this.adminLoginHistoryService.recordLogin({
+          adminId: user.role === 'admin' ? user.id : null,
+          username: user.email,
+          role: user.role || 'customer',
+          loginTime: new Date(),
+          loginStatus: 'failed',
+          ipV4,
+          ipV6,
+          country: null,
+          city: null,
+          isp: null,
+          browser,
+          os,
+          deviceType,
+          userAgent,
+          twoFaStatus: 'not_enabled',
+          sessionId: this.generateSessionId(),
+          isNewDevice: false,
+          failedAttemptsBeforeSuccess: 1,
+        });
+      } catch (error) {
+        this.logger.error('Failed to record failed login attempt', error);
+      }
+
       throw new UnauthorizedException('Invalid credentials');
     }
+
+    // Generate session ID
+    const sessionId = this.generateSessionId();
 
     // Generate JWT tokens
     const { accessToken, refreshToken } = this.generateTokens(user);
 
     // Create session
     await this.createSession(user.id.toString(), refreshToken, userAgent, ipAddress);
+
+    // Record successful login (only for admin users)
+    if (user.role === 'admin') {
+      try {
+        const { ipV4, ipV6 } = this.extractIpAddress({ headers: { 'x-forwarded-for': ipAddress } });
+        const { browser, os, deviceType } = this.parseUserAgent(userAgent);
+        const isNewDevice = await this.adminLoginHistoryService.isNewDevice(user.id, ipV4 || ipV6 || '');
+
+        await this.adminLoginHistoryService.recordLogin({
+          adminId: user.id,
+          username: user.email,
+          role: user.role,
+          loginTime: new Date(),
+          loginStatus: 'success',
+          ipV4,
+          ipV6,
+          country: null,
+          city: null,
+          isp: null,
+          browser,
+          os,
+          deviceType,
+          userAgent,
+          twoFaStatus: 'not_enabled',
+          sessionId,
+          isNewDevice,
+          failedAttemptsBeforeSuccess: 0,
+        });
+      } catch (error) {
+        this.logger.error('Failed to record successful login', error);
+        // Don't throw error - login should succeed even if history recording fails
+      }
+    }
 
     // Return user info without sensitive data
     const { password: _pw, refreshToken: _rt, ...userWithoutSensitive } = user;
@@ -374,6 +546,21 @@ export class AuthService {
     const session = await this.findSessionByToken(userId, refreshToken);
     if (session) {
       await this.deleteSession(session.id);
+
+      // Record logout in login history (for admin users)
+      try {
+        const user = await this.userRepository.findOne({ where: { id: parseInt(userId) } });
+        if (user && user.role === 'admin') {
+          // Find the most recent login session
+          const recentLogin = await this.adminLoginHistoryService.getRecentLogins(parseInt(userId), 1);
+          if (recentLogin && recentLogin.length > 0 && recentLogin[0].sessionId) {
+            await this.adminLoginHistoryService.recordLogout(recentLogin[0].sessionId, new Date());
+          }
+        }
+      } catch (error) {
+        this.logger.error('Failed to record logout', error);
+        // Don't throw error - logout should succeed even if history recording fails
+      }
     }
   }
 
