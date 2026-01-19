@@ -11,6 +11,7 @@ import { LoginDto, RegisterDto, VerifyOtpDto, ResendOtpDto, ForgotPasswordDto, V
 import { EmailService } from '../modules/email/email.service';
 import { AdminLoginHistoryService } from './admin-login-history.service';
 import { CreateAdminLoginHistoryDto } from './dto/admin-login-history.dto';
+import { GeolocationUtil } from '../utils/geolocation.util';
 
 interface JwtPayload {
   sub: string;
@@ -224,38 +225,63 @@ export class AuthService {
   private extractIpAddress(request: any): { ipV4: string | null; ipV6: string | null } {
     let ipV4: string | null = null;
     let ipV6: string | null = null;
+    let ip: string | null = null;
 
-    // Try to get IP from x-forwarded-for header (for proxies/load balancers)
-    let ip = request.headers['x-forwarded-for'] || request['x-forwarded-for'];
-    if (typeof ip === 'string') {
-      const ips = ip.split(',').map((i: string) => i.trim());
-      ip = ips[0];
+    // 1. Try x-forwarded-for header (nginx, apache, common proxy)
+    if (!ip) {
+      const xForwardedFor = request.headers?.['x-forwarded-for'] || request['x-forwarded-for'];
+      if (typeof xForwardedFor === 'string') {
+        const ips = xForwardedFor.split(',').map((i: string) => i.trim());
+        ip = ips[0];
+      }
     }
 
-    // Fallback to connection remoteAddress
+    // 2. Try x-real-ip header (nginx)
     if (!ip) {
-      ip = request.connection?.remoteAddress || request.socket?.remoteAddress;
+      ip = request.headers?.['x-real-ip'] || request['x-real-ip'];
+    }
+
+    // 3. Try cf-connecting-ip header (Cloudflare)
+    if (!ip) {
+      ip = request.headers?.['cf-connecting-ip'] || request['cf-connecting-ip'];
+    }
+
+    // 4. Try x-client-ip header (some proxies)
+    if (!ip) {
+      ip = request.headers?.['x-client-ip'] || request['x-client-ip'];
+    }
+
+    // 5. Fallback to connection.remoteAddress or socket.remoteAddress
+    if (!ip) {
+      ip = request.connection?.remoteAddress || request.socket?.remoteAddress || request.ip;
     }
 
     // Parse IPv4 vs IPv6
     if (ip) {
+      // Check if it's IPv4 (contains dots and no colons)
       if (ip.includes('.') && !ip.includes(':')) {
-        // Pure IPv4
         ipV4 = ip;
-      } else if (ip.includes(':')) {
-        // IPv6 or IPv4-mapped IPv6
+      } 
+      // Check if it's IPv6 or IPv4-mapped IPv6 (contains colons)
+      else if (ip.includes(':')) {
+        // IPv4-mapped IPv6 like ::ffff:192.0.2.1
         if (ip.includes('::ffff:')) {
-          // IPv4-mapped IPv6 like ::ffff:192.0.2.1
           ipV4 = ip.split('::ffff:')[1];
-        } else if (ip === '::1' || ip === 'localhost') {
-          // Localhost - treat as IPv4
+        } 
+        // Localhost IPv6
+        else if (ip === '::1' || ip === 'localhost') {
           ipV4 = '127.0.0.1';
-        } else {
-          // Pure IPv6
+        } 
+        // Pure IPv6
+        else {
           ipV6 = ip;
         }
       }
     }
+
+    this.logger.debug(
+      `Extracted IP - IPv4: ${ipV4 || 'null'}, IPv6: ${ipV6 || 'null'} (raw: ${ip || 'null'})`
+    );
 
     return { ipV4, ipV6 };
   }
@@ -367,6 +393,7 @@ export class AuthService {
       try {
         const { ipV4, ipV6 } = this.extractIpAddress({ headers: { 'x-forwarded-for': ipAddress } });
         const { browser, os, deviceType } = this.parseUserAgent(userAgent);
+        const geo = GeolocationUtil.getLocationFromIP(ipV4 || ipV6);
         
         await this.adminLoginHistoryService.recordLogin({
           adminId: null,
@@ -376,8 +403,8 @@ export class AuthService {
           loginStatus: 'failed',
           ipV4,
           ipV6,
-          country: null,
-          city: null,
+          country: geo.country,
+          city: geo.city,
           isp: null,
           browser,
           os,
@@ -407,6 +434,7 @@ export class AuthService {
       try {
         const { ipV4, ipV6 } = this.extractIpAddress({ headers: { 'x-forwarded-for': ipAddress } });
         const { browser, os, deviceType } = this.parseUserAgent(userAgent);
+        const geo = GeolocationUtil.getLocationFromIP(ipV4 || ipV6);
         
         await this.adminLoginHistoryService.recordLogin({
           adminId: user.role === 'admin' ? user.id : null,
@@ -416,8 +444,8 @@ export class AuthService {
           loginStatus: 'failed',
           ipV4,
           ipV6,
-          country: null,
-          city: null,
+          country: geo.country,
+          city: geo.city,
           isp: null,
           browser,
           os,
@@ -449,6 +477,7 @@ export class AuthService {
       try {
         const { ipV4, ipV6 } = this.extractIpAddress({ headers: { 'x-forwarded-for': ipAddress } });
         const { browser, os, deviceType } = this.parseUserAgent(userAgent);
+        const geo = GeolocationUtil.getLocationFromIP(ipV4 || ipV6);
         const isNewDevice = await this.adminLoginHistoryService.isNewDevice(user.id, ipV4 || ipV6 || '');
 
         await this.adminLoginHistoryService.recordLogin({
@@ -459,8 +488,8 @@ export class AuthService {
           loginStatus: 'success',
           ipV4,
           ipV6,
-          country: null,
-          city: null,
+          country: geo.country,
+          city: geo.city,
           isp: null,
           browser,
           os,
