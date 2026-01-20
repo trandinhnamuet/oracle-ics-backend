@@ -101,7 +101,9 @@ export class AuthController {
     response.cookie('refreshToken', tokens.refreshToken, this.getCookieOptions());
 
     return {
+      success: true,
       accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
     };
   }
 
