@@ -21,6 +21,7 @@ import { OciModule } from './modules/oci/oci.module';
 import { SystemSshKeyModule } from './modules/system-ssh-key/system-ssh-key.module';
 import { VmProvisioningModule } from './modules/vm-provisioning/vm-provisioning.module';
 import { VmSubscriptionModule } from './modules/vm-subscription/vm-subscription.module';
+import { AnalyticsModule } from './modules/analytics/analytics.module';
 
 dotenv.config();
 
@@ -54,6 +55,7 @@ dotenv.config();
     SystemSshKeyModule,
     VmProvisioningModule,
     VmSubscriptionModule,
+    AnalyticsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
