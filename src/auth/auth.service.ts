@@ -422,7 +422,7 @@ export class AuthService {
     };
 
     const accessToken = this.jwtService.sign(payload, {
-      expiresIn: '10s',
+      expiresIn: '30p',
     });
 
     const refreshToken = this.jwtService.sign(payload, {
