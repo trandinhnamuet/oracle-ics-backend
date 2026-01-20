@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { VmProvisioningController } from './vm-provisioning.controller';
 import { VmProvisioningService } from './vm-provisioning.service';
+import { User } from '../../entities/user.entity';
 import { UserCompartment } from '../../entities/user-compartment.entity';
 import { VcnResource } from '../../entities/vcn-resource.entity';
 import { VmInstance } from '../../entities/vm-instance.entity';
@@ -13,6 +14,7 @@ import { SystemSshKeyModule } from '../system-ssh-key/system-ssh-key.module';
 @Module({
   imports: [
     TypeOrmModule.forFeature([
+      User,
       UserCompartment,
       VcnResource,
       VmInstance,

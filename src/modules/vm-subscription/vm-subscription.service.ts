@@ -200,13 +200,13 @@ export class VmSubscriptionService {
       };
     }
 
-    // Find VM by OCID
+    // Find VM by ID
     const vm = await this.vmInstanceRepo.findOne({
-      where: { instance_id: subscription.vm_instance_id },
+      where: { id: subscription.vm_instance_id },
     });
 
     if (!vm) {
-      this.logger.warn(`VM not found for subscription ${subscriptionId}, OCID: ${subscription.vm_instance_id}`);
+      this.logger.warn(`VM not found for subscription ${subscriptionId}, ID: ${subscription.vm_instance_id}`);
       return {
         subscription: {
           id: subscription.id,
@@ -251,7 +251,7 @@ export class VmSubscriptionService {
 
     // Find VM
     const vm = await this.vmInstanceRepo.findOne({
-      where: { instance_id: subscription.vm_instance_id },
+      where: { id: subscription.vm_instance_id },
     });
 
     if (!vm) {
