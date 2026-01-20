@@ -23,7 +23,7 @@ import { AdminLoginHistoryController } from './admin-login-history.controller';
       imports: [ConfigModule],
       useFactory: async (configService: ConfigService) => ({
         secret: configService.get<string>('JWT_SECRET') || 'jwt-secret-key-42jfwj2k',
-        signOptions: { expiresIn: '10s' },
+        signOptions: { expiresIn: '30p' },
       }),
       inject: [ConfigService],
     }),

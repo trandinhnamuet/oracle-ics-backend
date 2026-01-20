@@ -2,8 +2,8 @@ import { IsString, IsNotEmpty, IsOptional, IsNumber, Min, Max } from 'class-vali
 
 export class CreateVmDto {
   @IsString()
-  @IsNotEmpty()
-  displayName: string;
+  @IsOptional()
+  displayName?: string;
 
   @IsString()
   @IsNotEmpty()

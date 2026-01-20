@@ -217,6 +217,7 @@ export class SubscriptionService {
         where: { user_id: userId },
         relations: {
           cloudPackage: true,
+          vmInstance: true,
         },
         order: {
           created_at: 'DESC',
@@ -228,7 +229,7 @@ export class SubscriptionService {
       try {
         return await this.subscriptionRepository.find({
           where: { user_id: userId },
-          relations: ['cloudPackage'],
+          relations: ['cloudPackage', 'vmInstance'],
           order: {
             created_at: 'DESC',
           },

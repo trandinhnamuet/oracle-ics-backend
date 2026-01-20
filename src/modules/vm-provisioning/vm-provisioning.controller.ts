@@ -41,7 +41,7 @@ export class VmProvisioningController {
    * Get specific VM by ID
    */
   @Get(':id')
-  async getVmById(@Request() req, @Param('id') vmId: string) {
+  async getVmById(@Request() req, @Param('id') vmId: number) {
     const userId = req.user.userId;
     return this.vmProvisioningService.getVmById(userId, vmId);
   }
@@ -53,7 +53,7 @@ export class VmProvisioningController {
   @HttpCode(HttpStatus.OK)
   async performVmAction(
     @Request() req,
-    @Param('id') vmId: string,
+    @Param('id') vmId: number,
     @Body() vmActionDto: VmActionDto,
   ) {
     const userId = req.user.userId;
@@ -70,7 +70,7 @@ export class VmProvisioningController {
   @Get(':id/logs')
   async getVmActionLogs(
     @Request() req,
-    @Param('id') vmId: string,
+    @Param('id') vmId: number,
   ) {
     const userId = req.user.userId;
     return this.vmProvisioningService.getVmActionLogs(userId, vmId);

@@ -9,6 +9,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { OciService } from '../oci/oci.service';
 import { SystemSshKeyService } from '../system-ssh-key/system-ssh-key.service';
+import { User } from '../../entities/user.entity';
 import { UserCompartment } from '../../entities/user-compartment.entity';
 import { VcnResource } from '../../entities/vcn-resource.entity';
 import { VmInstance } from '../../entities/vm-instance.entity';
@@ -29,6 +30,8 @@ export class VmProvisioningService {
   ];
 
   constructor(
+    @InjectRepository(User)
+    private readonly userRepo: Repository<User>,
     @InjectRepository(UserCompartment)
     private readonly userCompartmentRepo: Repository<UserCompartment>,
     @InjectRepository(VcnResource)
@@ -81,6 +84,43 @@ export class VmProvisioningService {
         throw new InternalServerErrorException('Availability domain name is undefined');
       }
 
+      // Step 5.5: Get user email for instance naming
+      const user = await this.userRepo.findOne({ where: { id: userId } });
+      if (!user) {
+        throw new NotFoundException(`User with ID ${userId} not found`);
+      }
+      
+      // Format email for instance name (e.g., trandinhnamuet@gmail.com -> trandinhnamuet-gmail-com)
+      const emailPrefix = user.email
+        .toLowerCase()
+        .replace('@', '-')
+        .replace(/\./g, '-');
+
+      // Step 5.6: Create a temporary VM record in database to get auto-increment ID
+      // We'll update it with OCI details after successful launch
+      const tempVmInstance = this.vmInstanceRepo.create({
+        user_id: userId,
+        compartment_id: userCompartment.compartment_ocid,
+        instance_id: 'PENDING', // Will be updated after OCI launch
+        instance_name: 'PENDING', // Will be updated after OCI launch
+        shape: createVmDto.shape,
+        image_id: createVmDto.imageId,
+        lifecycle_state: 'PROVISIONING',
+        ssh_public_key: createVmDto.userSshPublicKey,
+        vcn_id: vcnResource.vcn_ocid,
+        subnet_id: vcnResource.subnet_ocid,
+        availability_domain: availabilityDomain,
+        subscription_id: createVmDto.subscriptionId,
+        vm_started_at: null as any,
+      }) as VmInstance;
+
+      const savedTempVm = await this.vmInstanceRepo.save(tempVmInstance) as VmInstance;
+      const vmId = savedTempVm.id;
+      
+      // Create instance name using auto-increment ID: email-vm-ID
+      const instanceName = `${emailPrefix}-vm-${vmId}`;
+      this.logger.log(`Generated instance name: ${instanceName}`);
+
       // Step 6: Launch the instance with fallback shapes on capacity errors
       let ociInstance;
       let usedShape = createVmDto.shape;
@@ -131,7 +171,7 @@ export class VmProvisioningService {
 
           ociInstance = await this.ociService.launchInstance(
             userCompartment.compartment_ocid,
-            createVmDto.displayName,
+            instanceName,
             availabilityDomain,
             vcnResource.subnet_ocid,
             createVmDto.imageId,
@@ -203,34 +243,26 @@ export class VmProvisioningService {
       }
 
       if (!ociInstance) {
+        // Launch failed, clean up the temporary VM record
+        await this.vmInstanceRepo.remove(savedTempVm);
         throw launchError || new InternalServerErrorException('Failed to launch instance with all available shapes');
       }
 
-      // Step 7: Save VM instance to database
-      const vmInstance = this.vmInstanceRepo.create({
-        user_id: userId,
-        compartment_id: userCompartment.compartment_ocid,
-        instance_id: ociInstance.id,
-        instance_name: createVmDto.displayName,
-        shape: usedShape,
-        image_id: createVmDto.imageId,
-        lifecycle_state: ociInstance.lifecycleState,
-        ssh_public_key: createVmDto.userSshPublicKey,
-        vcn_id: vcnResource.vcn_ocid,
-        subnet_id: vcnResource.subnet_ocid,
-        availability_domain: availabilityDomain,
-        subscription_id: createVmDto.subscriptionId,
-        vm_started_at: ociInstance.lifecycleState === 'RUNNING' ? new Date() : (null as any),
-      }) as VmInstance;
+      // Step 7: Update VM instance in database with OCI details
+      savedTempVm.instance_id = ociInstance.id;
+      savedTempVm.instance_name = instanceName;
+      savedTempVm.shape = usedShape;
+      savedTempVm.lifecycle_state = ociInstance.lifecycleState;
+      savedTempVm.vm_started_at = ociInstance.lifecycleState === 'RUNNING' ? new Date() : (null as any);
 
-      const savedVm = await this.vmInstanceRepo.save(vmInstance) as VmInstance;
+      const savedVm = await this.vmInstanceRepo.save(savedTempVm) as VmInstance;
 
       // Step 8: Log the creation action
       await this.logVmAction(
         savedVm.id,
         userId,
         'CREATE',
-        `VM instance created: ${createVmDto.displayName} with shape ${usedShape}`,
+        `VM instance created: ${instanceName} with shape ${usedShape}`,
         { ociInstanceId: ociInstance.id, shape: usedShape },
       );
 
@@ -279,7 +311,7 @@ export class VmProvisioningService {
   /**
    * Get specific VM by ID
    */
-  async getVmById(userId: number, vmId: string): Promise<any> {
+  async getVmById(userId: number, vmId: number): Promise<any> {
     const vm = await this.vmInstanceRepo.findOne({
       where: { id: vmId, user_id: userId },
     });
@@ -314,7 +346,7 @@ export class VmProvisioningService {
   /**
    * Perform action on VM (start, stop, restart, terminate)
    */
-  async performVmAction(userId: number, vmId: string, action: VmActionType): Promise<any> {
+  async performVmAction(userId: number, vmId: number, action: VmActionType): Promise<any> {
     const vm = await this.vmInstanceRepo.findOne({
       where: { id: vmId, user_id: userId },
     });
@@ -394,7 +426,7 @@ export class VmProvisioningService {
   /**
    * Get VM action logs
    */
-  async getVmActionLogs(userId: number, vmId: string) {
+  async getVmActionLogs(userId: number, vmId: number) {
     const vm = await this.vmInstanceRepo.findOne({
       where: { id: vmId, user_id: userId },
     });
@@ -446,8 +478,20 @@ export class VmProvisioningService {
 
     // Create new compartment in OCI
     this.logger.log(`Creating new compartment for user ${userId}`);
-    const compartmentName = `user-${userId}-compartment-${Date.now()}`;
-    const compartmentDesc = `Compartment for user ${userId}`;
+    
+    // Get user email to generate compartment name
+    const user = await this.userRepo.findOne({ where: { id: userId } });
+    if (!user) {
+      throw new NotFoundException(`User with ID ${userId} not found`);
+    }
+    
+    // Convert email to compartment name format
+    // Example: trandinhnamuet@gmail.com -> trandinhnamuet-gmail-com
+    const compartmentName = user.email
+      .toLowerCase()
+      .replace('@', '-')
+      .replace(/\./g, '-');
+    const compartmentDesc = `Compartment for user ${user.email}`;
 
     const ociCompartment = await this.ociService.createCompartment(
       compartmentName,
@@ -600,7 +644,7 @@ export class VmProvisioningService {
    * Log VM action to database
    */
   private async logVmAction(
-    vmInstanceId: string,
+    vmInstanceId: number,
     userId: number,
     action: string,
     description: string,

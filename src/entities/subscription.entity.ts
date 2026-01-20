@@ -35,8 +35,8 @@ export class Subscription {
   @Column({ type: 'json', nullable: true })
   configuration: any; // Store VM configuration
 
-  @Column({ type: 'uuid', nullable: true })
-  vm_instance_id: string; // Foreign key to vm_instances
+  @Column({ type: 'int', nullable: true })
+  vm_instance_id: number; // Foreign key to vm_instances
 
   @Column({ type: 'text', nullable: true })
   notes: string;

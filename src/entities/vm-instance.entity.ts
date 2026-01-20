@@ -11,8 +11,8 @@ import {
 @Index(['user_id', 'lifecycle_state'])
 @Index(['compartment_id'])
 export class VmInstance {
-  @PrimaryGeneratedColumn('uuid')
-  id: string;
+  @PrimaryGeneratedColumn('increment')
+  id: number;
 
   @Column({ type: 'uuid', nullable: false })
   subscription_id: string;

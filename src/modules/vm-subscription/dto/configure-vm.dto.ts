@@ -2,8 +2,8 @@ import { IsString, IsNotEmpty, IsOptional, IsNumber, Min, Max, IsEmail } from 'c
 
 export class ConfigureVmDto {
   @IsString()
-  @IsNotEmpty()
-  displayName: string;
+  @IsOptional()
+  displayName?: string;
 
   @IsString()
   @IsNotEmpty()

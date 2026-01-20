@@ -13,8 +13,8 @@ export class VmActionsLog {
   @PrimaryGeneratedColumn()
   id: number;
 
-  @Column({ type: 'uuid', nullable: false })
-  vm_instance_id: string;
+  @Column({ type: 'int', nullable: false })
+  vm_instance_id: number;
 
   @Column({ type: 'int', nullable: false })
   user_id: number;
