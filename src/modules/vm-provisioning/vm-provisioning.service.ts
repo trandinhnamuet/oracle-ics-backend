@@ -266,8 +266,26 @@ export class VmProvisioningService {
         { ociInstanceId: ociInstance.id, shape: usedShape },
       );
 
-      // Step 9: Wait a bit and get public IP
-      this.logger.log('Waiting for instance to get public IP...');
+      // Step 9: Get fresh instance state from OCI
+      this.logger.log('📊 Fetching fresh instance state from OCI...');
+      try {
+        const freshInstance = await this.ociService.getInstance(ociInstance.id);
+        savedVm.lifecycle_state = freshInstance.lifecycleState;
+        this.logger.log(`✅ Instance lifecycle state: ${freshInstance.lifecycleState}`);
+        
+        // Update vm_started_at if instance is running
+        if (freshInstance.lifecycleState === 'RUNNING') {
+          savedVm.vm_started_at = new Date();
+          this.logger.log('✅ Instance is RUNNING, setting vm_started_at');
+        }
+        
+        await this.vmInstanceRepo.save(savedVm);
+      } catch (error) {
+        this.logger.error('❌ Could not get fresh instance state from OCI:', error.message);
+      }
+
+      // Step 10: Wait a bit and get public IP
+      this.logger.log('🌐 Waiting for instance to get public IP...');
       await this.sleep(5000); // Wait 5 seconds
 
       let publicIp: string | null = null;
@@ -280,13 +298,135 @@ export class VmProvisioningService {
         if (publicIp) {
           savedVm.public_ip = publicIp;
           await this.vmInstanceRepo.save(savedVm);
-          this.logger.log(`Instance public IP: ${publicIp}`);
+          this.logger.log(`✅ Instance public IP: ${publicIp}`);
+        } else {
+          this.logger.warn('⚠️  Public IP not available yet');
         }
       } catch (error) {
-        this.logger.warn('Could not retrieve public IP yet:', error.message);
+        this.logger.warn('⚠️  Could not retrieve public IP yet:', error.message);
       }
 
-      this.logger.log(`VM provisioning completed successfully: ${savedVm.id} with shape ${usedShape}`);
+      // Step 11: Check if this is a Windows VM and get initial credentials
+      // This step is wrapped in try-catch to not affect the main flow
+      this.logger.log('🔍 Checking OS type and credentials...');
+      try {
+        // Get image details to check OS type
+        this.logger.log(`📦 Fetching image details for: ${createVmDto.imageId}`);
+        const imageDetails = await this.ociService.getImage(createVmDto.imageId);
+        this.logger.log(`📦 Image OS: ${imageDetails?.operatingSystem || 'Unknown'}`);
+        
+        const isWindows = imageDetails?.operatingSystem?.toLowerCase().includes('windows');
+        
+        if (isWindows) {
+          this.logger.log('🪟 ========== WINDOWS VM DETECTED ==========');
+          this.logger.log(`🪟 Image: ${imageDetails.displayName}`);
+          this.logger.log(`🪟 OS: ${imageDetails.operatingSystem}`);
+          
+          // Update OS first
+          savedVm.operating_system = imageDetails.operatingSystem;
+          await this.vmInstanceRepo.save(savedVm);
+          this.logger.log('✅ OS type saved to database');
+          
+          // Step 11.1: Ensure RDP port 3389 is open in Security List
+          try {
+            this.logger.log('🔐 Ensuring RDP port 3389 is open for Windows VM...');
+            
+            // Get VCN details to find security list
+            const vcnDetails = await this.ociService.getVcn(vcnResource.vcn_ocid);
+            if (vcnDetails.defaultSecurityListId) {
+              await this.ociService.ensureRdpAccessEnabled(vcnDetails.defaultSecurityListId);
+              this.logger.log('✅ RDP port 3389 is now accessible');
+            } else {
+              this.logger.warn('⚠️  Could not find default security list for VCN');
+            }
+          } catch (rdpError) {
+            this.logger.error('❌ Failed to open RDP port:', rdpError.message);
+            // Continue anyway, user can open it manually
+          }
+          
+          // For Windows, we need to wait for the instance to be RUNNING
+          // because Windows password is only available when VM is fully running
+          this.logger.log('🔑 Windows VM requires RUNNING state to retrieve password');
+          this.logger.log('⏳ Waiting for instance to reach RUNNING state (this may take 5-10 minutes)...');
+          
+          const isRunning = await this.pollInstanceUntilRunning(ociInstance.id, 10);
+          
+          if (isRunning) {
+            // Update state in database
+            savedVm.lifecycle_state = 'RUNNING';
+            savedVm.vm_started_at = new Date();
+            await this.vmInstanceRepo.save(savedVm);
+            this.logger.log('✅ Instance is RUNNING, now attempting to get Windows password...');
+            
+            // Wait a bit more for password to be generated
+            this.logger.log('⏳ Waiting additional 30 seconds for password generation...');
+            await this.sleep(30000);
+            
+            try {
+              const credentials = await this.ociService.getWindowsInitialCredentials(ociInstance.id);
+              
+              if (credentials) {
+                savedVm.windows_initial_password = credentials.password;
+                await this.vmInstanceRepo.save(savedVm);
+                this.logger.log('🎉 ========== WINDOWS CREDENTIALS RETRIEVED ==========');
+                this.logger.log(`🎉 Username: ${credentials.username}`);
+                this.logger.log(`🎉 Password: ${credentials.password.substring(0, 4)}...${credentials.password.substring(credentials.password.length - 4)}`);
+                this.logger.log('🎉 Credentials saved to database');
+                this.logger.log('🎉 ===============================================');
+              } else {
+                this.logger.warn('⚠️  ========== WINDOWS CREDENTIALS NOT AVAILABLE ==========');
+                this.logger.warn('⚠️  The password is not available via API.');
+                this.logger.warn('⚠️  User will need to retrieve it from OCI Console.');
+                this.logger.warn('⚠️  =======================================================');
+              }
+            } catch (credError) {
+              this.logger.error('❌ ========== FAILED TO GET WINDOWS CREDENTIALS ==========');
+              this.logger.error(`❌ Error: ${credError.message}`);
+              this.logger.error(`❌ Status: ${credError.statusCode || 'N/A'}`);
+              this.logger.error('❌ User will need to get password from OCI Console');
+              this.logger.error('❌ ========================================================');
+            }
+          } else {
+            this.logger.warn('⚠️  ========== TIMEOUT WAITING FOR RUNNING STATE ==========');
+            this.logger.warn('⚠️  Instance did not reach RUNNING state in time');
+            this.logger.warn('⚠️  User will need to wait and retrieve password from OCI Console');
+            this.logger.warn('⚠️  ==========================================================');
+            
+            // Still update the latest state
+            try {
+              const latestInstance = await this.ociService.getInstance(ociInstance.id);
+              savedVm.lifecycle_state = latestInstance.lifecycleState;
+              if (latestInstance.lifecycleState === 'RUNNING') {
+                savedVm.vm_started_at = new Date();
+              }
+              await this.vmInstanceRepo.save(savedVm);
+            } catch (e) {
+              this.logger.warn('Could not update latest instance state:', e.message);
+            }
+          }
+        } else {
+          // Linux VM
+          this.logger.log('🐧 Linux VM detected');
+          savedVm.operating_system = imageDetails?.operatingSystem || 'Linux';
+          await this.vmInstanceRepo.save(savedVm);
+          this.logger.log(`✅ OS type saved: ${savedVm.operating_system}`);
+        }
+      } catch (osError) {
+        this.logger.error('❌ ========== ERROR CHECKING OS TYPE ==========');
+        this.logger.error(`❌ Error: ${osError.message}`);
+        this.logger.error(`❌ Stack: ${osError.stack}`);
+        this.logger.error('❌ Continuing without OS detection...');
+        this.logger.error('❌ ==========================================');
+      }
+
+      this.logger.log(`✅ ========== VM PROVISIONING COMPLETED ==========`);
+      this.logger.log(`✅ VM ID: ${savedVm.id}`);
+      this.logger.log(`✅ Instance Name: ${instanceName}`);
+      this.logger.log(`✅ Shape: ${usedShape}`);
+      this.logger.log(`✅ Lifecycle State: ${savedVm.lifecycle_state}`);
+      this.logger.log(`✅ Public IP: ${savedVm.public_ip || 'Not available'}`);
+      this.logger.log(`✅ OS: ${savedVm.operating_system || 'Unknown'}`);
+      this.logger.log(`✅ ================================================`);
       return this.formatVmResponse(savedVm);
     } catch (error) {
       this.logger.error('Error provisioning VM:', error);
@@ -683,6 +823,7 @@ export class VmProvisioningService {
       vcnId: vm.vcn_id,
       subnetId: vm.subnet_id,
       sshPublicKey: vm.ssh_public_key,
+      windowsInitialPassword: vm.windows_initial_password,
       createdAt: vm.created_at,
       startedAt: vm.vm_started_at,
       updatedAt: vm.updated_at,
@@ -694,6 +835,47 @@ export class VmProvisioningService {
    */
   private sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Poll instance until it reaches RUNNING state
+   * @param instanceId - The OCID of the instance
+   * @param maxWaitMinutes - Maximum time to wait in minutes (default: 10)
+   * @returns true if RUNNING, false if timeout
+   */
+  private async pollInstanceUntilRunning(instanceId: string, maxWaitMinutes: number = 10): Promise<boolean> {
+    const maxAttempts = (maxWaitMinutes * 60) / 15; // Check every 15 seconds
+    let attempts = 0;
+
+    this.logger.log(`⏳ Polling instance state until RUNNING (max ${maxWaitMinutes} minutes)...`);
+
+    while (attempts < maxAttempts) {
+      try {
+        const instance = await this.ociService.getInstance(instanceId);
+        this.logger.log(`📊 Poll attempt ${attempts + 1}/${maxAttempts}: State = ${instance.lifecycleState}`);
+
+        if (instance.lifecycleState === 'RUNNING') {
+          this.logger.log('✅ Instance is RUNNING!');
+          return true;
+        }
+
+        if (instance.lifecycleState === 'TERMINATED' || instance.lifecycleState === 'TERMINATING') {
+          this.logger.error('❌ Instance terminated or terminating');
+          return false;
+        }
+
+        // Wait 15 seconds before next poll
+        await this.sleep(15000);
+        attempts++;
+      } catch (error) {
+        this.logger.warn(`⚠️  Error polling instance state: ${error.message}`);
+        await this.sleep(15000);
+        attempts++;
+      }
+    }
+
+    this.logger.warn(`⏱️  Timeout waiting for instance to reach RUNNING state after ${maxWaitMinutes} minutes`);
+    return false;
   }
 
   /**

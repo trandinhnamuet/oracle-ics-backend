@@ -133,20 +133,75 @@ export class VmSubscriptionService {
       subscription.status = 'active';
       await this.subscriptionRepo.save(subscription);
 
-      // Step 4: Send SSH key to user via email
+      // Step 4: Send credentials to user via email (SSH key for Linux or password for Windows)
       const userEmail = configureVmDto.notificationEmail || subscription['user']?.email;
-      if (userEmail && userSshKeyPair) {
-        await this.sendSshKeyEmail(
-          userEmail,
-          {
-            displayName: vmResult.instanceName,
-            publicIp: vmResult.publicIp,
-            instanceOcid: vmResult.instanceId,
-          },
-          userSshKeyPair,
-          subscription,
-        );
+      this.logger.log(`📧 ========== EMAIL SENDING CHECK ==========`);
+      this.logger.log(`📧 User Email: ${userEmail || 'NOT FOUND'}`);
+      this.logger.log(`📧 VM OS: ${vmResult.operatingSystem || 'Unknown'}`);
+      
+      if (userEmail) {
+        const isWindows = vmResult.operatingSystem?.toLowerCase().includes('windows');
+        this.logger.log(`📧 Is Windows: ${isWindows}`);
+        this.logger.log(`📧 Has Windows Password: ${!!vmResult.windowsInitialPassword}`);
+        this.logger.log(`📧 Has SSH Key Pair: ${!!userSshKeyPair}`);
+        
+        if (isWindows) {
+          if (vmResult.windowsInitialPassword) {
+            // Windows VM with password - send RDP credentials
+            this.logger.log('📧 Sending Windows RDP credentials email...');
+            await this.sendWindowsPasswordEmail(
+              userEmail,
+              {
+                name: vmResult.instanceName,
+                publicIp: vmResult.publicIp,
+                operatingSystem: vmResult.operatingSystem,
+                status: vmResult.lifecycleState,
+              },
+              {
+                username: 'opc', // Default OCI Windows username
+                password: vmResult.windowsInitialPassword,
+              },
+              subscription,
+            );
+            this.logger.log('✅ Windows credentials email sent successfully');
+          } else {
+            // Windows VM without password - send instructions to get from OCI Console
+            this.logger.log('📧 Sending Windows instructions email (password not available)...');
+            await this.sendWindowsInstructionsEmail(
+              userEmail,
+              {
+                name: vmResult.instanceName,
+                publicIp: vmResult.publicIp,
+                operatingSystem: vmResult.operatingSystem,
+                status: vmResult.lifecycleState,
+                instanceOcid: vmResult.instanceId,
+              },
+              subscription,
+            );
+            this.logger.log('✅ Windows instructions email sent successfully');
+          }
+        } else if (!isWindows && userSshKeyPair) {
+          // Linux VM - send SSH key
+          this.logger.log('📧 Sending Linux SSH key email...');
+          await this.sendSshKeyEmail(
+            userEmail,
+            {
+              displayName: vmResult.instanceName,
+              publicIp: vmResult.publicIp,
+              instanceOcid: vmResult.instanceId,
+            },
+            userSshKeyPair,
+            subscription,
+          );
+          this.logger.log('✅ SSH key email sent successfully');
+        } else {
+          this.logger.warn(`⚠️  Could not send credentials email - missing required data`);
+          this.logger.warn(`⚠️  Is Windows: ${isWindows}, Has Password: ${!!vmResult.windowsInitialPassword}, Has SSH Key: ${!!userSshKeyPair}`);
+        }
+      } else {
+        this.logger.error('❌ No email address found for user!');
       }
+      this.logger.log(`📧 ==========================================`);
 
       this.logger.log(`VM configuration completed for subscription ${subscriptionId}`);
 
@@ -256,6 +311,16 @@ export class VmSubscriptionService {
 
     if (!vm) {
       throw new NotFoundException('VM not found');
+    }
+
+    // Check if this is a Windows VM
+    const isWindows = vm.operating_system?.toLowerCase().includes('windows');
+    if (isWindows) {
+      throw new BadRequestException(
+        'SSH key regeneration is not applicable for Windows VMs. ' +
+        'Windows VMs use RDP with password authentication. ' +
+        'To reset your password, please use the "Reset Password" option or contact support.'
+      );
     }
 
     // Generate new SSH key pair
@@ -575,6 +640,522 @@ sudo su -
       this.logger.log(`SSH key email sent successfully to ${email}`);
     } catch (error) {
       this.logger.error(`Failed to send SSH key email to ${email}:`, error);
+      // Don't throw error, just log it
+    }
+  }
+
+  /**
+   * Send Windows password to user via email
+   */
+  private async sendWindowsPasswordEmail(
+    email: string,
+    vmInfo: any,
+    windowsCredentials: { username: string; password: string },
+    subscription: any,
+  ) {
+    this.logger.log('📧 ========== SENDING WINDOWS EMAIL ==========');
+    this.logger.log(`📧 To: ${email}`);
+    this.logger.log(`📧 VM: ${vmInfo.name}`);
+    this.logger.log(`📧 IP: ${vmInfo.publicIp}`);
+    this.logger.log(`📧 Username: ${windowsCredentials.username}`);
+    
+    const subject = `🪟 Windows VM Access Credentials - ${vmInfo.name || 'Your VM'}`;
+    
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <style>
+            body {
+              font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+              background-color: #f5f5f5;
+              margin: 0;
+              padding: 20px;
+            }
+            .container {
+              max-width: 800px;
+              margin: 0 auto;
+              background-color: #ffffff;
+              border-radius: 8px;
+              box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+              overflow: hidden;
+            }
+            .header {
+              background: linear-gradient(135deg, #0078D4 0%, #0053A4 100%);
+              color: white;
+              padding: 30px;
+              text-align: center;
+            }
+            .content {
+              padding: 40px;
+            }
+            h1 {
+              margin: 0;
+              font-size: 28px;
+            }
+            h2 {
+              color: #0078D4;
+              margin-top: 30px;
+            }
+            h3 {
+              color: #333;
+              margin-top: 20px;
+            }
+            .vm-details {
+              background-color: #f8f9fa;
+              border-left: 4px solid #0078D4;
+              padding: 20px;
+              margin: 20px 0;
+            }
+            .vm-details p {
+              margin: 10px 0;
+            }
+            .code-block {
+              background-color: #2d2d2d;
+              color: #ffffff;
+              padding: 15px;
+              border-radius: 5px;
+              font-family: 'Consolas', 'Monaco', monospace;
+              font-size: 14px;
+              overflow-x: auto;
+              margin: 10px 0;
+              white-space: pre-wrap;
+            }
+            .warning {
+              background-color: #fff3cd;
+              border-left: 4px solid #ffc107;
+              padding: 15px;
+              margin: 20px 0;
+            }
+            .info-box {
+              background-color: #e7f3ff;
+              border-left: 4px solid #0078D4;
+              padding: 15px;
+              margin: 20px 0;
+            }
+            .credentials-box {
+              background-color: #fff5f5;
+              border: 2px solid #dc3545;
+              padding: 20px;
+              margin: 20px 0;
+              border-radius: 5px;
+            }
+            .button {
+              display: inline-block;
+              background-color: #0078D4;
+              color: white;
+              padding: 12px 30px;
+              text-decoration: none;
+              border-radius: 5px;
+              margin-top: 20px;
+            }
+            .footer {
+              background-color: #f8f9fa;
+              padding: 20px;
+              text-align: center;
+              color: #666;
+            }
+            table {
+              border-collapse: collapse;
+              width: 100%;
+              margin: 15px 0;
+            }
+            th, td {
+              border: 1px solid #ddd;
+              padding: 12px;
+              text-align: left;
+            }
+            th {
+              background-color: #f0f0f0;
+            }
+            code {
+              background-color: #f5f5f5;
+              padding: 2px 6px;
+              border-radius: 3px;
+              font-family: 'Consolas', 'Monaco', monospace;
+              font-size: 13px;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h1>🪟 Windows VM Access Credentials</h1>
+              <p>Your Windows Server is ready to use!</p>
+            </div>
+
+            <div class="content">
+              <h2>VM Information</h2>
+              <div class="vm-details">
+                <p><strong>VM Name:</strong> ${vmInfo.name || 'N/A'}</p>
+                <p><strong>Public IP:</strong> <code>${vmInfo.publicIp || 'Retrieving...'}</code></p>
+                <p><strong>Operating System:</strong> ${vmInfo.operatingSystem || 'Windows Server'}</p>
+                <p><strong>Status:</strong> ${vmInfo.status || 'PROVISIONING'}</p>
+              </div>
+
+              <div class="credentials-box">
+                <h3>⚠️ Important Security Information</h3>
+                <p><strong>Keep your password secure!</strong> Never share it with anyone. This is the only time you'll receive the initial password.</p>
+              </div>
+
+              <h3>🔑 Your Windows Credentials:</h3>
+              <div class="code-block">Username: ${windowsCredentials.username}
+Password: ${windowsCredentials.password}</div>
+
+              <h3>📝 How to Connect:</h3>
+              
+              <h4>Option 1: Windows Remote Desktop (Recommended)</h4>
+              <p><strong>On Windows:</strong></p>
+              <ol>
+                <li>Press <code>Win + R</code> and type <code>mstsc</code></li>
+                <li>Enter your VM's IP address: <code>${vmInfo.publicIp || 'YOUR_VM_IP'}</code></li>
+                <li>Click "Connect"</li>
+                <li>When prompted, enter:
+                  <div class="code-block">Username: ${windowsCredentials.username}
+Password: ${windowsCredentials.password}</div>
+                </li>
+              </ol>
+
+              <h4>Option 2: Using RDP File</h4>
+              <p>Create a file named <code>oracle-vm.rdp</code> with this content:</p>
+              <div class="code-block">full address:s:${vmInfo.publicIp || 'YOUR_VM_IP'}
+username:s:${windowsCredentials.username}
+prompt for credentials:i:1
+administrative session:i:1</div>
+              <p>Double-click the file and enter your password when prompted.</p>
+
+              <h4>Option 3: From Mac</h4>
+              <ol>
+                <li>Download "Microsoft Remote Desktop" from Mac App Store</li>
+                <li>Click "+ Add PC"</li>
+                <li>Enter PC Name: <code>${vmInfo.publicIp || 'YOUR_VM_IP'}</code></li>
+                <li>Enter credentials when connecting</li>
+              </ol>
+
+              <h4>Option 4: From Linux</h4>
+              <p>Install Remmina or use rdesktop:</p>
+              <div class="code-block"># Using rdesktop
+rdesktop -u ${windowsCredentials.username} ${vmInfo.publicIp || 'YOUR_VM_IP'}
+
+# Using xfreerdp
+xfreerdp /v:${vmInfo.publicIp || 'YOUR_VM_IP'} /u:${windowsCredentials.username}</div>
+
+              <h3>🔐 First Login Recommendations:</h3>
+              <div class="info-box">
+                <h4>After your first login, we recommend:</h4>
+                <ol>
+                  <li><strong>Change your password immediately:</strong>
+                    <div class="code-block"># In PowerShell as Administrator
+net user ${windowsCredentials.username} *</div>
+                  </li>
+                  <li><strong>Update Windows:</strong> Run Windows Update to get latest security patches</li>
+                  <li><strong>Configure Windows Firewall:</strong> Set up appropriate firewall rules</li>
+                  <li><strong>Enable automatic updates:</strong> Keep your system secure</li>
+                </ol>
+              </div>
+
+              <div class="warning">
+                <h3>🔒 Security Best Practices</h3>
+                <ul>
+                  <li>Change the default password immediately after first login</li>
+                  <li>Never share your credentials with anyone</li>
+                  <li>Use strong passwords with a mix of letters, numbers, and symbols</li>
+                  <li>Enable Windows Defender and keep it updated</li>
+                  <li>Regularly backup your data</li>
+                  <li>Keep Windows updated with latest security patches</li>
+                  <li>Consider enabling Network Level Authentication (NLA)</li>
+                </ul>
+              </div>
+
+              <div class="info-box">
+                <h3>💡 Troubleshooting</h3>
+                <p><strong>Cannot connect:</strong> Make sure the VM is in RUNNING state and port 3389 is open.</p>
+                <p><strong>Connection timeout:</strong> Check your firewall settings and ensure the VM's public IP is correct.</p>
+                <p><strong>Credentials not working:</strong> Make sure you're using the exact username and password (case-sensitive).</p>
+                <p><strong>Need new password:</strong> Contact support if you've lost access to your VM.</p>
+              </div>
+
+              <h3>📊 VM Management</h3>
+              <p>You can manage your VM (start, stop, restart) from your dashboard:</p>
+              <a href="https://oraclecloud.vn/package-management/${subscription.id}" class="button">
+                Manage Your VM
+              </a>
+            </div>
+
+            <div class="footer">
+              <p>© 2026 Oracle Cloud Management Platform</p>
+              <p>If you have any questions, please contact support@oraclecloud.vn</p>
+            </div>
+          </div>
+        </body>
+      </html>
+    `;
+
+    try {
+      await this.transporter.sendMail({
+        from: process.env.SMTP_FROM || 'noreply@oraclecloud.vn',
+        to: email,
+        subject: subject,
+        html: htmlContent,
+      });
+
+      this.logger.log(`✅ Windows credentials email sent successfully to ${email}`);
+      this.logger.log('📧 ==========================================');
+    } catch (error) {
+      this.logger.error('❌ ========== EMAIL SEND FAILED ==========');
+      this.logger.error(`❌ Failed to send Windows credentials email to ${email}`);
+      this.logger.error(`❌ Error: ${error.message}`);
+      this.logger.error(`❌ Stack: ${error.stack}`);
+      this.logger.error('❌ ========================================');
+      // Don't throw error, just log it
+    }
+  }
+
+  /**
+   * Send Windows instructions email when password is not available
+   */
+  private async sendWindowsInstructionsEmail(
+    email: string,
+    vmInfo: any,
+    subscription: any,
+  ) {
+    this.logger.log('📧 ========== SENDING WINDOWS INSTRUCTIONS EMAIL ==========');
+    this.logger.log(`📧 To: ${email}`);
+    this.logger.log(`📧 VM: ${vmInfo.name}`);
+    this.logger.log(`📧 IP: ${vmInfo.publicIp}`);
+    
+    const subject = `🪟 Windows VM Ready - Get Your Password from OCI Console`;
+    
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <style>
+            body {
+              font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+              background-color: #f5f5f5;
+              margin: 0;
+              padding: 20px;
+            }
+            .container {
+              max-width: 800px;
+              margin: 0 auto;
+              background-color: #ffffff;
+              border-radius: 8px;
+              box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+              overflow: hidden;
+            }
+            .header {
+              background: linear-gradient(135deg, #0078D4 0%, #0053A4 100%);
+              color: white;
+              padding: 30px;
+              text-align: center;
+            }
+            .content {
+              padding: 40px;
+            }
+            h1 {
+              margin: 0;
+              font-size: 28px;
+            }
+            h2 {
+              color: #0078D4;
+              margin-top: 30px;
+            }
+            h3 {
+              color: #333;
+              margin-top: 20px;
+            }
+            .vm-details {
+              background-color: #f8f9fa;
+              border-left: 4px solid #0078D4;
+              padding: 20px;
+              margin: 20px 0;
+            }
+            .vm-details p {
+              margin: 10px 0;
+            }
+            .code-block {
+              background-color: #2d2d2d;
+              color: #ffffff;
+              padding: 15px;
+              border-radius: 5px;
+              font-family: 'Consolas', 'Monaco', monospace;
+              font-size: 14px;
+              overflow-x: auto;
+              margin: 10px 0;
+              white-space: pre-wrap;
+            }
+            .warning {
+              background-color: #fff3cd;
+              border-left: 4px solid #ffc107;
+              padding: 15px;
+              margin: 20px 0;
+            }
+            .info-box {
+              background-color: #e7f3ff;
+              border-left: 4px solid #0078D4;
+              padding: 15px;
+              margin: 20px 0;
+            }
+            .button {
+              display: inline-block;
+              background-color: #0078D4;
+              color: white;
+              padding: 12px 30px;
+              text-decoration: none;
+              border-radius: 5px;
+              margin-top: 20px;
+            }
+            .footer {
+              background-color: #f8f9fa;
+              padding: 20px;
+              text-align: center;
+              color: #666;
+            }
+            code {
+              background-color: #f5f5f5;
+              padding: 2px 6px;
+              border-radius: 3px;
+              font-family: 'Consolas', 'Monaco', monospace;
+              font-size: 13px;
+            }
+            ol {
+              line-height: 1.8;
+            }
+            .step-image {
+              max-width: 100%;
+              border: 1px solid #ddd;
+              margin: 10px 0;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h1>🪟 Your Windows VM is Ready!</h1>
+              <p>Get your password from OCI Console</p>
+            </div>
+
+            <div class="content">
+              <h2>VM Information</h2>
+              <div class="vm-details">
+                <p><strong>VM Name:</strong> ${vmInfo.name || 'N/A'}</p>
+                <p><strong>Public IP:</strong> <code>${vmInfo.publicIp || 'Retrieving...'}</code></p>
+                <p><strong>Operating System:</strong> ${vmInfo.operatingSystem || 'Windows Server'}</p>
+                <p><strong>Status:</strong> ${vmInfo.status || 'RUNNING'}</p>
+                <p><strong>Instance OCID:</strong> <code style="font-size: 11px;">${vmInfo.instanceOcid}</code></p>
+              </div>
+
+              <div class="warning">
+                <h3>📢 Important Notice</h3>
+                <p>Your Windows VM is ready, but the initial password needs to be retrieved from the OCI Console.</p>
+                <p>This is a one-time process that takes just a few minutes.</p>
+              </div>
+
+              <h2>🔑 How to Get Your Windows Password</h2>
+              
+              <h3>Option 1: Using OCI Console (Web Browser)</h3>
+              <ol>
+                <li><strong>Login to OCI Console:</strong>
+                  <br>Go to <a href="https://cloud.oracle.com">https://cloud.oracle.com</a>
+                  <br>Sign in with your Oracle Cloud account
+                </li>
+                <li><strong>Navigate to Compute Instances:</strong>
+                  <br>Click the hamburger menu (☰) → Compute → Instances
+                </li>
+                <li><strong>Find Your Instance:</strong>
+                  <br>Look for: <code>${vmInfo.name}</code>
+                  <br>Or use Instance OCID: <code style="font-size: 11px;">${vmInfo.instanceOcid}</code>
+                </li>
+                <li><strong>Get Password:</strong>
+                  <br>Click on your instance name
+                  <br>Scroll to "Instance Access" section
+                  <br>Click <strong>"Get Windows Credentials"</strong> or <strong>"Show Initial Credentials"</strong>
+                  <br>The password will be displayed (you may need to decrypt it with your SSH key)
+                </li>
+                <li><strong>Save the credentials:</strong>
+                  <div class="code-block">Username: opc
+Password: [The password shown in console]</div>
+                </li>
+              </ol>
+
+              <h3>Option 2: Using OCI CLI (Advanced)</h3>
+              <p>If you have OCI CLI installed:</p>
+              <div class="code-block">oci compute instance-console-connection get-windows-initial-creds \\
+  --instance-id ${vmInfo.instanceOcid}</div>
+
+              <h2>🖥️ Connect to Your Windows VM</h2>
+              
+              <h4>On Windows:</h4>
+              <ol>
+                <li>Press <code>Win + R</code> and type <code>mstsc</code></li>
+                <li>Enter IP: <code>${vmInfo.publicIp || 'YOUR_VM_IP'}</code></li>
+                <li>Click "Connect"</li>
+                <li>Enter the username and password from OCI Console</li>
+              </ol>
+
+              <h4>On Mac:</h4>
+              <ol>
+                <li>Download "Microsoft Remote Desktop" from Mac App Store</li>
+                <li>Click "+ Add PC"</li>
+                <li>Enter PC Name: <code>${vmInfo.publicIp || 'YOUR_VM_IP'}</code></li>
+                <li>Enter credentials from OCI Console when connecting</li>
+              </ol>
+
+              <div class="info-box">
+                <h3>💡 Tips</h3>
+                <ul>
+                  <li><strong>Change password:</strong> After first login, change your password immediately for security</li>
+                  <li><strong>Windows Update:</strong> Run Windows Update to get latest security patches</li>
+                  <li><strong>Firewall:</strong> Port 3389 (RDP) is already open by default</li>
+                  <li><strong>Need help?</strong> Contact support at support@oraclecloud.vn</li>
+                </ul>
+              </div>
+
+              <div class="warning">
+                <h3>🔒 Security Best Practices</h3>
+                <ul>
+                  <li>Change the default password immediately after first login</li>
+                  <li>Use strong passwords with letters, numbers, and symbols</li>
+                  <li>Enable Windows Defender and keep it updated</li>
+                  <li>Regularly backup your data</li>
+                  <li>Keep Windows updated with latest security patches</li>
+                </ul>
+              </div>
+
+              <h3>📊 VM Management</h3>
+              <p>Manage your VM (start, stop, restart) from your dashboard:</p>
+              <a href="https://oraclecloud.vn/package-management/${subscription.id}" class="button">
+                Manage Your VM
+              </a>
+            </div>
+
+            <div class="footer">
+              <p>© 2026 Oracle Cloud Management Platform</p>
+              <p>If you have any questions, please contact support@oraclecloud.vn</p>
+            </div>
+          </div>
+        </body>
+      </html>
+    `;
+
+    try {
+      await this.transporter.sendMail({
+        from: process.env.SMTP_FROM || 'noreply@oraclecloud.vn',
+        to: email,
+        subject: subject,
+        html: htmlContent,
+      });
+
+      this.logger.log(`✅ Windows instructions email sent successfully to ${email}`);
+      this.logger.log('📧 ==========================================');
+    } catch (error) {
+      this.logger.error('❌ ========== EMAIL SEND FAILED ==========');
+      this.logger.error(`❌ Failed to send Windows instructions email to ${email}`);
+      this.logger.error(`❌ Error: ${error.message}`);
+      this.logger.error(`❌ Stack: ${error.stack}`);
+      this.logger.error('❌ ========================================');
       // Don't throw error, just log it
     }
   }

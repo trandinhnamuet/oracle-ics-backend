@@ -68,6 +68,9 @@ export class VmInstance {
   @Column({ type: 'text', nullable: true })
   ssh_private_key_encrypted: string;
 
+  @Column({ type: 'text', nullable: true })
+  windows_initial_password: string;
+
   @Column({ type: 'timestamp', nullable: true })
   vm_started_at: Date | null;
 

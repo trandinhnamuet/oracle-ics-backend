@@ -138,6 +138,35 @@ export class OciService {
   }
 
   /**
+   * Get details of a specific image
+   * @param imageId - The OCID of the image
+   */
+  async getImage(imageId: string) {
+    try {
+      const request: oci.core.requests.GetImageRequest = {
+        imageId: imageId,
+      };
+
+      const response = await this.computeClient.getImage(request);
+      
+      this.logger.log(`Retrieved image details: ${response.image.id}`);
+      return {
+        id: response.image.id,
+        displayName: response.image.displayName,
+        operatingSystem: response.image.operatingSystem,
+        operatingSystemVersion: response.image.operatingSystemVersion,
+        lifecycleState: response.image.lifecycleState,
+        sizeInMBs: response.image.sizeInMBs,
+        timeCreated: response.image.timeCreated,
+        compartmentId: response.image.compartmentId,
+      };
+    } catch (error) {
+      this.logger.error('Error getting image details:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Get list of marketplace images (applications)
    * @param compartmentId - The OCID of the compartment
    */
@@ -547,6 +576,95 @@ export class OciService {
   }
 
   /**
+   * Get Security List details
+   * @param securityListId - The OCID of the security list
+   */
+  async getSecurityList(securityListId: string) {
+    try {
+      const request: oci.core.requests.GetSecurityListRequest = {
+        securityListId: securityListId,
+      };
+
+      const response = await this.virtualNetworkClient.getSecurityList(request);
+      
+      return {
+        id: response.securityList.id,
+        displayName: response.securityList.displayName,
+        ingressSecurityRules: response.securityList.ingressSecurityRules || [],
+        egressSecurityRules: response.securityList.egressSecurityRules || [],
+        lifecycleState: response.securityList.lifecycleState,
+      };
+    } catch (error) {
+      this.logger.error('Error getting security list:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Add RDP (port 3389) rule to Security List if not exists
+   * @param securityListId - The OCID of the security list
+   */
+  async ensureRdpAccessEnabled(securityListId: string): Promise<boolean> {
+    try {
+      this.logger.log(`🔍 Checking if RDP port 3389 is open in security list: ${securityListId}`);
+      
+      // Get current security list
+      const securityList = await this.getSecurityList(securityListId);
+      
+      // Check if RDP rule already exists
+      const hasRdpRule = securityList.ingressSecurityRules.some((rule: any) => {
+        return (
+          rule.protocol === '6' && // TCP
+          rule.tcpOptions?.destinationPortRange?.min === 3389 &&
+          rule.tcpOptions?.destinationPortRange?.max === 3389
+        );
+      });
+
+      if (hasRdpRule) {
+        this.logger.log('✅ RDP port 3389 is already open');
+        return true;
+      }
+
+      this.logger.log('⚠️  RDP port 3389 is not open, adding rule...');
+
+      // Add RDP rule to existing rules
+      const newIngressRules = [
+        ...securityList.ingressSecurityRules,
+        {
+          source: '0.0.0.0/0',
+          protocol: '6', // TCP
+          isStateless: false,
+          tcpOptions: {
+            destinationPortRange: {
+              min: 3389,
+              max: 3389,
+            },
+          },
+          description: 'RDP access for Windows VMs',
+        },
+      ];
+
+      const updateSecurityListDetails: oci.core.models.UpdateSecurityListDetails = {
+        ingressSecurityRules: newIngressRules,
+        egressSecurityRules: securityList.egressSecurityRules,
+      };
+
+      const request: oci.core.requests.UpdateSecurityListRequest = {
+        securityListId: securityListId,
+        updateSecurityListDetails: updateSecurityListDetails,
+      };
+
+      await this.virtualNetworkClient.updateSecurityList(request);
+      
+      this.logger.log('✅ RDP port 3389 opened successfully');
+      return true;
+    } catch (error) {
+      this.logger.error('❌ Error ensuring RDP access:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Create a subnet in a VCN
    * @param compartmentId - The OCID of the compartment
    * @param vcnId - The OCID of the VCN
@@ -933,6 +1051,36 @@ export class OciService {
       };
     } catch (error) {
       this.logger.error('Error terminating instance:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get Windows instance initial credentials (username and password)
+   * This method retrieves the auto-generated Windows Administrator password from OCI
+   * @param instanceId - The OCID of the Windows instance
+   * @returns Object containing username and password, or null if not available
+   */
+  async getWindowsInitialCredentials(instanceId: string): Promise<{ username: string; password: string } | null> {
+    try {
+      const request: oci.core.requests.GetWindowsInstanceInitialCredentialsRequest = {
+        instanceId: instanceId,
+      };
+
+      const response = await this.computeClient.getWindowsInstanceInitialCredentials(request);
+      
+      this.logger.log(`Retrieved Windows credentials for instance: ${instanceId}`);
+      return {
+        username: response.instanceCredentials.username,
+        password: response.instanceCredentials.password,
+      };
+    } catch (error) {
+      // If error code is 404 or credentials not available, return null
+      if (error.statusCode === 404 || error.message?.includes('not available')) {
+        this.logger.warn(`Windows credentials not available for instance ${instanceId}: ${error.message}`);
+        return null;
+      }
+      this.logger.error('Error getting Windows credentials:', error);
       throw error;
     }
   }
