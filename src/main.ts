@@ -48,8 +48,8 @@ async function bootstrap() {
   'https://oracle-ics-frontend.vercel.app',
   'https://oraclecloud.vn',
   'http://oraclecloud.vn',
-  'https://smartdashboard.vn',
-  'http://smartdashboard.vn',
+  'https://admin.oraclecloud.vn',
+
 ],
     credentials: true,
   };
