@@ -1,5 +1,6 @@
 import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn } from 'typeorm';
 import { User } from './user.entity';
+import { Subscription } from './subscription.entity';
 
 @Entity('payments', { schema: 'oracle' })
 export class Payment {
@@ -36,13 +37,17 @@ export class Payment {
   // @Column({ type: 'json', nullable: true })
   // metadata: any; // Store additional payment info - Tạm thời comment out do chưa có column trong DB
 
-  // @CreateDateColumn()
-  // created_at: Date;
+  @Column({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP', name: 'created_at' })
+  created_at: Date;
 
-  // @UpdateDateColumn()
-  // updated_at: Date;
+  @Column({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP', name: 'updated_at' })
+  updated_at: Date;
 
   @ManyToOne(() => User)
   @JoinColumn({ name: 'user_id' })
   user: User;
+
+  @ManyToOne(() => Subscription)
+  @JoinColumn({ name: 'subscription_id' })
+  subscription?: Subscription;
 }
