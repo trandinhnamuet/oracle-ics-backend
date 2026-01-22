@@ -51,9 +51,10 @@ export class PaymentService {
   async findByUser(userId: number): Promise<Payment[]> {
     return await this.paymentRepository.find({
       where: { user_id: userId },
-      // order: {
-      //   created_at: 'DESC',
-      // },
+      relations: ['subscription', 'subscription.cloudPackage'],
+      order: {
+        created_at: 'DESC',
+      },
     });
   }
 
