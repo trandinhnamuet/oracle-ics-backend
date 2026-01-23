@@ -9,6 +9,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { VmProvisioningService } from '../vm-provisioning/vm-provisioning.service';
 import { SystemSshKeyService } from '../system-ssh-key/system-ssh-key.service';
+import { encryptPrivateKey } from '../../utils/system-ssh-key.util';
 import { Subscription } from '../../entities/subscription.entity';
 import { VmInstance } from '../../entities/vm-instance.entity';
 import { ConfigureVmDto } from './dto';
@@ -114,7 +115,7 @@ export class VmSubscriptionService {
         // Generate SSH key pair for user
         userSshKeyPair = this.generateSshKeyPair();
 
-        // Provision VM
+        // Provision VM with user's SSH key pair
         vmResult = await this.vmProvisioningService.provisionVm(userId, {
           displayName: configureVmDto.displayName,
           imageId: configureVmDto.imageId,
@@ -123,6 +124,7 @@ export class VmSubscriptionService {
           memoryInGBs: configureVmDto.memoryInGBs,
           bootVolumeSizeInGBs: configureVmDto.bootVolumeSizeInGBs,
           userSshPublicKey: userSshKeyPair.publicKey,
+          userSshPrivateKey: userSshKeyPair.privateKey, // Pass private key to be encrypted and saved
           description: configureVmDto.description || `VM for subscription ${subscriptionId}`,
           subscriptionId: subscriptionId,
         });
@@ -627,6 +629,7 @@ sudo su -
           </div>
         </body>
       </html>
+
     `;
 
     try {
