@@ -1548,6 +1548,7 @@ export class OciService {
 
   /**
    * Get instance metrics from OCI Monitoring
+   * Automatically adjusts resolution based on time range
    */
   async getInstanceMetrics(
     instanceId: string,
@@ -1559,14 +1560,48 @@ export class OciService {
       const monitoring = this.getMonitoringClient();
       const compartmentId = await this.getCompartmentIdFromInstanceId(instanceId);
 
+      // Calculate time range in hours
+      const timeRangeHours = (endTime.getTime() - startTime.getTime()) / (1000 * 60 * 60);
+      
+      // Determine resolution based on time range
+      // OCI Monitoring has constraints on resolution vs time range
+      let resolution: string;
+      let queryResolution: string;
+      
+      if (timeRangeHours <= 1) {
+        // 1 hour or less: use 1m resolution
+        resolution = '1m';
+        queryResolution = '1m';
+      } else if (timeRangeHours <= 6) {
+        // Up to 6 hours: use 5m resolution
+        resolution = '5m';
+        queryResolution = '5m';
+      } else if (timeRangeHours <= 24) {
+        // Up to 24 hours: use 1h resolution
+        resolution = '1h';
+        queryResolution = '1h';
+      } else if (timeRangeHours <= 7 * 24) {
+        // Up to 7 days: use 1h resolution
+        resolution = '1h';
+        queryResolution = '1h';
+      } else {
+        // More than 7 days: use 1h resolution (max supported for long ranges)
+        resolution = '1h';
+        queryResolution = '1h';
+      }
+
+      this.logger.debug(
+        `Metrics for ${instanceId}: time range ${timeRangeHours.toFixed(2)}h, using ${queryResolution} resolution`,
+      );
+
       const summarizeMetricsDataRequest: oci.monitoring.requests.SummarizeMetricsDataRequest = {
         compartmentId: compartmentId,
         summarizeMetricsDataDetails: {
           namespace: 'oci_computeagent',
-          query: `${metricName}[1m]{resourceId = "${instanceId}"}.mean()`,
+          query: `${metricName}[${queryResolution}]{resourceId = "${instanceId}"}.mean()`,
           startTime: startTime,
           endTime: endTime,
-          resolution: '1m',
+          resolution: resolution,
         },
       };
 
