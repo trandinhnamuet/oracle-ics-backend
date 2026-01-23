@@ -37,6 +37,10 @@ export class CreateVmDto {
 
   @IsString()
   @IsOptional()
+  userSshPrivateKey?: string;
+
+  @IsString()
+  @IsOptional()
   description?: string;
 
   @IsString()
