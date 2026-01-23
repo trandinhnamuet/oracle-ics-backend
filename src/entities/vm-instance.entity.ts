@@ -71,6 +71,12 @@ export class VmInstance {
   @Column({ type: 'text', nullable: true })
   windows_initial_password: string;
 
+  @Column({ type: 'int', nullable: true })
+  system_ssh_key_id: number | null;
+
+  @Column({ type: 'boolean', default: true, nullable: true })
+  has_admin_access: boolean;
+
   @Column({ type: 'timestamp', nullable: true })
   vm_started_at: Date | null;
 
