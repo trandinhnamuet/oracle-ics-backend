@@ -22,6 +22,7 @@ import { SystemSshKeyModule } from './modules/system-ssh-key/system-ssh-key.modu
 import { VmProvisioningModule } from './modules/vm-provisioning/vm-provisioning.module';
 import { VmSubscriptionModule } from './modules/vm-subscription/vm-subscription.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
+import { BandwidthModule } from './modules/bandwidth/bandwidth.module';
 import { TerminalModule } from './modules/terminal/terminal.module';
 
 dotenv.config();
@@ -57,6 +58,7 @@ dotenv.config();
     VmProvisioningModule,
     VmSubscriptionModule,
     AnalyticsModule,
+    BandwidthModule,
     TerminalModule,
   ],
   controllers: [AppController],
