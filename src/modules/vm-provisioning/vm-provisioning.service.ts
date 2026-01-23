@@ -9,6 +9,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { OciService } from '../oci/oci.service';
 import { SystemSshKeyService } from '../system-ssh-key/system-ssh-key.service';
+import { encryptPrivateKey } from '../../utils/system-ssh-key.util';
 import { User } from '../../entities/user.entity';
 import { UserCompartment } from '../../entities/user-compartment.entity';
 import { VcnResource } from '../../entities/vcn-resource.entity';
@@ -254,6 +255,20 @@ export class VmProvisioningService {
       savedTempVm.shape = usedShape;
       savedTempVm.lifecycle_state = ociInstance.lifecycleState;
       savedTempVm.vm_started_at = ociInstance.lifecycleState === 'RUNNING' ? new Date() : (null as any);
+      
+      // Step 7.5: Encrypt and save user's private key if provided (for Linux VMs)
+      if (createVmDto.userSshPrivateKey) {
+        try {
+          savedTempVm.ssh_private_key_encrypted = encryptPrivateKey(createVmDto.userSshPrivateKey);
+          this.logger.log('✅ User\'s SSH private key encrypted and saved');
+        } catch (error) {
+          this.logger.error('Failed to encrypt private key:', error);
+        }
+      }
+      
+      // Step 7.6: Save admin SSH key reference
+      savedTempVm.system_ssh_key_id = adminSshKey.id;
+      savedTempVm.has_admin_access = true;
 
       const savedVm = await this.vmInstanceRepo.save(savedTempVm) as VmInstance;
 

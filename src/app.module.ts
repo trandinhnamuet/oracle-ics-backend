@@ -23,6 +23,7 @@ import { VmProvisioningModule } from './modules/vm-provisioning/vm-provisioning.
 import { VmSubscriptionModule } from './modules/vm-subscription/vm-subscription.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { BandwidthModule } from './modules/bandwidth/bandwidth.module';
+import { TerminalModule } from './modules/terminal/terminal.module';
 
 dotenv.config();
 
@@ -58,6 +59,7 @@ dotenv.config();
     VmSubscriptionModule,
     AnalyticsModule,
     BandwidthModule,
+    TerminalModule,
   ],
   controllers: [AppController],
   providers: [AppService],
