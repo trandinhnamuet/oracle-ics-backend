@@ -38,6 +38,15 @@ export class Subscription {
   @Column({ type: 'int', nullable: true })
   vm_instance_id: number; // Foreign key to vm_instances
 
+  @Column({ type: 'varchar', length: 50, default: 'pending_setup' })
+  configuration_status: string; // pending_setup, configuring, provisioning, active, failed
+
+  @Column({ type: 'timestamp', nullable: true })
+  last_configured_at: Date | null;
+
+  @Column({ type: 'text', nullable: true })
+  provisioning_error: string | null;
+
   @Column({ type: 'text', nullable: true })
   notes: string;
 
