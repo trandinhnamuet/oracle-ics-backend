@@ -615,19 +615,34 @@ export class VmProvisioningService {
     });
 
     if (userCompartment) {
-      // Verify that the compartment still exists in OCI
+      // Verify that the compartment still exists AND is ACTIVE in OCI
       try {
-        await this.ociService.getCompartment(userCompartment.compartment_ocid);
-        this.logger.log(`Using existing compartment: ${userCompartment.compartment_ocid}`);
-        return userCompartment;
+        const ociCompartment = await this.ociService.getCompartment(userCompartment.compartment_ocid);
+        
+        // Check if compartment is in ACTIVE state
+        if (ociCompartment.lifecycleState !== 'ACTIVE') {
+          const staleOcid = userCompartment.compartment_ocid;
+          this.logger.warn(
+            `Compartment ${staleOcid} exists but is in ${ociCompartment.lifecycleState} state. ` +
+            `Need ACTIVE state. Creating new compartment...`
+          );
+          
+          // Delete stale compartment record from database
+          await this.userCompartmentRepo.remove(userCompartment);
+          // Will create new compartment below
+        } else {
+          this.logger.log(`Using existing ACTIVE compartment: ${userCompartment.compartment_ocid}`);
+          return userCompartment;
+        }
       } catch (error) {
-        // Compartment was deleted from OCI
-        this.logger.warn(`Compartment ${userCompartment.compartment_ocid} no longer exists in OCI. Creating new compartment for user ${userId}...`);
+        // Compartment was deleted from OCI or not accessible
+        const staleOcid = userCompartment.compartment_ocid;
+        this.logger.warn(`Compartment ${staleOcid} no longer exists in OCI. Creating new compartment for user ${userId}...`);
         
         // Delete stale compartment record from database
         // This will cascade delete associated VCN and VMs (due to foreign keys)
         await this.userCompartmentRepo.remove(userCompartment);
-        userCompartment = null as any;
+        // Will create new compartment below
       }
     }
 
@@ -682,6 +697,37 @@ export class VmProvisioningService {
   private async ensureVcnAndSubnet(
     userCompartment: UserCompartment,
   ): Promise<VcnResource> {
+    // CRITICAL: Verify the compartment still exists AND is ACTIVE in OCI before proceeding
+    // This prevents "NotAuthorizedOrNotFound" errors when trying to create VCN in deleted/deleting compartments
+    try {
+      const ociCompartment = await this.ociService.getCompartment(userCompartment.compartment_ocid);
+      
+      if (ociCompartment.lifecycleState !== 'ACTIVE') {
+        this.logger.error(
+          `Compartment ${userCompartment.compartment_ocid} is in ${ociCompartment.lifecycleState} state, ` +
+          `but ACTIVE state is required to create resources.`
+        );
+        throw new InternalServerErrorException(
+          `Cannot create VCN: Compartment is in ${ociCompartment.lifecycleState} state. ` +
+          `Please wait for the compartment to be deleted completely and try again.`
+        );
+      }
+      
+      this.logger.log(`Verified compartment is ACTIVE in OCI: ${userCompartment.compartment_ocid}`);
+    } catch (error) {
+      if (error instanceof InternalServerErrorException) {
+        throw error; // Re-throw our custom error
+      }
+      
+      this.logger.error(`Compartment ${userCompartment.compartment_ocid} no longer exists in OCI!`);
+      this.logger.error(`This should not happen - compartment was verified in ensureUserCompartment.`);
+      this.logger.error(`Error: ${error.message}`);
+      throw new InternalServerErrorException(
+        `Compartment verification failed. The compartment may have been deleted from OCI. ` +
+        `Please try again to create a new compartment.`
+      );
+    }
+
     // Check if user already has a VCN (regardless of compartment)
     // This ensures one VCN per user, shared by all VMs
     let vcnResource = await this.vcnResourceRepo.findOne({
@@ -896,33 +942,53 @@ export class VmProvisioningService {
   /**
    * Wait for newly created compartment to be ready and synchronized
    * This is necessary because OCI needs time to propagate compartment creation
-   * across its distributed infrastructure
+   * across its distributed infrastructure. Without this wait, subsequent operations
+   * (like creating VCN) may fail with "NotAuthorizedOrNotFound" errors.
    */
   private async waitForCompartmentReady(compartmentOcid: string): Promise<void> {
-    const maxRetries = 5;
-    const baseDelay = 2000; // Start with 2 seconds
+    const maxRetries = 10; // Increased from 5 to 10 for better reliability
+    const baseDelay = 3000; // Increased from 2s to 3s
+    
+    this.logger.log(`⏳ Waiting for compartment ${compartmentOcid} to be fully synchronized...`);
     
     for (let i = 0; i < maxRetries; i++) {
       try {
         // Try to verify compartment exists by fetching it
-        await this.ociService.getCompartment(compartmentOcid);
+        const compartment = await this.ociService.getCompartment(compartmentOcid);
         
-        // If successful, add a small additional delay to ensure full propagation
-        await this.sleep(1000);
-        this.logger.log(`Compartment ${compartmentOcid} is ready`);
+        // Check if compartment is in ACTIVE state
+        if (compartment.lifecycleState !== 'ACTIVE') {
+          this.logger.warn(`Compartment is in ${compartment.lifecycleState} state, waiting...`);
+          
+          // Exponential backoff: 3s, 6s, 12s, 24s...
+          const delay = baseDelay * Math.pow(2, i);
+          this.logger.warn(`Waiting ${delay}ms before retry (attempt ${i + 1}/${maxRetries})...`);
+          await this.sleep(delay);
+          continue;
+        }
+        
+        // Compartment is ACTIVE, add additional delay to ensure full propagation
+        // This is critical for avoiding "NotAuthorizedOrNotFound" errors
+        const finalDelay = 5000; // 5 seconds final wait
+        this.logger.log(`✅ Compartment is ACTIVE. Waiting additional ${finalDelay}ms for full propagation...`);
+        await this.sleep(finalDelay);
+        
+        this.logger.log(`✅ Compartment ${compartmentOcid} is ready and fully synchronized`);
         return;
       } catch (error) {
         if (i === maxRetries - 1) {
           // Last retry failed
-          this.logger.error(`Compartment ${compartmentOcid} not ready after ${maxRetries} retries`);
+          this.logger.error(`❌ Compartment ${compartmentOcid} not ready after ${maxRetries} retries`);
+          this.logger.error(`Error: ${error.message}`);
           throw new InternalServerErrorException(
             'Compartment creation verification failed. Please try again in a few moments.'
           );
         }
         
-        // Exponential backoff: 2s, 4s, 8s, 16s, 32s
+        // Exponential backoff: 3s, 6s, 12s, 24s, 48s...
         const delay = baseDelay * Math.pow(2, i);
-        this.logger.warn(`Compartment not ready yet, retrying in ${delay}ms... (attempt ${i + 1}/${maxRetries})`);
+        this.logger.warn(`⚠️  Compartment not accessible yet: ${error.message}`);
+        this.logger.warn(`Retrying in ${delay}ms... (attempt ${i + 1}/${maxRetries})`);
         await this.sleep(delay);
       }
     }

@@ -13,6 +13,7 @@ import { encryptPrivateKey } from '../../utils/system-ssh-key.util';
 import { Subscription } from '../../entities/subscription.entity';
 import { VmInstance } from '../../entities/vm-instance.entity';
 import { ConfigureVmDto } from './dto';
+import { VmActionType } from '../vm-provisioning/dto';
 import * as crypto from 'crypto';
 import * as nodemailer from 'nodemailer';
 
@@ -83,6 +84,10 @@ export class VmSubscriptionService {
     // Step 1: Check subscription eligibility
     const subscription = await this.checkSubscriptionEligibility(subscriptionId, userId);
 
+    // Update configuration status to 'configuring'
+    subscription.configuration_status = 'configuring';
+    await this.subscriptionRepo.save(subscription);
+
     // Step 2: Check if VM already exists for THIS SPECIFIC SUBSCRIPTION
     let existingVm = await this.vmInstanceRepo.findOne({
       where: { 
@@ -112,6 +117,10 @@ export class VmSubscriptionService {
         // Create new VM for this subscription
         this.logger.log(`Creating new VM for subscription ${subscriptionId}`);
 
+        // Update status to provisioning
+        subscription.configuration_status = 'provisioning';
+        await this.subscriptionRepo.save(subscription);
+
         // Generate SSH key pair for user
         userSshKeyPair = this.generateSshKeyPair();
 
@@ -133,6 +142,9 @@ export class VmSubscriptionService {
       // Step 3: Update subscription with VM info
       subscription.vm_instance_id = vmResult.id; // Use database UUID, not OCI instance ID
       subscription.status = 'active';
+      subscription.configuration_status = 'active';
+      subscription.last_configured_at = new Date();
+      subscription.provisioning_error = null; // Clear any previous error
       await this.subscriptionRepo.save(subscription);
 
       // Step 4: Send credentials to user via email (SSH key for Linux or password for Windows)
@@ -223,6 +235,16 @@ export class VmSubscriptionService {
       };
     } catch (error) {
       this.logger.error(`Error configuring VM for subscription ${subscriptionId}:`, error);
+      
+      // Update subscription status to failed
+      try {
+        subscription.configuration_status = 'failed';
+        subscription.provisioning_error = error.message || 'Unknown error occurred';
+        await this.subscriptionRepo.save(subscription);
+      } catch (saveError) {
+        this.logger.error('Failed to update subscription status:', saveError);
+      }
+      
       throw new InternalServerErrorException(
         `Failed to configure VM: ${error.message}`,
       );
@@ -1161,5 +1183,48 @@ Password: [The password shown in console]</div>
       this.logger.error('❌ ========================================');
       // Don't throw error, just log it
     }
+  }
+
+  /**
+   * Perform action on subscription's VM (Start, Stop, Restart)
+   */
+  async performVmAction(
+    subscriptionId: string,
+    userId: number,
+    action: VmActionType,
+  ) {
+    this.logger.log(`Performing ${action} on VM for subscription ${subscriptionId}`);
+
+    // Check subscription eligibility
+    const subscription = await this.checkSubscriptionEligibility(subscriptionId, userId);
+
+    if (!subscription.vm_instance_id) {
+      throw new BadRequestException('VM not configured for this subscription');
+    }
+
+    // Find VM by database ID
+    const vm = await this.vmInstanceRepo.findOne({
+      where: { id: subscription.vm_instance_id },
+    });
+
+    if (!vm) {
+      throw new NotFoundException('VM not found');
+    }
+
+    // Perform the action using VmProvisioningService
+    const result = await this.vmProvisioningService.performVmAction(
+      userId,
+      vm.id,
+      action,
+    );
+
+    this.logger.log(`Action ${action} completed successfully on VM ${vm.id}`);
+
+    return {
+      success: true,
+      action: action,
+      vm: result,
+      message: `VM ${action.toLowerCase()} operation completed successfully`,
+    };
   }
 }

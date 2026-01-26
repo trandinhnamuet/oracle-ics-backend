@@ -1462,25 +1462,54 @@ export class OciService {
     await queryRunner.startTransaction();
 
     try {
-      // Get vm_instance records to log actions
+      // Get vm_instance records for logging
       const vmInstances = await queryRunner.query(
         `SELECT id, user_id, instance_name FROM oracle.vm_instances WHERE compartment_id = $1`,
         [compartmentId]
       );
 
-      // Insert action logs for deleted VMs
-      for (const vm of vmInstances) {
-        await queryRunner.query(
-          `INSERT INTO oracle.vm_actions_log (vm_instance_id, user_id, action, description, created_at) 
-           VALUES ($1, $2, $3, $4, NOW())`,
-          [
-            vm.id,
-            vm.user_id,
-            'COMPARTMENT_DELETED',
-            `VM ${vm.instance_name} deleted due to compartment deletion`
-          ]
-        );
-      }
+      this.logger.log(`Found ${vmInstances.length} VM instances to delete in compartment ${compartmentId}`);
+
+      // Delete bandwidth_logs for VMs in this compartment
+      const deletedBandwidthLogs = await queryRunner.query(
+        `DELETE FROM oracle.bandwidth_logs 
+         WHERE vm_instance_id IN (
+           SELECT id FROM oracle.vm_instances WHERE compartment_id = $1
+         ) RETURNING id`,
+        [compartmentId]
+      );
+      this.logger.log(`Deleted ${deletedBandwidthLogs.length} bandwidth log records`);
+
+      // Delete vm_actions_log for VMs in this compartment
+      const deletedActionLogs = await queryRunner.query(
+        `DELETE FROM oracle.vm_actions_log 
+         WHERE vm_instance_id IN (
+           SELECT id FROM oracle.vm_instances WHERE compartment_id = $1
+         ) RETURNING id`,
+        [compartmentId]
+      );
+      this.logger.log(`Deleted ${deletedActionLogs.length} VM action log records`);
+
+      // Delete subscription_logs for subscriptions with VMs in this compartment
+      const deletedSubscriptionLogs = await queryRunner.query(
+        `DELETE FROM oracle.subscription_logs 
+         WHERE subscription_id IN (
+           SELECT subscription_id FROM oracle.vm_instances WHERE compartment_id = $1
+         ) RETURNING id`,
+        [compartmentId]
+      );
+      this.logger.log(`Deleted ${deletedSubscriptionLogs.length} subscription log records`);
+
+      // Update subscriptions to remove vm_instance_id reference
+      const updatedSubscriptions = await queryRunner.query(
+        `UPDATE oracle.subscriptions 
+         SET vm_instance_id = NULL 
+         WHERE vm_instance_id IN (
+           SELECT id FROM oracle.vm_instances WHERE compartment_id = $1
+         ) RETURNING id`,
+        [compartmentId]
+      );
+      this.logger.log(`Updated ${updatedSubscriptions.length} subscription records to remove VM reference`);
 
       // Delete vm_instances
       await queryRunner.query(
