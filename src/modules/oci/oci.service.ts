@@ -1086,6 +1086,173 @@ export class OciService {
   }
 
   /**
+   * Update SSH keys for an existing instance by directly modifying authorized_keys file via SSH
+   * OCI doesn't allow updating ssh_authorized_keys metadata after instance creation,
+   * so we SSH into the instance and modify the file directly.
+   * Keeps admin key + max 2 user keys (3 total)
+   * 
+   * @param instanceId - The OCID of the instance
+   * @param newSshKey - The new SSH public key to add
+   * @param publicIp - Public IP of the instance
+   * @param username - SSH username (e.g., 'opc', 'ubuntu')
+   * @param adminPrivateKey - Admin private key string (decrypted)
+   * @returns Updated key info
+   */
+  async updateInstanceSshKeys(
+    instanceId: string, 
+    newSshKey: string, 
+    publicIp: string,
+    username: string,
+    adminPrivateKey: string,
+  ): Promise<{ id: string; keysCount: number; userKeysCount: number; removedOldest: boolean }> {
+    try {
+      const { Client } = await import('ssh2');
+      
+      return new Promise((resolve, reject) => {
+        const conn = new Client();
+        
+        this.logger.log(`🔐 Connecting to ${username}@${publicIp} via SSH...`);
+        
+        conn.on('ready', () => {
+          this.logger.log(`✅ SSH connection established`);
+          
+          // Read current authorized_keys
+          this.logger.log(`📖 Reading current authorized_keys...`);
+          conn.exec('cat ~/.ssh/authorized_keys', (err, stream) => {
+            if (err) {
+              conn.end();
+              return reject(new Error(`Failed to read authorized_keys: ${err.message}`));
+            }
+            
+            let currentKeys = '';
+            
+            stream.on('data', (data: Buffer) => {
+              currentKeys += data.toString();
+            });
+            
+            stream.stderr.on('data', (data: Buffer) => {
+              this.logger.error(`stderr: ${data}`);
+            });
+            
+            stream.on('close', (code: number) => {
+              if (code !== 0) {
+                conn.end();
+                return reject(new Error(`Failed to read authorized_keys, exit code: ${code}`));
+              }
+              
+              // Parse existing keys
+              const existingKeys = currentKeys
+                .split('\n')
+                .map(key => key.trim())
+                .filter(key => key.length > 0);
+              
+              this.logger.log(`📋 Found ${existingKeys.length} existing keys`);
+              
+              // Admin key is the first one
+              const adminKey = existingKeys.length > 0 ? existingKeys[0] : null;
+              
+              // Get user keys only (exclude admin key)
+              const existingUserKeys = adminKey 
+                ? existingKeys.filter(key => key !== adminKey)
+                : existingKeys;
+              
+              // Add new user key to the beginning
+              const updatedUserKeys = [newSshKey, ...existingUserKeys];
+              
+              // Keep only the 2 most recent user keys
+              const finalUserKeys = updatedUserKeys.slice(0, 2);
+              
+              // Combine: Admin key first, then user keys
+              const finalKeys = adminKey 
+                ? [adminKey, ...finalUserKeys]
+                : finalUserKeys;
+              
+              // Create new authorized_keys content
+              const newAuthorizedKeysContent = finalKeys.join('\n') + '\n';
+              
+              // Write new authorized_keys file
+              this.logger.log(`✍️  Writing updated authorized_keys (${finalKeys.length} keys)...`);
+              
+              // Use cat > file approach with heredoc to avoid shell escaping issues
+              // This is more reliable than echo for large content
+              const command = `cat > ~/.ssh/authorized_keys << 'EOF_SSH_KEYS'
+${newAuthorizedKeysContent}EOF_SSH_KEYS
+chmod 600 ~/.ssh/authorized_keys`;
+              
+              conn.exec(command, (err, stream) => {
+                if (err) {
+                  conn.end();
+                  return reject(new Error(`Failed to write authorized_keys: ${err.message}`));
+                }
+                
+                let stdout = '';
+                let stderr = '';
+                
+                // Pipe stdout to drain stream (important!)
+                stream.on('data', (data: Buffer) => {
+                  stdout += data.toString();
+                });
+                
+                stream.stderr.on('data', (data: Buffer) => {
+                  stderr += data.toString();
+                });
+                
+                stream.on('close', (code: number) => {
+                  conn.end();
+                  
+                  if (code !== 0) {
+                    this.logger.error(`Write failed. stderr: ${stderr}`);
+                    return reject(new Error(`Failed to write authorized_keys, exit code: ${code}`));
+                  }
+                  
+                  this.logger.log(
+                    `✅ SSH keys updated successfully for instance ${instanceId}. ` +
+                    `Total keys: ${finalKeys.length} (1 admin + ${finalUserKeys.length} user keys)`
+                  );
+                  
+                  resolve({
+                    id: instanceId,
+                    keysCount: finalKeys.length,
+                    userKeysCount: finalUserKeys.length,
+                    removedOldest: existingUserKeys.length >= 2,
+                  });
+                });
+                
+                // Add timeout to prevent hanging forever
+                const timeout = setTimeout(() => {
+                  conn.end();
+                  reject(new Error('SSH command timeout after 30 seconds'));
+                }, 30000);
+                
+                stream.on('close', () => {
+                  clearTimeout(timeout);
+                });
+              });
+            });
+          });
+        });
+        
+        conn.on('error', (err) => {
+          this.logger.error(`SSH connection error: ${err.message}`);
+          reject(new Error(`SSH connection failed: ${err.message}`));
+        });
+        
+        // Connect to the instance
+        conn.connect({
+          host: publicIp,
+          port: 22,
+          username: username,
+          privateKey: Buffer.from(adminPrivateKey, 'utf8'),
+          readyTimeout: 30000,
+        });
+      });
+    } catch (error) {
+      this.logger.error('Error updating instance SSH keys via SSH:', error);
+      throw error;
+    }
+  }
+
+  /**
    * List instances in a compartment
    * @param compartmentId - The OCID of the compartment
    */

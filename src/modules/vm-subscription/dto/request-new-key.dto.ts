@@ -1,7 +1,9 @@
-import { IsEmail, IsOptional } from 'class-validator';
+import { IsEmail, IsOptional, IsString, ValidateIf } from 'class-validator';
 
 export class RequestNewKeyDto {
-  @IsEmail()
   @IsOptional()
+  @IsString()
+  @ValidateIf((o) => o.email !== '' && o.email !== null && o.email !== undefined)
+  @IsEmail({}, { message: 'Invalid email format' })
   email?: string;
 }

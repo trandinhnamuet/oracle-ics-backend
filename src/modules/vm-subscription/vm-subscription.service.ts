@@ -9,13 +9,17 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { VmProvisioningService } from '../vm-provisioning/vm-provisioning.service';
 import { SystemSshKeyService } from '../system-ssh-key/system-ssh-key.service';
-import { encryptPrivateKey } from '../../utils/system-ssh-key.util';
+import { OciService } from '../oci/oci.service';
+import { encryptPrivateKey, decryptPrivateKey } from '../../utils/system-ssh-key.util';
 import { Subscription } from '../../entities/subscription.entity';
 import { VmInstance } from '../../entities/vm-instance.entity';
 import { ConfigureVmDto } from './dto';
 import { VmActionType } from '../vm-provisioning/dto';
 import * as crypto from 'crypto';
 import * as nodemailer from 'nodemailer';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 
 @Injectable()
 export class VmSubscriptionService {
@@ -29,6 +33,7 @@ export class VmSubscriptionService {
     private readonly vmInstanceRepo: Repository<VmInstance>,
     private readonly vmProvisioningService: VmProvisioningService,
     private readonly systemSshKeyService: SystemSshKeyService,
+    private readonly ociService: OciService,
   ) {
     // Initialize email transporter
     this.transporter = nodemailer.createTransport({
@@ -320,9 +325,15 @@ export class VmSubscriptionService {
    * Request new SSH key for subscription's VM
    */
   async requestNewSshKey(subscriptionId: string, userId: number, email?: string) {
-    this.logger.log(`Requesting new SSH key for subscription ${subscriptionId}`);
+    this.logger.log('========================================');
+    this.logger.log(`🔑 REQUEST NEW SSH KEY`);
+    this.logger.log(`📋 Subscription ID: ${subscriptionId}`);
+    this.logger.log(`👤 User ID: ${userId}`);
+    this.logger.log(`📧 Email: ${email || 'Not provided'}`);
+    this.logger.log('========================================');
 
     const subscription = await this.checkSubscriptionEligibility(subscriptionId, userId);
+    this.logger.log(`✅ Subscription eligibility check passed`);
 
     if (!subscription.vm_instance_id) {
       throw new BadRequestException('VM not configured for this subscription');
@@ -334,12 +345,19 @@ export class VmSubscriptionService {
     });
 
     if (!vm) {
+      this.logger.error(`❌ VM not found with ID: ${subscription.vm_instance_id}`);
       throw new NotFoundException('VM not found');
     }
 
+    this.logger.log(`✅ VM found: ${vm.instance_name} (${vm.operating_system})`);
+
     // Check if this is a Windows VM
     const isWindows = vm.operating_system?.toLowerCase().includes('windows');
+    this.logger.log(`🖥️  Operating System: ${vm.operating_system}`);
+    this.logger.log(`🪟 Is Windows: ${isWindows}`);
+    
     if (isWindows) {
+      this.logger.warn(`❌ Cannot generate SSH key for Windows VM`);
       throw new BadRequestException(
         'SSH key regeneration is not applicable for Windows VMs. ' +
         'Windows VMs use RDP with password authentication. ' +
@@ -348,42 +366,121 @@ export class VmSubscriptionService {
     }
 
     // Generate new SSH key pair
+    this.logger.log(`🔐 Generating new SSH key pair...`);
     const newKeyPair = this.generateSshKeyPair();
+    this.logger.log(`✅ New SSH key generated`);
+    this.logger.log(`   Fingerprint: ${newKeyPair.fingerprint}`);
 
-    // Update VM with new user SSH key
-    vm.ssh_public_key = newKeyPair.publicKey;
-    await this.vmInstanceRepo.save(vm);
+    let updateResult: { id: string; keysCount: number; userKeysCount: number; removedOldest: boolean };
 
-    // TODO: Update SSH key in OCI instance
-    // This would require stopping the instance, updating metadata, and restarting
-    // For now, we'll just log it
-    this.logger.warn('SSH key updated in database, but not yet applied to OCI instance');
+    try {
+      // Get admin SSH key
+      this.logger.log(`🔑 Retrieving admin SSH key...`);
+      const adminKey = await this.systemSshKeyService.getActiveKey();
+      
+      if (!adminKey) {
+        this.logger.error(`❌ No active admin SSH key found`);
+        throw new InternalServerErrorException('Admin SSH key not configured');
+      }
+      
+      this.logger.log(`✅ Admin key retrieved`);
+      
+      // Decrypt admin private key
+      this.logger.log(`🔓 Decrypting admin private key...`);
+      let adminPrivateKey = decryptPrivateKey(adminKey.private_key_encrypted);
+      
+      // Convert PKCS#8 to PKCS#1 (RSA PRIVATE KEY) if needed for ssh2 compatibility
+      if (adminPrivateKey.includes('BEGIN PRIVATE KEY')) {
+        this.logger.log(`🔄 Converting PKCS#8 key to PKCS#1 format...`);
+        try {
+          const keyObject = crypto.createPrivateKey(adminPrivateKey);
+          adminPrivateKey = keyObject.export({
+            type: 'pkcs1',
+            format: 'pem',
+          }).toString();
+          this.logger.log(`✅ Key converted to PKCS#1 (RSA PRIVATE KEY)`);
+        } catch (convertError) {
+          this.logger.warn(`⚠️  Key conversion failed: ${convertError.message}`);
+        }
+      }
+      
+      // Ensure key has proper format (newline at end if missing)
+      if (!adminPrivateKey.endsWith('\n')) {
+        adminPrivateKey += '\n';
+      }
+      
+      this.logger.log(`✅ Admin key decrypted`);
+      this.logger.log(`   Key starts with: ${adminPrivateKey.substring(0, 50)}...`);
+      this.logger.log(`   Key length: ${adminPrivateKey.length} bytes`);
+      
+      // Determine SSH username from OS
+      const username = this.getOsSshUsername(vm.operating_system);
+      this.logger.log(`👤 SSH Username: ${username}`);
+      
+      // Check if VM has public IP
+      if (!vm.public_ip) {
+        throw new BadRequestException('VM does not have a public IP address');
+      }
+      
+      // Update SSH keys via SSH connection
+      updateResult = await this.ociService.updateInstanceSshKeys(
+        vm.instance_id,
+        newKeyPair.publicKey,
+        vm.public_ip,
+        username,
+        adminPrivateKey,
+      );
 
-    // Send new key via email
-    const userEmail = email || subscription['user']?.email;
-    if (userEmail) {
-      await this.sendSshKeyEmail(
-        userEmail,
-        {
-          id: vm.id,
-          displayName: vm.instance_name,
-          publicIp: vm.public_ip,
-          instanceOcid: vm.instance_id,
+      this.logger.log(
+        `SSH keys updated. Total keys: ${updateResult.keysCount}, ` +
+        `User keys: ${updateResult.userKeysCount}, ` +
+        `Oldest user key removed: ${updateResult.removedOldest}`,
+      );
+
+      // Update VM record with the new public key (store the most recent one)
+      vm.ssh_public_key = newKeyPair.publicKey;
+      vm.updated_at = new Date();
+      await this.vmInstanceRepo.save(vm);
+
+      // Send new key via email
+      const userEmail = email || subscription['user']?.email;
+      if (userEmail) {
+        await this.sendSshKeyEmail(
+          userEmail,
+          {
+            id: vm.id,
+            displayName: vm.instance_name,
+            publicIp: vm.public_ip,
+            instanceOcid: vm.instance_id,
+          },
+          newKeyPair,
+          subscription,
+          true, // isNewKey = true
+        );
+      }
+
+      return {
+        success: true,
+        message: `New SSH key generated and applied successfully. ${
+          updateResult.removedOldest 
+            ? 'The oldest key was removed to maintain the 3-key limit.' 
+            : 'Previous keys are still active.'
+        }`,
+        sshKey: {
+          publicKey: newKeyPair.publicKey,
+          fingerprint: newKeyPair.fingerprint,
         },
-        newKeyPair,
-        subscription,
-        true, // isNewKey = true
+        keysInfo: {
+          totalKeys: updateResult.keysCount,
+          removedOldest: updateResult.removedOldest,
+        },
+      };
+    } catch (error) {
+      this.logger.error('Error updating SSH keys in OCI:', error);
+      throw new BadRequestException(
+        `Failed to update SSH keys on VM: ${error.message || 'Unknown error'}`,
       );
     }
-
-    return {
-      success: true,
-      message: 'New SSH key generated and sent to your email',
-      sshKey: {
-        publicKey: newKeyPair.publicKey,
-        fingerprint: newKeyPair.fingerprint,
-      },
-    };
   }
 
   /**
@@ -519,6 +616,7 @@ export class VmSubscriptionService {
             .content { background-color: #f9f9f9; padding: 20px; margin: 20px 0; }
             .info-box { background-color: #e8f4f8; border-left: 4px solid #2196F3; padding: 15px; margin: 15px 0; }
             .warning { background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 15px 0; }
+            .success { background-color: #d4edda; border-left: 4px solid #28a745; padding: 15px; margin: 15px 0; }
             .code-block { background-color: #2d2d2d; color: #f8f8f2; padding: 15px; border-radius: 5px; overflow-x: auto; font-family: 'Courier New', monospace; font-size: 13px; white-space: pre-wrap; word-wrap: break-word; }
             .button { display: inline-block; background-color: #f80000; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; margin: 10px 0; }
             .footer { text-align: center; color: #666; font-size: 12px; margin-top: 30px; }
@@ -527,15 +625,27 @@ export class VmSubscriptionService {
         <body>
           <div class="container">
             <div class="header">
-              <h1>${isNewKey ? 'New SSH Key Generated' : 'VM Successfully Created!'}</h1>
+              <h1>${isNewKey ? '🔑 New SSH Key Generated' : '✅ VM Successfully Created!'}</h1>
             </div>
             
             <div class="content">
               <h2>Hello,</h2>
               <p>${isNewKey 
-                ? 'Your new SSH key has been generated successfully.' 
+                ? 'Your new SSH key has been generated and applied to your VM successfully.' 
                 : 'Your Oracle Cloud VM has been provisioned and is ready to use!'
               }</p>
+              
+              ${isNewKey ? `
+                <div class="success">
+                  <h3>✅ Key Management Info</h3>
+                  <ul style="margin: 10px 0; padding-left: 20px;">
+                    <li><strong>New key has been added</strong> to your VM</li>
+                    <li><strong>Old keys remain active</strong> - you can still use them</li>
+                    <li>Maximum 3 keys are kept (oldest removed automatically)</li>
+                    <li>This provides zero-downtime key rotation</li>
+                  </ul>
+                </div>
+              ` : ''}
               
               <div class="info-box">
                 <h3>📋 VM Information</h3>
@@ -547,7 +657,9 @@ export class VmSubscriptionService {
 
               <div class="warning">
                 <h3>⚠️ Important Security Information</h3>
-                <p><strong>Keep your private key secure!</strong> Never share it with anyone. This is the only time you'll receive it.</p>
+                <p><strong>Keep your private key secure!</strong> Never share it with anyone.</p>
+                <p style="margin-top: 10px;"><strong>⚡ This is the ONLY time you'll receive this private key.</strong></p>
+                ${isNewKey ? '<p style="margin-top: 10px;">💡 Save this key in a secure location immediately. Old keys automatically removed when limit exceeded.</p>' : ''}
               </div>
 
               <h3>🔑 Your SSH Private Key:</h3>
@@ -561,7 +673,7 @@ export class VmSubscriptionService {
               <p><strong>Windows (PowerShell):</strong></p>
               <div class="code-block">
 # Save key to file
-Set-Content -Path "$HOME\.ssh\oracle-vm-key.pem" -Value @"
+Set-Content -Path "$HOME\\.ssh\\oracle-vm-key${isNewKey ? '-new' : ''}.pem" -Value @"
 [PASTE PRIVATE KEY HERE]
 "@
               </div>
@@ -569,12 +681,12 @@ Set-Content -Path "$HOME\.ssh\oracle-vm-key.pem" -Value @"
               <p><strong>Linux/Mac:</strong></p>
               <div class="code-block">
 # Save key to file
-cat > ~/.ssh/oracle-vm-key.pem << 'EOF'
+cat > ~/.ssh/oracle-vm-key${isNewKey ? '-new' : ''}.pem << 'EOF'
 [PASTE PRIVATE KEY HERE]
 EOF
 
 # Set correct permissions
-chmod 600 ~/.ssh/oracle-vm-key.pem
+chmod 600 ~/.ssh/oracle-vm-key${isNewKey ? '-new' : ''}.pem
               </div>
 
               <h4>Step 2: Connect via SSH</h4>
@@ -589,12 +701,12 @@ chmod 600 ~/.ssh/oracle-vm-key.pem
                 <tr>
                   <td style="border: 1px solid #ddd; padding: 8px;">Oracle Linux</td>
                   <td style="border: 1px solid #ddd; padding: 8px;"><code>opc</code></td>
-                  <td style="border: 1px solid #ddd; padding: 8px; font-size: 11px;"><code>ssh -i ~/.ssh/oracle-vm-key.pem opc@${vmInfo.publicIp || 'YOUR_VM_IP'}</code></td>
+                  <td style="border: 1px solid #ddd; padding: 8px; font-size: 11px;"><code>ssh -i ~/.ssh/oracle-vm-key${isNewKey ? '-new' : ''}.pem opc@${vmInfo.publicIp || 'YOUR_VM_IP'}</code></td>
                 </tr>
                 <tr>
                   <td style="border: 1px solid #ddd; padding: 8px;">Ubuntu</td>
                   <td style="border: 1px solid #ddd; padding: 8px;"><code>ubuntu</code></td>
-                  <td style="border: 1px solid #ddd; padding: 8px; font-size: 11px;"><code>ssh -i ~/.ssh/oracle-vm-key.pem ubuntu@${vmInfo.publicIp || 'YOUR_VM_IP'}</code></td>
+                  <td style="border: 1px solid #ddd; padding: 8px; font-size: 11px;"><code>ssh -i ~/.ssh/oracle-vm-key${isNewKey ? '-new' : ''}.pem ubuntu@${vmInfo.publicIp || 'YOUR_VM_IP'}</code></td>
                 </tr>
                 <tr>
                   <td style="border: 1px solid #ddd; padding: 8px;">CentOS/Rocky</td>
@@ -1182,6 +1294,26 @@ Password: [The password shown in console]</div>
       this.logger.error(`❌ Stack: ${error.stack}`);
       this.logger.error('❌ ========================================');
       // Don't throw error, just log it
+    }
+  }
+
+  /**
+   * Determine SSH username based on operating system
+   */
+  private getOsSshUsername(operatingSystem: string): string {
+    const osLower = (operatingSystem || '').toLowerCase();
+    
+    if (osLower.includes('ubuntu')) {
+      return 'ubuntu';
+    } else if (osLower.includes('centos')) {
+      return 'centos';
+    } else if (osLower.includes('rocky')) {
+      return 'rocky';
+    } else if (osLower.includes('oracle')) {
+      return 'opc';
+    } else {
+      // Default to 'opc' for Oracle Cloud
+      return 'opc';
     }
   }
 

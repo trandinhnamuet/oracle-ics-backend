@@ -61,22 +61,44 @@ export function generateSSHKeyPair(bits: number = 4096): SSHKeyPair {
  * Convert PEM public key to OpenSSH format
  */
 function convertToOpenSSHFormat(pemPublicKey: string): string {
-  // Remove PEM headers and decode
-  const pemBody = pemPublicKey
-    .replace(/-----BEGIN PUBLIC KEY-----/, '')
-    .replace(/-----END PUBLIC KEY-----/, '')
-    .replace(/\s/g, '');
+  // Parse PEM key using Node.js crypto
+  const keyObject = crypto.createPublicKey(pemPublicKey);
   
-  const der = Buffer.from(pemBody, 'base64');
+  // Export as JWK to get modulus (n) and exponent (e)
+  const jwk: any = keyObject.export({ format: 'jwk' });
   
-  // Parse DER to get RSA public key components
-  // This is a simplified version - you may want to use a library like 'node-forge'
-  // For production, use: import { pki } from 'node-forge';
+  // Convert base64url to base64
+  const n = Buffer.from(jwk.n.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
+  const e = Buffer.from(jwk.e.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
   
-  const sshRsa = 'ssh-rsa';
-  const base64Key = der.toString('base64');
+  // Build SSH wire format:
+  // SSH format: string "ssh-rsa" + mpint e + mpint n
+  // Each component: 4-byte length (big-endian) + data
+  const buffers: Buffer[] = [];
   
-  return `${sshRsa} ${base64Key} system@oraclecloud.vn`;
+  // 1. Algorithm name "ssh-rsa"
+  const algorithm = Buffer.from('ssh-rsa');
+  const algLength = Buffer.alloc(4);
+  algLength.writeUInt32BE(algorithm.length, 0);
+  buffers.push(algLength, algorithm);
+  
+  // 2. Exponent (e) - add 0x00 padding if high bit is set (two's complement)
+  const ePadded = (e[0] & 0x80) ? Buffer.concat([Buffer.from([0]), e]) : e;
+  const eLength = Buffer.alloc(4);
+  eLength.writeUInt32BE(ePadded.length, 0);
+  buffers.push(eLength, ePadded);
+  
+  // 3. Modulus (n) - add 0x00 padding if high bit is set
+  const nPadded = (n[0] & 0x80) ? Buffer.concat([Buffer.from([0]), n]) : n;
+  const nLength = Buffer.alloc(4);
+  nLength.writeUInt32BE(nPadded.length, 0);
+  buffers.push(nLength, nPadded);
+  
+  // Concatenate all parts and base64 encode
+  const wireFormat = Buffer.concat(buffers);
+  const base64Key = wireFormat.toString('base64');
+  
+  return `ssh-rsa ${base64Key} system@oraclecloud.vn`;
 }
 
 /**
