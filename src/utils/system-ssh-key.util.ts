@@ -32,6 +32,9 @@ export interface SSHKeyPair {
  * Generate RSA SSH key pair
  */
 export function generateSSHKeyPair(bits: number = 4096): SSHKeyPair {
+  console.log('\n🔑 GENERATING SSH KEY PAIR...');
+  console.log('=' .repeat(80));
+  
   const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', {
     modulusLength: bits,
     publicKeyEncoding: {
@@ -44,11 +47,19 @@ export function generateSSHKeyPair(bits: number = 4096): SSHKeyPair {
     },
   });
 
+  console.log('✅ Key pair generated');
+  console.log(`   Raw public key (PEM): ${publicKey.substring(0, 60)}...`);
+  console.log(`   Raw private key: ${privateKey.substring(0, 50)}...`);
+
   // Convert to OpenSSH format for public key
+  console.log('\n🔄 Converting public key to OpenSSH format...');
   const publicKeyOpenSSH = convertToOpenSSHFormat(publicKey);
+  console.log(`   OpenSSH public key: ${publicKeyOpenSSH.substring(0, 80)}...`);
   
   // Calculate fingerprint
   const fingerprint = calculateFingerprint(publicKeyOpenSSH);
+  console.log(`   Fingerprint: ${fingerprint}`);
+  console.log('=' .repeat(80) + '\n');
 
   return {
     publicKey: publicKeyOpenSSH,
@@ -61,6 +72,9 @@ export function generateSSHKeyPair(bits: number = 4096): SSHKeyPair {
  * Convert PEM public key to OpenSSH format
  */
 function convertToOpenSSHFormat(pemPublicKey: string): string {
+  console.log('\n  ➡️ Converting PEM to OpenSSH...');
+  console.log(`     Input PEM: ${pemPublicKey.substring(0, 60)}...`);
+  
   // Parse PEM key using Node.js crypto
   const keyObject = crypto.createPublicKey(pemPublicKey);
   
@@ -98,7 +112,10 @@ function convertToOpenSSHFormat(pemPublicKey: string): string {
   const wireFormat = Buffer.concat(buffers);
   const base64Key = wireFormat.toString('base64');
   
-  return `ssh-rsa ${base64Key} system@oraclecloud.vn`;
+  const result = `ssh-rsa ${base64Key} system@oraclecloud.vn`;
+  console.log(`     Output OpenSSH: ${result.substring(0, 80)}...`);
+  
+  return result;
 }
 
 /**
@@ -218,36 +235,53 @@ export function saveKeyPairToFile(keyPair: SSHKeyPair, keyName: string = 'admin'
  * Load admin key pair from file system
  */
 export function loadKeyPairFromFile(keyName: string = 'admin'): SSHKeyPair | null {
+  console.log('\n📂 LOADING KEY FROM FILE...');
+  console.log('=' .repeat(80));
+  
   const keyDir = path.join(process.cwd(), 'secrets', 'ssh-keys');
   const publicKeyPath = path.join(keyDir, `${keyName}_id_rsa.pub`);
   const privateKeyPath = path.join(keyDir, `${keyName}_id_rsa`);
 
+  console.log(`   Public key path: ${publicKeyPath}`);
+  console.log(`   Private key path: ${privateKeyPath}`);
+
   if (!fs.existsSync(publicKeyPath) || !fs.existsSync(privateKeyPath)) {
+    console.log('❌ Key files not found');
+    console.log('=' .repeat(80) + '\n');
     return null;
   }
 
   const publicKeyFromFile = fs.readFileSync(publicKeyPath, 'utf8').trim();
   const privateKey = fs.readFileSync(privateKeyPath, 'utf8').trim();
 
+  console.log(`\n   Public key from file: ${publicKeyFromFile.substring(0, 80)}...`);
+  console.log(`   Private key from file: ${privateKey.substring(0, 50)}...`);
+
   // Check if public key is in OpenSSH format
   let publicKey: string;
   if (publicKeyFromFile.startsWith('ssh-rsa ')) {
     // Already in OpenSSH format
+    console.log('\n  ✅ Public key already in OpenSSH format');
     publicKey = publicKeyFromFile;
   } else {
     // PEM format - need to convert to OpenSSH
+    console.log('\n  ⚠️ Public key in PEM format, converting to OpenSSH...');
     try {
       publicKey = convertToOpenSSHFormat(publicKeyFromFile);
       // Update file with correct format
       fs.writeFileSync(publicKeyPath, publicKey, { mode: 0o644 });
-      console.log(`✅ Converted public key to OpenSSH format: ${publicKeyPath}`);
+      console.log(`  ✅ Converted and updated file: ${publicKeyPath}`);
     } catch (error) {
-      console.error(`❌ Failed to convert public key from file: ${error.message}`);
+      console.error(`  ❌ Failed to convert public key: ${error.message}`);
+      console.log('=' .repeat(80) + '\n');
       return null;
     }
   }
 
   const fingerprint = calculateFingerprint(publicKey);
+  console.log(`\n   Final public key: ${publicKey.substring(0, 80)}...`);
+  console.log(`   Fingerprint: ${fingerprint}`);
+  console.log('=' .repeat(80) + '\n');
 
   return { publicKey, privateKey, fingerprint };
 }
