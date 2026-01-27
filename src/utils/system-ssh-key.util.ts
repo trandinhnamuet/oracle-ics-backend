@@ -39,7 +39,7 @@ export function generateSSHKeyPair(bits: number = 4096): SSHKeyPair {
       format: 'pem',
     },
     privateKeyEncoding: {
-      type: 'pkcs8',
+      type: 'pkcs1',  // Use PKCS#1 (RSA PRIVATE KEY) instead of PKCS#8
       format: 'pem',
     },
   });
@@ -226,8 +226,27 @@ export function loadKeyPairFromFile(keyName: string = 'admin'): SSHKeyPair | nul
     return null;
   }
 
-  const publicKey = fs.readFileSync(publicKeyPath, 'utf8').trim();
+  const publicKeyFromFile = fs.readFileSync(publicKeyPath, 'utf8').trim();
   const privateKey = fs.readFileSync(privateKeyPath, 'utf8').trim();
+
+  // Check if public key is in OpenSSH format
+  let publicKey: string;
+  if (publicKeyFromFile.startsWith('ssh-rsa ')) {
+    // Already in OpenSSH format
+    publicKey = publicKeyFromFile;
+  } else {
+    // PEM format - need to convert to OpenSSH
+    try {
+      publicKey = convertToOpenSSHFormat(publicKeyFromFile);
+      // Update file with correct format
+      fs.writeFileSync(publicKeyPath, publicKey, { mode: 0o644 });
+      console.log(`✅ Converted public key to OpenSSH format: ${publicKeyPath}`);
+    } catch (error) {
+      console.error(`❌ Failed to convert public key from file: ${error.message}`);
+      return null;
+    }
+  }
+
   const fingerprint = calculateFingerprint(publicKey);
 
   return { publicKey, privateKey, fingerprint };
