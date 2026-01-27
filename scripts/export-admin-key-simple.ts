@@ -11,9 +11,28 @@ config();
 /**
  * Simple script to export admin SSH key using direct SQL query
  * Usage: npx ts-node scripts/export-admin-key-simple.ts
+ * 
+ * The script:
+ * 1. Connects to database
+ * 2. Fetches encrypted admin SSH key
+ * 3. Decrypts using SSH_KEY_ENCRYPTION_SECRET environment variable
+ * 4. Exports to file
  */
 
 async function exportAdminKey() {
+  // Check encryption secret first
+  const encryptionSecret = process.env.SSH_KEY_ENCRYPTION_SECRET;
+  
+  console.log('\n📋 Environment Variables:');
+  console.log(`   SSH_KEY_ENCRYPTION_SECRET: ${encryptionSecret ? '✅ Set (' + encryptionSecret.length + ' chars)' : '❌ NOT SET'}`);
+  console.log(`   DB_HOST: ${process.env.DB_HOST}`);
+  console.log(`   DB_NAME: ${process.env.DB_NAME}`);
+  
+  if (!encryptionSecret) {
+    console.log('\n⚠️  SSH_KEY_ENCRYPTION_SECRET not set! Using fallback...');
+    console.log('   Fallback: default-secret-key-change-this-in-production');
+  }
+  
   const client = new Client({
     host: process.env.DB_HOST || 'localhost',
     port: parseInt(process.env.DB_PORT || '5432'),
@@ -44,15 +63,34 @@ async function exportAdminKey() {
     console.log(`   Algorithm: ${adminKey.algorithm}`);
     console.log(`   Key size: ${adminKey.key_size}`);
     console.log(`   Fingerprint: ${adminKey.fingerprint}`);
+    console.log(`   Encrypted format: IV:encrypted_data`);
+    console.log(`   Encrypted key preview: ${adminKey.private_key_encrypted.substring(0, 50)}...`);
 
     // Decrypt private key
     console.log('\n🔓 Decrypting admin private key...');
-    let privateKey = decryptPrivateKey(adminKey.private_key_encrypted);
+    console.log(`   Using encryption secret: ${encryptionSecret || 'default-secret-key-change-this-in-production'}`);
+    
+    let privateKey;
+    try {
+      privateKey = decryptPrivateKey(adminKey.private_key_encrypted);
+      console.log('✅ Decryption successful!');
+    } catch (decryptError: any) {
+      console.error(`\n❌ Decryption failed: ${decryptError.message}`);
+      console.error('\nTroubleshooting:');
+      console.error('1. Check if SSH_KEY_ENCRYPTION_SECRET environment variable is correct');
+      console.error('2. The secret must be exactly the same as when the key was encrypted');
+      console.error('3. If unsure, try setting it to: "default-secret-key-change-this-in-production"');
+      console.error('\nTo set the environment variable:');
+      console.error('   Windows PowerShell: $env:SSH_KEY_ENCRYPTION_SECRET="your-secret"');
+      console.error('   Linux/Mac: export SSH_KEY_ENCRYPTION_SECRET="your-secret"');
+      console.error('   Or add to .env file in oracle-ics-backend/');
+      await client.end();
+      process.exit(1);
+    }
 
     // Check key format
     console.log(`   Original format: ${privateKey.includes('BEGIN RSA PRIVATE KEY') ? 'PKCS#1 (RSA)' : privateKey.includes('BEGIN PRIVATE KEY') ? 'PKCS#8' : 'Unknown'}`);
-
-    // Convert PKCS#8 to PKCS#1 if needed (for ssh2 compatibility)
+    console.log(`   Key length: ${privateKey.length} bytes`);
     if (privateKey.includes('BEGIN PRIVATE KEY')) {
       console.log('🔄 Converting PKCS#8 to PKCS#1 format...');
       try {
