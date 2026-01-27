@@ -74,8 +74,11 @@ export class VmProvisioningService {
       ];
       
       this.logger.log(`✅ Prepared SSH keys: ${sshPublicKeys.length} keys total`);
-      this.logger.log(`  - User key fingerprint: ${sshPublicKeys[0].substring(0, 50)}...`);
-      this.logger.log(`  - Admin key fingerprint: ${sshPublicKeys[1].substring(0, 50)}...`);
+      this.logger.log(`  - User key preview: ${sshPublicKeys[0].substring(0, 50)}...`);
+      this.logger.log(`  - Admin key preview: ${sshPublicKeys[1].substring(0, 50)}...`);
+      this.logger.log(`📝 Full Admin Public Key:`);
+      this.logger.log(adminSshKey.public_key);
+      this.logger.log(`📝 Admin Key Length: ${adminSshKey.public_key.length} characters`);
 
       // Step 5: Get availability domain for launching instance
       const availabilityDomains = await this.ociService.listAvailabilityDomains(

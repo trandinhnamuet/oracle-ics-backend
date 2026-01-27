@@ -1359,4 +1359,24 @@ Password: [The password shown in console]</div>
       message: `VM ${action.toLowerCase()} operation completed successfully`,
     };
   }
+
+  /**
+   * Get admin public SSH key for manual installation or debugging
+   */
+  async getAdminPublicKey() {
+    const adminKey = await this.systemSshKeyService.getActiveKey();
+    
+    if (!adminKey) {
+      throw new InternalServerErrorException('Admin SSH key not configured');
+    }
+
+    this.logger.log(`📋 Retrieved admin public key for display`);
+    
+    return {
+      publicKey: adminKey.public_key,
+      fingerprint: adminKey.fingerprint,
+      createdAt: adminKey.created_at,
+      message: 'This is the system admin public key. Add this to your VM\'s ~/.ssh/authorized_keys if needed.',
+    };
+  }
 }

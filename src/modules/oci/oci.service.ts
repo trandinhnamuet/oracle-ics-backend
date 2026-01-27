@@ -813,7 +813,13 @@ export class OciService {
       };
 
       this.logger.log(`🔑 Preparing to launch instance with ${sshPublicKeys.length} SSH keys`);
-      this.logger.log(`📝 Metadata: ${JSON.stringify({ ssh_authorized_keys: `${sshPublicKeys.length} keys (${metadata.ssh_authorized_keys.length} chars)` })}`);
+      this.logger.log(`📝 Metadata ssh_authorized_keys length: ${metadata.ssh_authorized_keys.length} chars`);
+      this.logger.log(`📝 Full SSH keys being sent to OCI:`);
+      this.logger.log(metadata.ssh_authorized_keys);
+      this.logger.log(`📝 SSH keys array preview:`);
+      sshPublicKeys.forEach((key, idx) => {
+        this.logger.log(`   Key ${idx + 1}: ${key.substring(0, 60)}... (${key.length} chars)`);
+      });
 
       const launchInstanceDetails: oci.core.models.LaunchInstanceDetails = {
         compartmentId: compartmentId,
@@ -1237,9 +1243,24 @@ chmod 600 ~/.ssh/authorized_keys`;
         });
         
         conn.on('error', (err) => {
-          this.logger.error(`SSH connection error: ${err.message}`);
+          this.logger.error(`❌ SSH connection error: ${err.message}`);
+          this.logger.error(`   Error code: ${err['code']}`);
+          this.logger.error(`   Error level: ${err['level']}`);
           reject(new Error(`SSH connection failed: ${err.message}`));
         });
+        
+        // Debug: Log SSH connection configuration
+        const sshConfig = {
+          host: publicIp,
+          port: 22,
+          username: username,
+          privateKeyFormat: adminPrivateKey.includes('BEGIN RSA PRIVATE KEY') ? 'PKCS#1' : 
+                           adminPrivateKey.includes('BEGIN PRIVATE KEY') ? 'PKCS#8' : 'UNKNOWN',
+          privateKeyLength: adminPrivateKey.length,
+          privateKeyStart: adminPrivateKey.substring(0, 50),
+          readyTimeout: 30000,
+        };
+        this.logger.log(`🔧 SSH Config: ${JSON.stringify(sshConfig, null, 2)}`);
         
         // Connect to the instance
         conn.connect({
@@ -1248,6 +1269,7 @@ chmod 600 ~/.ssh/authorized_keys`;
           username: username,
           privateKey: Buffer.from(adminPrivateKey, 'utf8'),
           readyTimeout: 30000,
+          debug: (msg) => this.logger.debug(`SSH2 Debug: ${msg}`),
         });
       });
     } catch (error) {
