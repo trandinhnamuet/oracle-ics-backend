@@ -93,11 +93,11 @@ async function regenerateAdminKey() {
         format: 'pem',
       },
       privateKeyEncoding: {
-        type: 'pkcs8',
+        type: 'pkcs1', // ssh2 requires PKCS#1 format
         format: 'pem',
       },
     });
-    console.log('   ✅ Generated\n');
+    console.log('   ✅ Generated (PKCS#1 format for ssh2 compatibility)\n');
 
     // Step 2: Convert to OpenSSH format
     console.log('2️⃣ Converting public key to OpenSSH format...');

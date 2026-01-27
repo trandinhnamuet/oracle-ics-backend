@@ -812,6 +812,9 @@ export class OciService {
         ssh_authorized_keys: sshPublicKeys.join('\n'),
       };
 
+      this.logger.log(`🔑 Preparing to launch instance with ${sshPublicKeys.length} SSH keys`);
+      this.logger.log(`📝 Metadata: ${JSON.stringify({ ssh_authorized_keys: `${sshPublicKeys.length} keys (${metadata.ssh_authorized_keys.length} chars)` })}`);
+
       const launchInstanceDetails: oci.core.models.LaunchInstanceDetails = {
         compartmentId: compartmentId,
         displayName: displayName,
@@ -832,7 +835,8 @@ export class OciService {
 
       const response = await this.computeClient.launchInstance(request);
       
-      this.logger.log(`Launched instance: ${response.instance.id}`);
+      this.logger.log(`✅ Launched instance: ${response.instance.id}`);
+      this.logger.log(`🌐 Instance will be available at: ${response.instance.displayName}`);
       return {
         id: response.instance.id,
         displayName: response.instance.displayName,
