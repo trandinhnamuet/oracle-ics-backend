@@ -259,9 +259,11 @@ export function loadKeyPairFromFile(keyName: string = 'admin'): SSHKeyPair | nul
 
   // Check if public key is in OpenSSH format
   let publicKey: string;
-  if (publicKeyFromFile.startsWith('ssh-rsa ')) {
-    // Already in OpenSSH format
-    console.log('\n  ✅ Public key already in OpenSSH format');
+  const isValidOpenSSH = publicKeyFromFile.startsWith('ssh-rsa AAAAB3NzaC1yc2');
+  
+  if (publicKeyFromFile.startsWith('ssh-rsa ') && isValidOpenSSH) {
+    // Already in OpenSSH format (correct base64 encoding)
+    console.log('\n  ✅ Public key already in correct OpenSSH format');
     publicKey = publicKeyFromFile;
   } else {
     // PEM format - need to convert to OpenSSH
