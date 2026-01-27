@@ -55,9 +55,22 @@ export class SystemSshKeyService implements OnModuleInit {
       // Try to load from file first (if exists from previous setup)
       let keyPair = loadKeyPairFromFile('admin');
 
+      if (keyPair) {
+        this.logger.log('✅ Loaded key from file system');
+        this.logger.log(`   Public key format: ${keyPair.publicKey.substring(0, 50)}...`);
+        this.logger.log(`   Private key format: ${keyPair.privateKey.substring(0, 50)}...`);
+        this.logger.log(`   Fingerprint: ${keyPair.fingerprint}`);
+      }
+
       // If not in file, generate new
       if (!keyPair) {
+        this.logger.log('📝 No key file found, generating new key pair...');
         keyPair = generateSSHKeyPair(4096);
+        
+        this.logger.log('✅ Generated new key pair');
+        this.logger.log(`   Public key format: ${keyPair.publicKey.substring(0, 50)}...`);
+        this.logger.log(`   Private key format: ${keyPair.privateKey.substring(0, 50)}...`);
+        this.logger.log(`   Fingerprint: ${keyPair.fingerprint}`);
         
         // Save to file system as backup
         saveKeyPairToFile(keyPair, 'admin');
@@ -65,6 +78,10 @@ export class SystemSshKeyService implements OnModuleInit {
 
       // Encrypt private key before storing
       const encryptedPrivateKey = encryptPrivateKey(keyPair.privateKey);
+
+      this.logger.log('💾 Saving key to database...');
+      this.logger.log(`   Public key to save: ${keyPair.publicKey.substring(0, 80)}...`);
+      this.logger.log(`   Fingerprint: ${keyPair.fingerprint}`);
 
       // Update database record
       adminKey.public_key = keyPair.publicKey;
@@ -77,6 +94,7 @@ export class SystemSshKeyService implements OnModuleInit {
       await this.systemSshKeyRepository.save(adminKey);
 
       this.logger.log('✅ Admin SSH key generated and saved');
+      this.logger.log(`   Saved public key: ${adminKey.public_key.substring(0, 80)}...`);
       this.logger.log(`   Fingerprint: ${keyPair.fingerprint}`);
       
       // Mark it as active
@@ -89,9 +107,23 @@ export class SystemSshKeyService implements OnModuleInit {
       // Try to load from file first
       let keyPair = loadKeyPairFromFile('admin');
       
+      if (keyPair) {
+        this.logger.log('✅ Loaded key from file system');
+        this.logger.log(`   Public key format: ${keyPair.publicKey.substring(0, 50)}...`);
+        this.logger.log(`   Private key format: ${keyPair.privateKey.substring(0, 50)}...`);
+        this.logger.log(`   Fingerprint: ${keyPair.fingerprint}`);
+      }
+      
       // If not in file, generate new
       if (!keyPair) {
+        this.logger.log('📝 No key file found, generating new key pair...');
         keyPair = generateSSHKeyPair(4096);
+        
+        this.logger.log('✅ Generated new key pair');
+        this.logger.log(`   Public key format: ${keyPair.publicKey.substring(0, 50)}...`);
+        this.logger.log(`   Private key format: ${keyPair.privateKey.substring(0, 50)}...`);
+        this.logger.log(`   Fingerprint: ${keyPair.fingerprint}`);
+        
         saveKeyPairToFile(keyPair, 'admin');
       }
 
@@ -176,9 +208,12 @@ export class SystemSshKeyService implements OnModuleInit {
    */
   async getAdminKey(): Promise<SSHKeyPair> {
     if (this.cachedAdminKey) {
+      this.logger.log('🔑 Returning cached admin key');
+      this.logger.log(`   Cached public key: ${this.cachedAdminKey.publicKey.substring(0, 80)}...`);
       return this.cachedAdminKey;
     }
 
+    this.logger.log('🔍 Fetching admin key from database...');
     const adminKey = await this.systemSshKeyRepository.findOne({
       where: { key_name: 'default-admin-key', is_active: true },
     });
@@ -187,11 +222,17 @@ export class SystemSshKeyService implements OnModuleInit {
       throw new Error('Admin SSH key not found');
     }
 
+    this.logger.log('✅ Found admin key in database');
+    this.logger.log(`   DB public key: ${adminKey.public_key.substring(0, 80)}...`);
+    this.logger.log(`   DB fingerprint: ${adminKey.fingerprint}`);
+
     this.cachedAdminKey = {
       publicKey: adminKey.public_key,
       privateKey: decryptPrivateKey(adminKey.private_key_encrypted),
       fingerprint: adminKey.fingerprint,
     };
+
+    this.logger.log('💾 Cached admin key for future requests');
 
     return this.cachedAdminKey;
   }
