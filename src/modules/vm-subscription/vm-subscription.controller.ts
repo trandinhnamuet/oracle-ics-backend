@@ -63,6 +63,11 @@ export class VmSubscriptionController {
     @Param('subscriptionId') subscriptionId: string,
     @Body() requestNewKeyDto: RequestNewKeyDto,
   ) {
+    console.log('🚀 Controller: Request New SSH Key endpoint hit');
+    console.log('📋 Subscription ID:', subscriptionId);
+    console.log('👤 User ID:', req.user?.id);
+    console.log('📧 Request Body:', requestNewKeyDto);
+    
     const userId = req.user.id;
     return this.vmSubscriptionService.requestNewSshKey(
       subscriptionId,
