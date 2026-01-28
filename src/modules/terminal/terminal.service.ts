@@ -40,9 +40,26 @@ export class TerminalService {
    * Validate user has access to VM
    */
   async validateVmAccess(userId: number, vmId: number): Promise<VmInstance> {
+    this.logger.log(`🔍 Validating VM access: userId=${userId}, vmId=${vmId}`);
+    
     const vm = await this.vmInstanceRepo.findOne({
       where: { id: vmId, user_id: userId },
     });
+
+    this.logger.log(`🔍 Query result: ${vm ? 'VM found' : 'VM not found'}`);
+    if (vm) {
+      this.logger.log(`   VM details: id=${vm.id}, name=${vm.instance_name}, user_id=${vm.user_id}, subscription_id=${vm.subscription_id}`);
+    }
+
+    // Try querying without user_id check for debugging
+    const vmWithoutUserCheck = await this.vmInstanceRepo.findOne({
+      where: { id: vmId },
+    });
+    
+    if (vmWithoutUserCheck) {
+      this.logger.log(`🔍 VM exists in DB: id=${vmWithoutUserCheck.id}, user_id=${vmWithoutUserCheck.user_id}`);
+      this.logger.log(`   User ID mismatch? Expected: ${userId}, Got: ${vmWithoutUserCheck.user_id}`);
+    }
 
     if (!vm) {
       throw new NotFoundException('VM not found or you do not have access');
