@@ -23,12 +23,14 @@ cat .env.production.local
 
 **PHẢI có dòng này:**
 ```
-NEXT_PUBLIC_API_URL=https://oraclecloud.vn
+NEXT_PUBLIC_API_URL=https://oraclecloud.vn/api
 ```
+
+**CHÚ Ý:** Phải có `/api` ở cuối để match với nginx location `/api/socket.io/`.
 
 Nếu chưa có, thêm vào:
 ```bash
-echo "NEXT_PUBLIC_API_URL=https://oraclecloud.vn" >> .env.production.local
+echo "NEXT_PUBLIC_API_URL=https://oraclecloud.vn/api" >> .env.production.local
 ```
 
 ### Bước 2: Cấu hình nginx để proxy WebSocket
@@ -41,8 +43,8 @@ sudo nano /etc/nginx/sites-available/oraclecloud.vn
 **Thêm location block này TRƯỚC location / {}:**
 
 ```nginx
-# WebSocket proxy for socket.io
-location /socket.io/ {
+# WebSocket proxy for socket.io - match /api/socket.io/ path
+location /api/socket.io/ {
     proxy_pass http://localhost:3003/socket.io/;
     proxy_http_version 1.1;
     
@@ -177,7 +179,7 @@ server {
     ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256;
 
     # WebSocket proxy for socket.io - PHẢI ĐẶT TRƯỚC /api/
-    location /socket.io/ {
+    location /api/socket.io/ {
         proxy_pass http://localhost:3003/socket.io/;
         proxy_http_version 1.1;
         
@@ -225,8 +227,10 @@ server {
 
 ## Summary
 
-1. ✅ Set `NEXT_PUBLIC_API_URL=https://oraclecloud.vn` trong .env.production.local
-2. ✅ Thêm `location /socket.io/` block vào nginx config
+**nginx xử lý routing:** Location `/api/socket.io/` sẽ proxy về backend `http://localhost:3003/socket.io/` với namespace `/terminal`.
+
+1. ✅ Set `NEXT_PUBLIC_API_URL=https://oraclecloud.vn/api` trong .env.production.local
+2. ✅ Thêm `location /api/socket.io/` block vào nginx config
 3. ✅ Reload nginx: `sudo systemctl reload nginx`
 4. ✅ Rebuild frontend: `rm -rf .next && npm run build`
 5. ✅ Restart PM2: `pm2 restart oracle-ics-frontend`
