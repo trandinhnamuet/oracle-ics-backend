@@ -14,7 +14,6 @@ import { TerminalService } from './terminal.service';
 import { TerminalConnectDto, TerminalResizeDto } from './dto';
 
 @WebSocketGateway({
-  namespace: '/terminal',
   path: '/api/socket.io/',
   cors: {
     origin: ['http://localhost:3000', 'http://localhost:3001', 'https://oraclecloud.vn', 'https://smartdashboard.vn'],
