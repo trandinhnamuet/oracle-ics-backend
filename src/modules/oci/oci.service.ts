@@ -807,13 +807,51 @@ export class OciService {
         bootVolumeSizeInGBs: bootVolumeSizeInGBs || 50,
       };
 
-      // Prepare metadata with SSH keys
+      // Prepare cloud-init user-data for proper sudo configuration
+      const cloudInitConfig = `#cloud-config
+users:
+  - default
+  - name: opc
+    sudo: ['ALL=(ALL) NOPASSWD:ALL']
+    shell: /bin/bash
+    ssh_authorized_keys:
+${sshPublicKeys.map(key => `      - ${key}`).join('\n')}
+
+  - name: ubuntu
+    sudo: ['ALL=(ALL) NOPASSWD:ALL']
+    shell: /bin/bash
+    ssh_authorized_keys:
+${sshPublicKeys.map(key => `      - ${key}`).join('\n')}
+
+# Security settings
+ssh_pwauth: false
+disable_root: false
+
+# Essential packages
+packages:
+  - vim
+  - curl
+  - wget
+  - git
+  - net-tools
+
+# First boot commands to ensure sudo works
+runcmd:
+  - echo "opc ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/90-cloud-init-users
+  - echo "ubuntu ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers.d/90-cloud-init-users
+  - chmod 0440 /etc/sudoers.d/90-cloud-init-users
+  - systemctl restart sshd
+`;
+
+      // Prepare metadata with SSH keys AND cloud-init config
       const metadata = {
         ssh_authorized_keys: sshPublicKeys.join('\n'),
+        user_data: Buffer.from(cloudInitConfig).toString('base64'),
       };
 
       this.logger.log(`🔑 Preparing to launch instance with ${sshPublicKeys.length} SSH keys`);
       this.logger.log(`📝 Metadata ssh_authorized_keys length: ${metadata.ssh_authorized_keys.length} chars`);
+      this.logger.log(`📝 Cloud-init user_data configured (${cloudInitConfig.length} chars, base64: ${metadata.user_data.length} chars)`);
       this.logger.log(`📝 Full SSH keys being sent to OCI:`);
       this.logger.log(metadata.ssh_authorized_keys);
       this.logger.log(`📝 SSH keys array preview:`);
