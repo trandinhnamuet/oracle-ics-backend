@@ -835,12 +835,41 @@ packages:
   - git
   - net-tools
 
-# First boot commands to ensure sudo works
+# First boot commands to ensure sudo works and open firewall ports
 runcmd:
   - echo "opc ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/90-cloud-init-users
   - echo "ubuntu ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers.d/90-cloud-init-users
   - chmod 0440 /etc/sudoers.d/90-cloud-init-users
   - systemctl restart sshd
+  # Open firewall ports for web traffic (HTTP/HTTPS)
+  - |
+    if command -v firewall-cmd &> /dev/null; then
+      # Oracle Linux / CentOS / RHEL with firewalld
+      firewall-cmd --permanent --add-service=http
+      firewall-cmd --permanent --add-service=https
+      firewall-cmd --permanent --add-port=80/tcp
+      firewall-cmd --permanent --add-port=443/tcp
+      firewall-cmd --reload
+      echo "✅ Firewalld: Opened ports 80, 443"
+    elif command -v ufw &> /dev/null; then
+      # Ubuntu with ufw
+      ufw allow 80/tcp
+      ufw allow 443/tcp
+      ufw allow 22/tcp
+      echo "✅ UFW: Opened ports 22, 80, 443"
+    elif command -v iptables &> /dev/null; then
+      # Fallback to iptables
+      iptables -I INPUT -p tcp --dport 80 -j ACCEPT
+      iptables -I INPUT -p tcp --dport 443 -j ACCEPT
+      iptables -I INPUT -p tcp --dport 22 -j ACCEPT
+      # Save iptables rules
+      if command -v iptables-save &> /dev/null; then
+        iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+        service iptables save 2>/dev/null || true
+      fi
+      echo "✅ IPTables: Opened ports 22, 80, 443"
+    fi
+  - echo "✅ Cloud-init completed - Firewall configured for web traffic"
 `;
 
       // Prepare metadata with SSH keys AND cloud-init config
