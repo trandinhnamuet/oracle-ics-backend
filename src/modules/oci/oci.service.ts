@@ -823,6 +823,10 @@ ${sshPublicKeys.map(key => `      - ${key}`).join('\n')}
     ssh_authorized_keys:
 ${sshPublicKeys.map(key => `      - ${key}`).join('\n')}
 
+  - name: root
+    ssh_authorized_keys:
+${sshPublicKeys.map(key => `      - ${key}`).join('\n')}
+
 # Security settings
 ssh_pwauth: false
 disable_root: false
@@ -839,6 +843,7 @@ packages:
 runcmd:
   - echo "opc ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/90-cloud-init-users
   - echo "ubuntu ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers.d/90-cloud-init-users
+  - echo "root ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers.d/90-cloud-init-users
   - chmod 0440 /etc/sudoers.d/90-cloud-init-users
   - systemctl restart sshd
   # Open firewall ports for web traffic (HTTP/HTTPS)
@@ -852,22 +857,41 @@ runcmd:
       firewall-cmd --reload
       echo "✅ Firewalld: Opened ports 80, 443"
     elif command -v ufw &> /dev/null; then
-      # Ubuntu with ufw
+      # Ubuntu with ufw - disable first to clear rules
+      ufw --force disable
+      ufw --force reset
+      ufw default deny incoming
+      ufw default allow outgoing
+      ufw allow 22/tcp
       ufw allow 80/tcp
       ufw allow 443/tcp
-      ufw allow 22/tcp
-      echo "✅ UFW: Opened ports 22, 80, 443"
+      ufw --force enable
+      echo "✅ UFW: Reset and opened ports 22, 80, 443"
     elif command -v iptables &> /dev/null; then
-      # Fallback to iptables
-      iptables -I INPUT -p tcp --dport 80 -j ACCEPT
-      iptables -I INPUT -p tcp --dport 443 -j ACCEPT
-      iptables -I INPUT -p tcp --dport 22 -j ACCEPT
+      # Fallback to iptables - clear existing rules first
+      iptables -F
+      iptables -X
+      iptables -t nat -F
+      iptables -t nat -X
+      iptables -t mangle -F
+      iptables -t mangle -X
+      iptables -P INPUT ACCEPT
+      iptables -P FORWARD ACCEPT
+      iptables -P OUTPUT ACCEPT
+      # Add new rules
+      iptables -A INPUT -i lo -j ACCEPT
+      iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+      iptables -A INPUT -p tcp --dport 22 -j ACCEPT
+      iptables -A INPUT -p tcp --dport 80 -j ACCEPT
+      iptables -A INPUT -p tcp --dport 443 -j ACCEPT
+      iptables -A INPUT -j DROP
       # Save iptables rules
       if command -v iptables-save &> /dev/null; then
+        mkdir -p /etc/iptables
         iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
         service iptables save 2>/dev/null || true
       fi
-      echo "✅ IPTables: Opened ports 22, 80, 443"
+      echo "✅ IPTables: Cleared and opened ports 22, 80, 443"
     fi
   - echo "✅ Cloud-init completed - Firewall configured for web traffic"
 `;

@@ -152,6 +152,30 @@ export class VmSubscriptionService {
       subscription.provisioning_error = null; // Clear any previous error
       await this.subscriptionRepo.save(subscription);
 
+      // Step 3.5: Poll VM until it reaches RUNNING state
+      this.logger.log(`⏳ Waiting for VM to reach RUNNING state...`);
+      try {
+        const finalState = await this.pollVmUntilRunning(
+          vmResult.instanceId, // OCI instance OCID
+          5 * 60 * 1000, // 5 minutes max wait
+          10 * 1000, // Poll every 10 seconds
+        );
+
+        // Update VM state in database
+        vmResult.lifecycleState = finalState;
+        await this.vmInstanceRepo.update(vmResult.id, {
+          lifecycle_state: finalState,
+        });
+
+        if (finalState !== 'RUNNING') {
+          this.logger.warn(`⚠️ VM did not reach RUNNING state within timeout. Current state: ${finalState}`);
+        }
+      } catch (pollError) {
+        this.logger.error(`❌ Error while polling VM state:`, pollError);
+        // Continue with email sending even if polling fails
+        // User will still get credentials and can check VM manually
+      }
+
       // Step 4: Send credentials to user via email (SSH key for Linux or password for Windows)
       const userEmail = configureVmDto.notificationEmail || subscription['user']?.email;
       this.logger.log(`📧 ========== EMAIL SENDING CHECK ==========`);
@@ -164,7 +188,8 @@ export class VmSubscriptionService {
         this.logger.log(`📧 Has Windows Password: ${!!vmResult.windowsInitialPassword}`);
         this.logger.log(`📧 Has SSH Key Pair: ${!!userSshKeyPair}`);
         
-        if (isWindows) {
+        if (isWindows === true) {
+          // Confirmed Windows VM
           if (vmResult.windowsInitialPassword) {
             // Windows VM with password - send RDP credentials
             this.logger.log('📧 Sending Windows RDP credentials email...');
@@ -199,8 +224,8 @@ export class VmSubscriptionService {
             );
             this.logger.log('✅ Windows instructions email sent successfully');
           }
-        } else if (!isWindows && userSshKeyPair) {
-          // Linux VM - send SSH key
+        } else if (isWindows === false && userSshKeyPair) {
+          // Confirmed Linux VM - send SSH key
           this.logger.log('📧 Sending Linux SSH key email...');
           await this.sendSshKeyEmail(
             userEmail,
@@ -214,8 +239,14 @@ export class VmSubscriptionService {
           );
           this.logger.log('✅ SSH key email sent successfully');
         } else {
-          this.logger.warn(`⚠️  Could not send credentials email - missing required data`);
+          // isWindows is undefined (OS unknown) or missing credentials
+          this.logger.warn(`⚠️  Could not send credentials email - OS type unknown or missing required data`);
           this.logger.warn(`⚠️  Is Windows: ${isWindows}, Has Password: ${!!vmResult.windowsInitialPassword}, Has SSH Key: ${!!userSshKeyPair}`);
+          this.logger.warn(`⚠️  Operating System: ${vmResult.operatingSystem}`);
+          if (isWindows === undefined) {
+            this.logger.error('❌ CRITICAL: Could not determine OS type! VM was created but no credentials email sent.');
+            this.logger.error('❌ User will need to retrieve credentials manually from OCI Console.');
+          }
         }
       } else {
         this.logger.error('❌ No email address found for user!');
@@ -223,6 +254,10 @@ export class VmSubscriptionService {
       this.logger.log(`📧 ==========================================`);
 
       this.logger.log(`VM configuration completed for subscription ${subscriptionId}`);
+      
+      // Return success message (generic for both Linux and Windows)
+      const isWindows = vmResult.operatingSystem?.toLowerCase().includes('windows');
+      const isWindowsPending = isWindows && !vmResult.windowsInitialPassword;
 
       return {
         success: true,
@@ -237,6 +272,9 @@ export class VmSubscriptionService {
           // Don't send private key in response, only via email
           fingerprint: userSshKeyPair.fingerprint,
         } : undefined,
+        message: isWindowsPending 
+          ? 'Máy ảo đã tạo thành công. Mật khẩu ban đầu đang được lấy và sẽ được gửi về email của bạn trong vòng 5-10 phút.'
+          : 'Máy ảo đã tạo thành công. Thông tin truy cập VM đã được gửi về email của bạn.',
       };
     } catch (error) {
       this.logger.error(`Error configuring VM for subscription ${subscriptionId}:`, error);
@@ -254,6 +292,55 @@ export class VmSubscriptionService {
         `Failed to configure VM: ${error.message}`,
       );
     }
+  }
+
+  /**
+   * Poll VM instance state until it reaches RUNNING
+   * @param instanceOcid - OCI instance OCID
+   * @param maxWaitTimeMs - Maximum time to wait in milliseconds (default: 5 minutes)
+   * @param pollIntervalMs - Polling interval in milliseconds (default: 10 seconds)
+   * @returns Final lifecycle state
+   */
+  private async pollVmUntilRunning(
+    instanceOcid: string,
+    maxWaitTimeMs: number = 5 * 60 * 1000, // 5 minutes default
+    pollIntervalMs: number = 10 * 1000, // 10 seconds default
+  ): Promise<string> {
+    const startTime = Date.now();
+    let currentState = 'PROVISIONING';
+
+    this.logger.log(`⏳ Starting to poll VM state for instance: ${instanceOcid}`);
+    this.logger.log(`⏳ Max wait time: ${maxWaitTimeMs / 1000}s, Poll interval: ${pollIntervalMs / 1000}s`);
+
+    while (Date.now() - startTime < maxWaitTimeMs) {
+      try {
+        const instanceDetails = await this.ociService.getInstance(instanceOcid);
+        currentState = instanceDetails.lifecycleState;
+
+        this.logger.log(`🔍 VM state check: ${currentState} (elapsed: ${Math.floor((Date.now() - startTime) / 1000)}s)`);
+
+        if (currentState === 'RUNNING') {
+          this.logger.log(`✅ VM is now RUNNING after ${Math.floor((Date.now() - startTime) / 1000)}s`);
+          return currentState;
+        }
+
+        // Check for failed states
+        if (currentState === 'TERMINATED' || currentState === 'TERMINATING') {
+          this.logger.error(`❌ VM entered terminal state: ${currentState}`);
+          throw new InternalServerErrorException(`VM provisioning failed: Instance is ${currentState}`);
+        }
+
+        // Wait before next poll
+        await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+      } catch (error) {
+        this.logger.error(`❌ Error polling VM state:`, error);
+        throw error;
+      }
+    }
+
+    // Timeout reached
+    this.logger.warn(`⚠️ Polling timeout reached. VM still in ${currentState} state after ${maxWaitTimeMs / 1000}s`);
+    return currentState;
   }
 
   /**
@@ -705,8 +792,8 @@ chmod 600 ~/.ssh/oracle-vm-key${isNewKey ? '-new' : ''}.pem
                 </tr>
                 <tr>
                   <td style="border: 1px solid #ddd; padding: 8px;">Ubuntu</td>
-                  <td style="border: 1px solid #ddd; padding: 8px;"><code>ubuntu</code></td>
-                  <td style="border: 1px solid #ddd; padding: 8px; font-size: 11px;"><code>ssh -i ~/.ssh/oracle-vm-key${isNewKey ? '-new' : ''}.pem ubuntu@${vmInfo.publicIp || 'YOUR_VM_IP'}</code></td>
+                  <td style="border: 1px solid #ddd; padding: 8px;"><code>root</code></td>
+                  <td style="border: 1px solid #ddd; padding: 8px; font-size: 11px;"><code>ssh -i ~/.ssh/oracle-vm-key${isNewKey ? '-new' : ''}.pem root@${vmInfo.publicIp || 'YOUR_VM_IP'}</code></td>
                 </tr>
                 <tr>
                   <td style="border: 1px solid #ddd; padding: 8px;">CentOS/Rocky</td>

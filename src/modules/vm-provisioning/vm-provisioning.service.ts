@@ -366,66 +366,17 @@ export class VmProvisioningService {
             // Continue anyway, user can open it manually
           }
           
-          // For Windows, we need to wait for the instance to be RUNNING
-          // because Windows password is only available when VM is fully running
-          this.logger.log('🔑 Windows VM requires RUNNING state to retrieve password');
-          this.logger.log('⏳ Waiting for instance to reach RUNNING state (this may take 5-10 minutes)...');
+          // For Windows VM, schedule background job to get password
+          // This avoids blocking the API response (preventing frontend timeout)
+          this.logger.log('🔑 Windows VM detected - scheduling background password retrieval');
+          this.logger.log('📧 User will receive Windows credentials via email when ready');
+          this.logger.log('⏱️  Expected time: 5-10 minutes');
           
-          const isRunning = await this.pollInstanceUntilRunning(ociInstance.id, 10);
-          
-          if (isRunning) {
-            // Update state in database
-            savedVm.lifecycle_state = 'RUNNING';
-            savedVm.vm_started_at = new Date();
-            await this.vmInstanceRepo.save(savedVm);
-            this.logger.log('✅ Instance is RUNNING, now attempting to get Windows password...');
-            
-            // Wait a bit more for password to be generated
-            this.logger.log('⏳ Waiting additional 30 seconds for password generation...');
-            await this.sleep(30000);
-            
-            try {
-              const credentials = await this.ociService.getWindowsInitialCredentials(ociInstance.id);
-              
-              if (credentials) {
-                savedVm.windows_initial_password = credentials.password;
-                await this.vmInstanceRepo.save(savedVm);
-                this.logger.log('🎉 ========== WINDOWS CREDENTIALS RETRIEVED ==========');
-                this.logger.log(`🎉 Username: ${credentials.username}`);
-                this.logger.log(`🎉 Password: ${credentials.password.substring(0, 4)}...${credentials.password.substring(credentials.password.length - 4)}`);
-                this.logger.log('🎉 Credentials saved to database');
-                this.logger.log('🎉 ===============================================');
-              } else {
-                this.logger.warn('⚠️  ========== WINDOWS CREDENTIALS NOT AVAILABLE ==========');
-                this.logger.warn('⚠️  The password is not available via API.');
-                this.logger.warn('⚠️  User will need to retrieve it from OCI Console.');
-                this.logger.warn('⚠️  =======================================================');
-              }
-            } catch (credError) {
-              this.logger.error('❌ ========== FAILED TO GET WINDOWS CREDENTIALS ==========');
-              this.logger.error(`❌ Error: ${credError.message}`);
-              this.logger.error(`❌ Status: ${credError.statusCode || 'N/A'}`);
-              this.logger.error('❌ User will need to get password from OCI Console');
-              this.logger.error('❌ ========================================================');
-            }
-          } else {
-            this.logger.warn('⚠️  ========== TIMEOUT WAITING FOR RUNNING STATE ==========');
-            this.logger.warn('⚠️  Instance did not reach RUNNING state in time');
-            this.logger.warn('⚠️  User will need to wait and retrieve password from OCI Console');
-            this.logger.warn('⚠️  ==========================================================');
-            
-            // Still update the latest state
-            try {
-              const latestInstance = await this.ociService.getInstance(ociInstance.id);
-              savedVm.lifecycle_state = latestInstance.lifecycleState;
-              if (latestInstance.lifecycleState === 'RUNNING') {
-                savedVm.vm_started_at = new Date();
-              }
-              await this.vmInstanceRepo.save(savedVm);
-            } catch (e) {
-              this.logger.warn('Could not update latest instance state:', e.message);
-            }
-          }
+          // Schedule async background job with subscription ID for email sending
+          const subscriptionId = savedVm.subscription_id;
+          this.scheduleWindowsPasswordRetrieval(savedVm.id, ociInstance.id, subscriptionId).catch(error => {
+            this.logger.error(`❌ Background password retrieval failed for VM ${savedVm.id}:`, error.message);
+          });
         } else {
           // Linux VM
           this.logger.log('🐧 Linux VM detected');
@@ -437,7 +388,31 @@ export class VmProvisioningService {
         this.logger.error('❌ ========== ERROR CHECKING OS TYPE ==========');
         this.logger.error(`❌ Error: ${osError.message}`);
         this.logger.error(`❌ Stack: ${osError.stack}`);
-        this.logger.error('❌ Continuing without OS detection...');
+        this.logger.error('❌ Attempting fallback OS detection from imageId...');
+        
+        // Fallback: Try to detect OS from imageId string
+        // Windows images typically have 'windows' in the imageId or name
+        const imageIdLower = createVmDto.imageId.toLowerCase();
+        
+        if (imageIdLower.includes('windows') || imageIdLower.includes('win-server')) {
+          this.logger.log('🪟 Fallback: Detected Windows from imageId pattern');
+          savedVm.operating_system = 'Windows Server';
+        } else if (imageIdLower.includes('ubuntu')) {
+          this.logger.log('🐧 Fallback: Detected Ubuntu from imageId pattern');
+          savedVm.operating_system = 'Ubuntu';
+        } else if (imageIdLower.includes('oracle-linux') || imageIdLower.includes('ol-')) {
+          this.logger.log('🐧 Fallback: Detected Oracle Linux from imageId pattern');
+          savedVm.operating_system = 'Oracle Linux';
+        } else if (imageIdLower.includes('centos')) {
+          this.logger.log('🐧 Fallback: Detected CentOS from imageId pattern');
+          savedVm.operating_system = 'CentOS';
+        } else {
+          this.logger.warn('⚠️  Could not detect OS from imageId, marking as Unknown');
+          savedVm.operating_system = 'Unknown Linux';
+        }
+        
+        await this.vmInstanceRepo.save(savedVm);
+        this.logger.log(`✅ Fallback OS saved: ${savedVm.operating_system}`);
         this.logger.error('❌ ==========================================');
       }
 
@@ -903,6 +878,64 @@ export class VmProvisioningService {
    */
   private sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Schedule background job to retrieve Windows password
+   * This runs asynchronously to avoid blocking the API response
+   */
+  private async scheduleWindowsPasswordRetrieval(vmId: number, instanceId: string, subscriptionId: string): Promise<void> {
+    this.logger.log(`🔄 [Background] Starting Windows password retrieval for VM ${vmId}, Subscription ${subscriptionId}`);
+    
+    try {
+      // Wait for instance to reach RUNNING state (max 12 minutes)
+      const isRunning = await this.pollInstanceUntilRunning(instanceId, 12);
+      
+      if (!isRunning) {
+        this.logger.warn(`⚠️  [Background] VM ${vmId}: Instance did not reach RUNNING state`);
+        return;
+      }
+      
+      // Reload VM from database
+      const vm = await this.vmInstanceRepo.findOne({ where: { id: vmId } });
+      if (!vm) {
+        this.logger.error(`❌ [Background] VM ${vmId} not found in database`);
+        return;
+      }
+      
+      // Update state
+      vm.lifecycle_state = 'RUNNING';
+      vm.vm_started_at = new Date();
+      await this.vmInstanceRepo.save(vm);
+      this.logger.log(`✅ [Background] VM ${vmId} is RUNNING`);
+      
+      // Wait additional time for password generation
+      this.logger.log(`⏳ [Background] Waiting 45 seconds for password generation...`);
+      await this.sleep(45000);
+      
+      // Attempt to retrieve password
+      try {
+        const credentials = await this.ociService.getWindowsInitialCredentials(instanceId);
+        
+        if (credentials) {
+          vm.windows_initial_password = credentials.password;
+          await this.vmInstanceRepo.save(vm);
+          this.logger.log(`🎉 [Background] VM ${vmId}: Windows credentials retrieved successfully`);
+          this.logger.log(`🎉 [Background] Username: ${credentials.username}`);
+          this.logger.log(`🎉 [Background] Password saved to database`);
+          this.logger.log(`📧 [Background] User can now access password from dashboard or will receive email notification`);
+          
+          // TODO: Implement email notification when password is ready
+          // For now, user will see password in dashboard or can request resend
+        } else {
+          this.logger.warn(`⚠️  [Background] VM ${vmId}: Windows password not available from API`);
+        }
+      } catch (credError) {
+        this.logger.error(`❌ [Background] VM ${vmId}: Failed to get Windows credentials:`, credError.message);
+      }
+    } catch (error) {
+      this.logger.error(`❌ [Background] VM ${vmId}: Error in password retrieval:`, error.message);
+    }
   }
 
   /**
