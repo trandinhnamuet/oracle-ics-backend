@@ -1765,6 +1765,7 @@ chmod 600 ~/.ssh/authorized_keys`;
 
   /**
    * Clean up database records after OCI compartment deletion
+   * Deletes ALL related data in cascade order to avoid foreign key violations
    */
   private async cleanupDatabaseRecords(compartmentId: string, instanceIds: string[]) {
     const queryRunner = this.dataSource.createQueryRunner();
@@ -1772,14 +1773,24 @@ chmod 600 ~/.ssh/authorized_keys`;
     await queryRunner.startTransaction();
 
     try {
+      this.logger.log(`🗑️  Starting database cleanup for compartment: ${compartmentId}`);
+
+      // Get user_compartment ID for foreign key cleanup
+      const userCompartments = await queryRunner.query(
+        `SELECT id FROM oracle.user_compartments WHERE compartment_ocid = $1`,
+        [compartmentId]
+      );
+      const userCompartmentIds = userCompartments.map((uc: any) => uc.id);
+
       // Get vm_instance records for logging
       const vmInstances = await queryRunner.query(
         `SELECT id, user_id, instance_name FROM oracle.vm_instances WHERE compartment_id = $1`,
         [compartmentId]
       );
-
       this.logger.log(`Found ${vmInstances.length} VM instances to delete in compartment ${compartmentId}`);
 
+      // === STEP 1: Delete child records (logs and related data) ===
+      
       // Delete bandwidth_logs for VMs in this compartment
       const deletedBandwidthLogs = await queryRunner.query(
         `DELETE FROM oracle.bandwidth_logs 
@@ -1788,7 +1799,7 @@ chmod 600 ~/.ssh/authorized_keys`;
          ) RETURNING id`,
         [compartmentId]
       );
-      this.logger.log(`Deleted ${deletedBandwidthLogs.length} bandwidth log records`);
+      this.logger.log(`✅ Deleted ${deletedBandwidthLogs.length} bandwidth log records`);
 
       // Delete vm_actions_log for VMs in this compartment
       const deletedActionLogs = await queryRunner.query(
@@ -1798,55 +1809,78 @@ chmod 600 ~/.ssh/authorized_keys`;
          ) RETURNING id`,
         [compartmentId]
       );
-      this.logger.log(`Deleted ${deletedActionLogs.length} VM action log records`);
+      this.logger.log(`✅ Deleted ${deletedActionLogs.length} VM action log records`);
 
       // Delete subscription_logs for subscriptions with VMs in this compartment
       const deletedSubscriptionLogs = await queryRunner.query(
         `DELETE FROM oracle.subscription_logs 
          WHERE subscription_id IN (
-           SELECT subscription_id FROM oracle.vm_instances WHERE compartment_id = $1
+           SELECT subscription_id FROM oracle.vm_instances 
+           WHERE compartment_id = $1 AND subscription_id IS NOT NULL
          ) RETURNING id`,
         [compartmentId]
       );
-      this.logger.log(`Deleted ${deletedSubscriptionLogs.length} subscription log records`);
+      this.logger.log(`✅ Deleted ${deletedSubscriptionLogs.length} subscription log records`);
 
-      // Update subscriptions to remove vm_instance_id reference
+      // === STEP 2: Update subscriptions to remove vm_instance_id reference ===
       const updatedSubscriptions = await queryRunner.query(
         `UPDATE oracle.subscriptions 
-         SET vm_instance_id = NULL 
+         SET vm_instance_id = NULL, configuration_status = 'deleted'
          WHERE vm_instance_id IN (
            SELECT id FROM oracle.vm_instances WHERE compartment_id = $1
          ) RETURNING id`,
         [compartmentId]
       );
-      this.logger.log(`Updated ${updatedSubscriptions.length} subscription records to remove VM reference`);
+      this.logger.log(`✅ Updated ${updatedSubscriptions.length} subscription records to remove VM reference`);
 
-      // Delete vm_instances
+      // === STEP 3: Delete compartment_accounts (IAM users in compartment) ===
+      if (userCompartmentIds.length > 0) {
+        const deletedCompartmentAccounts = await queryRunner.query(
+          `DELETE FROM oracle.compartment_accounts 
+           WHERE compartment_id = ANY($1::int[]) RETURNING id`,
+          [userCompartmentIds]
+        );
+        this.logger.log(`✅ Deleted ${deletedCompartmentAccounts.length} compartment account records`);
+      }
+
+      // === STEP 4: Delete VM instances ===
       await queryRunner.query(
         `DELETE FROM oracle.vm_instances WHERE compartment_id = $1`,
         [compartmentId]
       );
-      this.logger.log(`Deleted ${vmInstances.length} VM instance records`);
+      this.logger.log(`✅ Deleted ${vmInstances.length} VM instance records`);
 
-      // Delete vcn_resources
+      // === STEP 5: Delete VCN resources ===
       const deletedVcns = await queryRunner.query(
         `DELETE FROM oracle.vcn_resources WHERE compartment_id = $1 RETURNING id`,
         [compartmentId]
       );
-      this.logger.log(`Deleted ${deletedVcns.length} VCN resource records`);
+      this.logger.log(`✅ Deleted ${deletedVcns.length} VCN resource records`);
 
-      // Delete user_compartments
+      // === STEP 6: Delete user_compartments (main compartment record) ===
       const deletedCompartments = await queryRunner.query(
         `DELETE FROM oracle.user_compartments WHERE compartment_ocid = $1 RETURNING id`,
         [compartmentId]
       );
-      this.logger.log(`Deleted ${deletedCompartments.length} user compartment records`);
+      this.logger.log(`✅ Deleted ${deletedCompartments.length} user compartment records`);
 
       await queryRunner.commitTransaction();
-      this.logger.log('Database cleanup completed successfully');
+      this.logger.log('✅ Database cleanup completed successfully');
+      
+      // Summary log
+      this.logger.log(`📊 Cleanup Summary:
+        - Bandwidth Logs: ${deletedBandwidthLogs.length}
+        - VM Action Logs: ${deletedActionLogs.length}
+        - Subscription Logs: ${deletedSubscriptionLogs.length}
+        - Subscriptions Updated: ${updatedSubscriptions.length}
+        - Compartment Accounts: ${userCompartmentIds.length > 0 ? await queryRunner.query(`SELECT COUNT(*) FROM oracle.compartment_accounts WHERE compartment_id = ANY($1::int[])`, [userCompartmentIds]).then(r => r[0].count) : 0}
+        - VM Instances: ${vmInstances.length}
+        - VCN Resources: ${deletedVcns.length}
+        - User Compartments: ${deletedCompartments.length}
+      `);
     } catch (error) {
       await queryRunner.rollbackTransaction();
-      this.logger.error('Error cleaning up database records:', error);
+      this.logger.error('❌ Error cleaning up database records:', error);
       throw error;
     } finally {
       await queryRunner.release();
