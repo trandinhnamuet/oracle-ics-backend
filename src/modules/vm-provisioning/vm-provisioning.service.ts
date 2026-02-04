@@ -16,11 +16,14 @@ import { VcnResource } from '../../entities/vcn-resource.entity';
 import { VmInstance } from '../../entities/vm-instance.entity';
 import { VmActionsLog } from '../../entities/vm-actions-log.entity';
 import { CompartmentAccount } from '../../entities/compartment-account.entity';
+import { Subscription } from '../../entities/subscription.entity';
 import { CreateVmDto, VmActionType } from './dto';
+import * as nodemailer from 'nodemailer';
 
 @Injectable()
 export class VmProvisioningService {
   private readonly logger = new Logger(VmProvisioningService.name);
+  private transporter: nodemailer.Transporter;
 
   // Fallback shapes ordered by preference (for capacity issues)
   private readonly fallbackShapes = [
@@ -43,9 +46,22 @@ export class VmProvisioningService {
     private readonly vmActionsLogRepo: Repository<VmActionsLog>,
     @InjectRepository(CompartmentAccount)
     private readonly compartmentAccountRepo: Repository<CompartmentAccount>,
+    @InjectRepository(Subscription)
+    private readonly subscriptionRepo: Repository<Subscription>,
     private readonly ociService: OciService,
     private readonly systemSshKeyService: SystemSshKeyService,
-  ) {}
+  ) {
+    // Initialize email transporter
+    this.transporter = nodemailer.createTransport({
+      host: process.env.SMTP_HOST || 'smtp.gmail.com',
+      port: parseInt(process.env.SMTP_PORT || '587'),
+      secure: false,
+      auth: {
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASS,
+      },
+    });
+  }
 
   /**
    * Provision a new VM for a user
@@ -923,10 +939,64 @@ export class VmProvisioningService {
           this.logger.log(`🎉 [Background] VM ${vmId}: Windows credentials retrieved successfully`);
           this.logger.log(`🎉 [Background] Username: ${credentials.username}`);
           this.logger.log(`🎉 [Background] Password saved to database`);
-          this.logger.log(`📧 [Background] User can now access password from dashboard or will receive email notification`);
           
-          // TODO: Implement email notification when password is ready
-          // For now, user will see password in dashboard or can request resend
+          // Send email notification with password
+          try {
+            // Get subscription and user email
+            const subscription = await this.subscriptionRepo.findOne({
+              where: { id: subscriptionId },
+              relations: ['user'],
+            });
+            
+            if (subscription && subscription.user?.email) {
+              this.logger.log(`📧 [Background] Sending Windows credentials email to ${subscription.user.email}...`);
+              
+              // Get public IP
+              let publicIp = vm.public_ip;
+              if (!publicIp) {
+                try {
+                  const compartment = await this.userCompartmentRepo.findOne({
+                    where: { user_id: vm.user_id },
+                  });
+                  if (compartment) {
+                    const retrievedIp = await this.ociService.getInstancePublicIp(
+                      compartment.compartment_ocid,
+                      instanceId,
+                    );
+                    if (retrievedIp) {
+                      publicIp = retrievedIp;
+                      vm.public_ip = retrievedIp;
+                      await this.vmInstanceRepo.save(vm);
+                    }
+                  }
+                } catch (ipError) {
+                  this.logger.warn(`⚠️  Could not retrieve public IP: ${ipError.message}`);
+                }
+              }
+              
+              await this.sendWindowsPasswordEmail(
+                subscription.user.email,
+                {
+                  name: vm.instance_name,
+                  publicIp: publicIp || 'Check OCI Console',
+                  operatingSystem: vm.operating_system || 'Windows Server',
+                  status: vm.lifecycle_state,
+                },
+                {
+                  username: credentials.username,
+                  password: credentials.password,
+                },
+                subscription,
+              );
+              
+              this.logger.log(`✅ [Background] Windows credentials email sent successfully`);
+            } else {
+              this.logger.warn(`⚠️  [Background] Could not find user email for subscription ${subscriptionId}`);
+            }
+          } catch (emailError) {
+            this.logger.error(`❌ [Background] Failed to send email:`, emailError.message);
+            // Don't throw, password is saved in DB
+          }
         } else {
           this.logger.warn(`⚠️  [Background] VM ${vmId}: Windows password not available from API`);
         }
@@ -1031,6 +1101,228 @@ export class VmProvisioningService {
         this.logger.warn(`Retrying in ${delay}ms... (attempt ${i + 1}/${maxRetries})`);
         await this.sleep(delay);
       }
+    }
+  }
+
+  /**
+   * Send Windows password email to user
+   */
+  private async sendWindowsPasswordEmail(
+    email: string,
+    vmInfo: any,
+    windowsCredentials: { username: string; password: string },
+    subscription: any,
+  ) {
+    this.logger.log('📧 [Background] ========== SENDING WINDOWS EMAIL ==========');
+    this.logger.log(`📧 To: ${email}`);
+    this.logger.log(`📧 VM: ${vmInfo.name}`);
+    this.logger.log(`📧 IP: ${vmInfo.publicIp}`);
+    this.logger.log(`📧 Username: ${windowsCredentials.username}`);
+    
+    const subject = `🪟 Windows VM Access Credentials - ${vmInfo.name || 'Your VM'}`;
+    
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <style>
+            body {
+              font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+              background-color: #f5f5f5;
+              margin: 0;
+              padding: 20px;
+            }
+            .container {
+              max-width: 800px;
+              margin: 0 auto;
+              background-color: #ffffff;
+              border-radius: 8px;
+              box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+              overflow: hidden;
+            }
+            .header {
+              background: linear-gradient(135deg, #0078D4 0%, #0053A4 100%);
+              color: white;
+              padding: 30px;
+              text-align: center;
+            }
+            .content {
+              padding: 40px;
+            }
+            h1 {
+              margin: 0;
+              font-size: 28px;
+            }
+            h2 {
+              color: #0078D4;
+              margin-top: 30px;
+            }
+            h3 {
+              color: #333;
+              margin-top: 20px;
+            }
+            .vm-details {
+              background-color: #f8f9fa;
+              border-left: 4px solid #0078D4;
+              padding: 20px;
+              margin: 20px 0;
+            }
+            .vm-details p {
+              margin: 10px 0;
+            }
+            .code-block {
+              background-color: #2d2d2d;
+              color: #ffffff;
+              padding: 15px;
+              border-radius: 5px;
+              font-family: 'Consolas', 'Monaco', monospace;
+              font-size: 14px;
+              overflow-x: auto;
+              margin: 10px 0;
+              white-space: pre-wrap;
+            }
+            .warning {
+              background-color: #fff3cd;
+              border-left: 4px solid #ffc107;
+              padding: 15px;
+              margin: 20px 0;
+            }
+            .info-box {
+              background-color: #e7f3ff;
+              border-left: 4px solid #0078D4;
+              padding: 15px;
+              margin: 20px 0;
+            }
+            .credentials-box {
+              background-color: #fff5f5;
+              border: 2px solid #dc3545;
+              padding: 20px;
+              margin: 20px 0;
+              border-radius: 5px;
+            }
+            .button {
+              display: inline-block;
+              background-color: #0078D4;
+              color: white;
+              padding: 12px 30px;
+              text-decoration: none;
+              border-radius: 5px;
+              margin-top: 20px;
+            }
+            .footer {
+              background-color: #f8f9fa;
+              padding: 20px;
+              text-align: center;
+              color: #666;
+            }
+            code {
+              background-color: #f5f5f5;
+              padding: 2px 6px;
+              border-radius: 3px;
+              font-family: 'Consolas', 'Monaco', monospace;
+              font-size: 13px;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h1>🪟 Windows VM Access Credentials</h1>
+              <p>Your Windows Server is ready to use!</p>
+            </div>
+
+            <div class="content">
+              <h2>VM Information</h2>
+              <div class="vm-details">
+                <p><strong>VM Name:</strong> ${vmInfo.name || 'N/A'}</p>
+                <p><strong>Public IP:</strong> <code>${vmInfo.publicIp || 'Retrieving...'}</code></p>
+                <p><strong>Operating System:</strong> ${vmInfo.operatingSystem || 'Windows Server'}</p>
+                <p><strong>Status:</strong> ${vmInfo.status || 'RUNNING'}</p>
+              </div>
+
+              <div class="credentials-box">
+                <h3>⚠️ Important Security Information</h3>
+                <p><strong>Keep your password secure!</strong> Never share it with anyone.</p>
+              </div>
+
+              <h3>🔑 Your Windows Credentials:</h3>
+              <div class="code-block">Username: ${windowsCredentials.username}
+Password: ${windowsCredentials.password}</div>
+
+              <h3>📝 How to Connect:</h3>
+              
+              <h4>Option 1: Windows Remote Desktop (Recommended)</h4>
+              <p><strong>On Windows:</strong></p>
+              <ol>
+                <li>Press <code>Win + R</code> and type <code>mstsc</code></li>
+                <li>Enter your VM's IP address: <code>${vmInfo.publicIp || 'YOUR_VM_IP'}</code></li>
+                <li>Click "Connect"</li>
+                <li>When prompted, enter the username and password above</li>
+              </ol>
+
+              <h4>Option 2: From Mac</h4>
+              <ol>
+                <li>Download "Microsoft Remote Desktop" from Mac App Store</li>
+                <li>Click "+ Add PC"</li>
+                <li>Enter PC Name: <code>${vmInfo.publicIp || 'YOUR_VM_IP'}</code></li>
+                <li>Enter credentials when connecting</li>
+              </ol>
+
+              <h3>🔐 First Login Recommendations:</h3>
+              <div class="info-box">
+                <h4>After your first login, we recommend:</h4>
+                <ol>
+                  <li><strong>Change your password immediately</strong> for security</li>
+                  <li><strong>Update Windows:</strong> Run Windows Update to get latest security patches</li>
+                  <li><strong>Configure Windows Firewall:</strong> Set up appropriate firewall rules</li>
+                  <li><strong>Enable automatic updates:</strong> Keep your system secure</li>
+                </ol>
+              </div>
+
+              <div class="warning">
+                <h3>🔒 Security Best Practices</h3>
+                <ul>
+                  <li>Change the default password immediately after first login</li>
+                  <li>Never share your credentials with anyone</li>
+                  <li>Use strong passwords with a mix of letters, numbers, and symbols</li>
+                  <li>Enable Windows Defender and keep it updated</li>
+                  <li>Regularly backup your data</li>
+                  <li>Keep Windows updated with latest security patches</li>
+                </ul>
+              </div>
+
+              <h3>📊 VM Management</h3>
+              <p>You can manage your VM (start, stop, restart) from your dashboard:</p>
+              <a href="https://oraclecloud.vn/package-management/${subscription.id}" class="button">
+                Manage Your VM
+              </a>
+            </div>
+
+            <div class="footer">
+              <p>© 2026 Oracle Cloud Management Platform</p>
+              <p>If you have any questions, please contact support@oraclecloud.vn</p>
+            </div>
+          </div>
+        </body>
+      </html>
+    `;
+
+    try {
+      await this.transporter.sendMail({
+        from: process.env.SMTP_FROM || 'noreply@oraclecloud.vn',
+        to: email,
+        subject: subject,
+        html: htmlContent,
+      });
+
+      this.logger.log(`✅ [Background] Windows credentials email sent successfully to ${email}`);
+      this.logger.log('📧 [Background] ==========================================');
+    } catch (error) {
+      this.logger.error('❌ [Background] ========== EMAIL SEND FAILED ==========');
+      this.logger.error(`❌ [Background] Failed to send Windows credentials email to ${email}`);
+      this.logger.error(`❌ [Background] Error: ${error.message}`);
+      this.logger.error('❌ [Background] ========================================');
+      throw error;
     }
   }
 }

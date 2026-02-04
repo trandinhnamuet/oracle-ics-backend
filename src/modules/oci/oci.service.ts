@@ -807,8 +807,24 @@ export class OciService {
         bootVolumeSizeInGBs: bootVolumeSizeInGBs || 50,
       };
 
-      // Prepare cloud-init user-data for proper sudo configuration
-      const cloudInitConfig = `#cloud-config
+      // Check if this is a Windows image BEFORE preparing metadata
+      // This is critical to avoid sending cloud-init config to Windows VMs
+      let isWindowsImage = false;
+      try {
+        const imageDetails = await this.getImage(imageId);
+        isWindowsImage = imageDetails?.operatingSystem?.toLowerCase().includes('windows') || false;
+        this.logger.log(`🔍 Image OS detected: ${imageDetails?.operatingSystem || 'Unknown'} (isWindows: ${isWindowsImage})`);
+      } catch (error) {
+        this.logger.warn(`⚠️  Could not detect image OS type: ${error.message}`);
+        // Fallback: check imageId string
+        isWindowsImage = imageId.toLowerCase().includes('windows') || imageId.toLowerCase().includes('win-server');
+        this.logger.log(`🔍 Fallback detection from imageId (isWindows: ${isWindowsImage})`);
+      }
+
+      // Prepare cloud-init user-data ONLY for Linux VMs
+      // Windows VMs should NOT receive cloud-init config as it may interfere with 
+      // Cloudbase-Init and break password authentication
+      const cloudInitConfig = isWindowsImage ? null : `#cloud-config
 users:
   - default
   - name: opc
@@ -896,15 +912,25 @@ runcmd:
   - echo "✅ Cloud-init completed - Firewall configured for web traffic"
 `;
 
-      // Prepare metadata with SSH keys AND cloud-init config
-      const metadata = {
+      // Prepare metadata
+      // For Windows VMs: Only set ssh_authorized_keys (even though Windows doesn't use them, 
+      //                  it's safer to not send any user_data that might be processed by Cloudbase-Init)
+      // For Linux VMs: Set both ssh_authorized_keys and cloud-init user_data
+      const metadata: any = {
         ssh_authorized_keys: sshPublicKeys.join('\n'),
-        user_data: Buffer.from(cloudInitConfig).toString('base64'),
       };
+
+      // Only add user_data for Linux VMs
+      if (!isWindowsImage && cloudInitConfig) {
+        metadata.user_data = Buffer.from(cloudInitConfig).toString('base64');
+        this.logger.log(`🐧 Linux VM: Sending SSH keys + cloud-init config`);
+        this.logger.log(`📝 Cloud-init user_data configured (${cloudInitConfig!.length} chars, base64: ${metadata.user_data.length} chars)`);
+      } else {
+        this.logger.log(`🪟 Windows VM: Sending SSH keys ONLY (no cloud-init to avoid interfering with password auth)`);
+      }
 
       this.logger.log(`🔑 Preparing to launch instance with ${sshPublicKeys.length} SSH keys`);
       this.logger.log(`📝 Metadata ssh_authorized_keys length: ${metadata.ssh_authorized_keys.length} chars`);
-      this.logger.log(`📝 Cloud-init user_data configured (${cloudInitConfig.length} chars, base64: ${metadata.user_data.length} chars)`);
       this.logger.log(`📝 Full SSH keys being sent to OCI:`);
       this.logger.log(metadata.ssh_authorized_keys);
       this.logger.log(`📝 SSH keys array preview:`);

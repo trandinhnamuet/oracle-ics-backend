@@ -8,6 +8,7 @@ import { VcnResource } from '../../entities/vcn-resource.entity';
 import { VmInstance } from '../../entities/vm-instance.entity';
 import { VmActionsLog } from '../../entities/vm-actions-log.entity';
 import { CompartmentAccount } from '../../entities/compartment-account.entity';
+import { Subscription } from '../../entities/subscription.entity';
 import { OciModule } from '../oci/oci.module';
 import { SystemSshKeyModule } from '../system-ssh-key/system-ssh-key.module';
 
@@ -20,6 +21,7 @@ import { SystemSshKeyModule } from '../system-ssh-key/system-ssh-key.module';
       VmInstance,
       VmActionsLog,
       CompartmentAccount,
+      Subscription,
     ]),
     OciModule,
     SystemSshKeyModule,
