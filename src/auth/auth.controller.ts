@@ -120,9 +120,9 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   async logout(@Req() req: Request, @Res({ passthrough: true }) response: Response) {
     const refreshToken = req.cookies?.refreshToken as string | undefined;
-    const userId = (req.user as any)?.sub as string;
+    const userId = String((req.user as any)?.id);
 
-    if (refreshToken) {
+    if (refreshToken && userId && userId !== 'undefined') {
       await this.authService.logout(userId, refreshToken);
     }
 
@@ -141,9 +141,11 @@ export class AuthController {
     @Req() req: Request,
     @Res({ passthrough: true }) response: Response,
   ) {
-    const userId = (req.user as any)?.sub as string;
+    const userId = String((req.user as any)?.id);
 
-    await this.authService.logoutAll(userId);
+    if (userId && userId !== 'undefined') {
+      await this.authService.logoutAll(userId);
+    }
 
     // Clear refresh token cookie - MUST use same options as when setting
     const clearOptions = this.getCookieOptions(0);
