@@ -487,12 +487,8 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials');
     }
 
-    // Check if email is verified
-    if (!user.isActive) {
-      throw new UnauthorizedException('Please verify your email first');
-    }
-
-    // Check password
+    // Check password first (before checking email verification)
+    // This ensures we don't leak information about unverified accounts
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
       // Record failed login
@@ -525,6 +521,44 @@ export class AuthService {
       }
 
       throw new UnauthorizedException('Invalid credentials');
+    }
+
+    // Check if email is verified - if not, generate and send new OTP
+    if (!user.isActive) {
+      this.logger.log(`Login attempt with unverified account: ${email}`);
+      
+      // Generate new OTP
+      const otp = this.generateOtp();
+      const otpExpiresAt = new Date();
+      otpExpiresAt.setMinutes(otpExpiresAt.getMinutes() + 10);
+
+      this.logger.log(`Generated new OTP for unverified login: ${email}: ${otp}, expires at: ${otpExpiresAt.toISOString()}`);
+
+      // Update user with new OTP
+      user.emailVerificationOtp = otp;
+      user.otpExpiresAt = otpExpiresAt;
+      await this.userRepository.save(user);
+
+      // Send OTP email
+      try {
+        await this.emailService.sendEmailVerification({
+          to: email,
+          userName: `${user.firstName} ${user.lastName}`,
+          verificationCode: otp,
+          expirationMinutes: 10,
+        });
+        this.logger.log(`OTP email sent to unverified account: ${email}`);
+      } catch (error) {
+        this.logger.error(`Failed to send OTP email to ${email}:`, error);
+        // Continue anyway - user can request resend
+      }
+
+      // Return response indicating verification is required
+      return {
+        requiresVerification: true,
+        email: user.email,
+        message: `Tài khoản này chưa xác thực. OTP đã được gửi về email ${user.email}. Vui lòng nhập OTP để xác thực tài khoản.`,
+      };
     }
 
     // Generate session ID
