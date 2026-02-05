@@ -15,13 +15,21 @@ export class AuthController {
   ) {}
 
   private getCookieOptions(maxAge?: number) {
-    return {
+    const options: any = {
       httpOnly: true,
       secure: this.configService.get('NODE_ENV') === 'production',
-      sameSite: 'strict' as const,
+      sameSite: 'lax' as const, // Changed from 'strict' to 'lax' for better cross-domain compatibility
       maxAge: maxAge || 30 * 24 * 60 * 60 * 1000, // 30 days
       path: '/',
     };
+
+    // Add domain for production to ensure cookie works across subdomains
+    const cookieDomain = this.configService.get('COOKIE_DOMAIN');
+    if (cookieDomain) {
+      options.domain = cookieDomain;
+    }
+
+    return options;
   }
 
   @Post('register')
@@ -118,13 +126,10 @@ export class AuthController {
       await this.authService.logout(userId, refreshToken);
     }
 
-    // Clear refresh token cookie
-    response.clearCookie('refreshToken', {
-      httpOnly: true,
-      secure: this.configService.get('NODE_ENV') === 'production',
-      sameSite: 'strict',
-      path: '/',
-    });
+    // Clear refresh token cookie - MUST use same options as when setting
+    const clearOptions = this.getCookieOptions(0);
+    delete clearOptions.maxAge; // Remove maxAge when clearing
+    response.clearCookie('refreshToken', clearOptions);
 
     return { message: 'Logged out successfully' };
   }
@@ -140,13 +145,10 @@ export class AuthController {
 
     await this.authService.logoutAll(userId);
 
-    // Clear refresh token cookie
-    response.clearCookie('refreshToken', {
-      httpOnly: true,
-      secure: this.configService.get('NODE_ENV') === 'production',
-      sameSite: 'strict',
-      path: '/',
-    });
+    // Clear refresh token cookie - MUST use same options as when setting
+    const clearOptions = this.getCookieOptions(0);
+    delete clearOptions.maxAge; // Remove maxAge when clearing
+    response.clearCookie('refreshToken', clearOptions);
 
     return { message: 'Logged out from all devices successfully' };
   }
