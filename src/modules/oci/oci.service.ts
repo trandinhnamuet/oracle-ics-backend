@@ -1766,7 +1766,7 @@ chmod 600 ~/.ssh/authorized_keys`;
   /**
    * Clean up database records after OCI compartment deletion
    * Deletes ALL related data in cascade order to avoid foreign key violations
-   */
+   */ 
   private async cleanupDatabaseRecords(compartmentId: string, instanceIds: string[]) {
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
@@ -1777,7 +1777,7 @@ chmod 600 ~/.ssh/authorized_keys`;
 
       // Get user_compartment ID for foreign key cleanup
       const userCompartments = await queryRunner.query(
-        `SELECT id FROM oracle.user_compartments WHERE compartment_ocid = $1`,
+        `SELECT id FROM oracle.user_compartments WHERE compartment_id = $1`,
         [compartmentId]
       );
       const userCompartmentIds = userCompartments.map((uc: any) => uc.id);
@@ -1859,7 +1859,7 @@ chmod 600 ~/.ssh/authorized_keys`;
 
       // === STEP 6: Delete user_compartments (main compartment record) ===
       const deletedCompartments = await queryRunner.query(
-        `DELETE FROM oracle.user_compartments WHERE compartment_ocid = $1 RETURNING id`,
+        `DELETE FROM oracle.user_compartments WHERE compartment_id = $1 RETURNING id`,
         [compartmentId]
       );
       this.logger.log(`✅ Deleted ${deletedCompartments.length} user compartment records`);
