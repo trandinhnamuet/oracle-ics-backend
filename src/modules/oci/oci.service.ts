@@ -1837,7 +1837,7 @@ chmod 600 ~/.ssh/authorized_keys`;
       if (userCompartmentIds.length > 0) {
         const deletedCompartmentAccounts = await queryRunner.query(
           `DELETE FROM oracle.compartment_accounts 
-           WHERE compartment_id = ANY($1::int[]) RETURNING id`,
+           WHERE user_compartment_id = ANY($1::int[]) RETURNING id`,
           [userCompartmentIds]
         );
         this.logger.log(`✅ Deleted ${deletedCompartmentAccounts.length} compartment account records`);
