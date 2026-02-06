@@ -42,7 +42,7 @@ export class AuthService {
     const existingUser = await this.userRepository.findOne({ where: { email } });
     if (existingUser) {
       this.logger.warn(`Registration failed: User already exists - ${email}`);
-      throw new ConflictException('User with this email already exists');
+      throw new ConflictException('Email này đã được đăng ký. Vui lòng sử dụng email khác hoặc đăng nhập.');
     }
 
     // Hash password
@@ -100,7 +100,7 @@ export class AuthService {
     const user = await this.userRepository.findOne({ where: { email } });
     if (!user) {
       this.logger.warn(`OTP verification failed: User not found - ${email}`);
-      throw new BadRequestException('User not found');
+      throw new BadRequestException('Không tìm thấy tài khoản với email này.');
     }
 
     this.logger.log(`User found: ${email}, isActive: ${user.isActive}, stored OTP: ${user.emailVerificationOtp}, expires: ${user.otpExpiresAt}`);
@@ -108,19 +108,19 @@ export class AuthService {
     // Check if already active
     if (user.isActive) {
       this.logger.warn(`OTP verification failed: Email already verified - ${email}`);
-      throw new BadRequestException('Email already verified');
+      throw new BadRequestException('Email đã được xác thực. Bạn có thể đăng nhập ngay.');
     }
 
     // Check OTP
     if (!user.emailVerificationOtp || user.emailVerificationOtp !== otp) {
       this.logger.warn(`OTP verification failed: Invalid OTP for ${email}. Expected: ${user.emailVerificationOtp}, Received: ${otp}`);
-      throw new BadRequestException('Invalid OTP');
+      throw new BadRequestException('Mã OTP không đúng. Vui lòng kiểm tra lại.');
     }
 
     // Check OTP expiration
     if (!user.otpExpiresAt || new Date() > user.otpExpiresAt) {
       this.logger.warn(`OTP verification failed: OTP expired for ${email}. Expiry: ${user.otpExpiresAt}, Current: ${new Date()}`);
-      throw new BadRequestException('OTP has expired');
+      throw new BadRequestException('Mã OTP đã hết hạn. Vui lòng yêu cầu gửi lại mã mới.');
     }
 
     // Activate user
@@ -181,13 +181,13 @@ export class AuthService {
     const user = await this.userRepository.findOne({ where: { email } });
     if (!user) {
       this.logger.warn(`Resend OTP failed: User not found - ${email}`);
-      throw new BadRequestException('User not found');
+      throw new BadRequestException('Không tìm thấy tài khoản với email này.');
     }
 
     // Check if already active
     if (user.isActive) {
       this.logger.warn(`Resend OTP failed: Email already verified - ${email}`);
-      throw new BadRequestException('Email already verified');
+      throw new BadRequestException('Email đã được xác thực. Bạn có thể đăng nhập ngay.');
     }
 
     // Generate new OTP
@@ -484,7 +484,8 @@ export class AuthService {
         this.logger.error('Failed to record login attempt for non-existent user', error);
       }
 
-      throw new UnauthorizedException('Invalid credentials');
+      // Don't reveal that email doesn't exist (security)
+      throw new UnauthorizedException('Email hoặc mật khẩu không đúng. Vui lòng kiểm tra lại thông tin đăng nhập.');
     }
 
     // Check password first (before checking email verification)
@@ -520,7 +521,8 @@ export class AuthService {
         this.logger.error('Failed to record failed login attempt', error);
       }
 
-      throw new UnauthorizedException('Invalid credentials');
+      // Don't reveal that email exists (security)
+      throw new UnauthorizedException('Email hoặc mật khẩu không đúng. Vui lòng kiểm tra lại thông tin đăng nhập.');
     }
 
     // Check if email is verified - if not, generate and send new OTP
@@ -615,7 +617,7 @@ export class AuthService {
   async validateUser(userId: number) {
     const user = await this.userRepository.findOne({ where: { id: userId } });
     if (!user) {
-      throw new UnauthorizedException('User not found');
+      throw new UnauthorizedException('Không tìm thấy tài khoản.');
     }
     return user;
   }
@@ -634,24 +636,24 @@ export class AuthService {
         secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
       });
     } catch {
-      throw new UnauthorizedException('Invalid refresh token');
+      throw new UnauthorizedException('Phiên đăng nhập hết hạn. Vui lòng đăng nhập lại.');
     }
 
     const session = await this.findSessionByToken(payload.sub, refreshToken);
     if (!session) {
-      throw new UnauthorizedException('Session not found');
+      throw new UnauthorizedException('Phiên đăng nhập không hợp lệ. Vui lòng đăng nhập lại.');
     }
 
     if (new Date() > session.expiresAt) {
       await this.deleteSession(session.id);
-      throw new UnauthorizedException('Session expired');
+      throw new UnauthorizedException('Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.');
     }
 
     const user = await this.userRepository.findOne({ 
       where: { id: parseInt(payload.sub) } 
     });
     if (!user) {
-      throw new UnauthorizedException('User not found');
+      throw new UnauthorizedException('Không tìm thấy tài khoản.');
     }
 
     // Token rotation: delete old session
@@ -747,17 +749,17 @@ export class AuthService {
     // Find user
     const user = await this.userRepository.findOne({ where: { email } });
     if (!user) {
-      throw new BadRequestException('User not found');
+      throw new BadRequestException('Không tìm thấy tài khoản với email này.');
     }
 
     // Check OTP
     if (!user.passwordResetOtp || user.passwordResetOtp !== otp) {
-      throw new BadRequestException('Invalid OTP');
+      throw new BadRequestException('Mã OTP không đúng. Vui lòng kiểm tra lại.');
     }
 
     // Check OTP expiration
     if (!user.passwordResetOtpExpiresAt || new Date() > user.passwordResetOtpExpiresAt) {
-      throw new BadRequestException('OTP has expired. Please request a new one.');
+      throw new BadRequestException('Mã OTP đã hết hạn. Vui lòng yêu cầu gửi lại mã mới.');
     }
 
     return {
@@ -775,17 +777,17 @@ export class AuthService {
     // Find user
     const user = await this.userRepository.findOne({ where: { email } });
     if (!user) {
-      throw new BadRequestException('User not found');
+      throw new BadRequestException('Không tìm thấy tài khoản với email này.');
     }
 
     // Check OTP
     if (!user.passwordResetOtp || user.passwordResetOtp !== otp) {
-      throw new BadRequestException('Invalid OTP');
+      throw new BadRequestException('Mã OTP không đúng. Vui lòng kiểm tra lại.');
     }
 
     // Check OTP expiration
     if (!user.passwordResetOtpExpiresAt || new Date() > user.passwordResetOtpExpiresAt) {
-      throw new BadRequestException('OTP has expired. Please request a new one.');
+      throw new BadRequestException('Mã OTP đã hết hạn. Vui lòng yêu cầu gửi lại mã mới.');
     }
 
     // Hash new password
