@@ -77,7 +77,18 @@ export class AuthController {
     // Extract real IP from proxy headers
     const result = await this.authService.login(loginDto, userAgent, req);
     
-    // Set refresh token as httpOnly cookie
+    // Check if verification is required (unverified account)
+    if ('requiresVerification' in result && result.requiresVerification) {
+      this.logger.log(`Login requires verification for: ${result.email}`);
+      // Return verification response without setting cookies
+      return {
+        requiresVerification: result.requiresVerification,
+        email: result.email,
+        message: result.message,
+      };
+    }
+    
+    // Normal login flow - set refresh token as httpOnly cookie
     response.cookie('refreshToken', result.refreshToken, this.getCookieOptions());
 
     return {
