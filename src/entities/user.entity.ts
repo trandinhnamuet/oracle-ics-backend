@@ -8,7 +8,7 @@ export class User {
   @Column({ unique: true })
   email: string;
 
-  @Column()
+  @Column({ nullable: true })
   password: string;
 
   @Column({ name: 'first_name' })
@@ -23,6 +23,11 @@ export class User {
   @Column({ length: 255, nullable: true })
   company?: string;
 
+  @Column({ name: 'google_id', unique: true, nullable: true })
+  googleId?: string;
+
+  @Column({ name: 'auth_provider', length: 20, default: 'local' })
+  authProvider: string;
 
   @Column({ length: 20, default: 'customer' })
   role: string;
