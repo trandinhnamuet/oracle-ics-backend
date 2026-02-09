@@ -6,6 +6,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
 import { JwtStrategy } from './jwt.strategy';
+import { GoogleStrategy } from './google.strategy';
 import { User } from '../entities/user.entity';
 import { UserSession } from './user-session.entity';
 import { SessionCleanupService } from './session-cleanup.service';
@@ -29,7 +30,7 @@ import { AdminLoginHistoryController } from './admin-login-history.controller';
     }),
     EmailModule,
   ],
-  providers: [AuthService, JwtStrategy, SessionCleanupService, AdminLoginHistoryService],
+  providers: [AuthService, JwtStrategy, GoogleStrategy, SessionCleanupService, AdminLoginHistoryService],
   controllers: [AuthController, AdminLoginHistoryController],
   exports: [AuthService, AdminLoginHistoryService],
 })

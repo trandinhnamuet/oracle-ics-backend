@@ -804,4 +804,124 @@ export class AuthService {
       success: true,
     };
   }
+
+  /**
+   * Validate and create/update user from Google OAuth
+   */
+  async validateGoogleUser(googleProfile: {
+    googleId: string;
+    email: string;
+    firstName: string;
+    lastName: string;
+    picture?: string;
+  }) {
+    const { googleId, email, firstName, lastName, picture } = googleProfile;
+    this.logger.log(`Google OAuth validation for email: ${email}`);
+
+    // Find existing user by email
+    let user = await this.userRepository.findOne({ where: { email } });
+
+    if (user) {
+      // User exists - check auth provider
+      if (user.authProvider === 'local' && !user.googleId) {
+        // Link Google account to existing local account
+        this.logger.log(`Linking Google account to existing local user: ${email}`);
+        user.googleId = googleId;
+        user.authProvider = 'google'; // Update to Google as primary
+        if (picture && !user.avatarUrl) {
+          user.avatarUrl = picture;
+        }
+        await this.userRepository.save(user);
+      } else if (user.authProvider === 'google' || user.googleId === googleId) {
+        // Existing Google user - just login
+        this.logger.log(`Existing Google user logging in: ${email}`);
+        // Update avatar if changed
+        if (picture && user.avatarUrl !== picture) {
+          user.avatarUrl = picture;
+          await this.userRepository.save(user);
+        }
+      } else {
+        // Different auth provider
+        throw new UnauthorizedException(
+          `Email này đã được đăng ký bằng phương thức khác. Vui lòng sử dụng phương thức đăng nhập ban đầu.`
+        );
+      }
+    } else {
+      // New user - create account
+      this.logger.log(`Creating new Google user: ${email}`);
+      user = this.userRepository.create({
+        email,
+        firstName,
+        lastName,
+        googleId,
+        authProvider: 'google',
+        isActive: true, // Auto-verified for Google users
+        avatarUrl: picture,
+        password: undefined, // No password for Google users
+      });
+      await this.userRepository.save(user);
+      this.logger.log(`New Google user created: ${email}`);
+    }
+
+    return user;
+  }
+
+  /**
+   * Login with Google - similar to regular login but for Google OAuth users
+   */
+  async loginWithGoogle(user: User, userAgent: string, request: any) {
+    this.logger.log(`Google login for user: ${user.email}`);
+
+    // Extract IP address
+    const { ipV4, ipV6 } = this.extractIpAddress(request);
+
+    // Generate session ID
+    const sessionId = this.generateSessionId();
+
+    // Generate JWT tokens
+    const { accessToken, refreshToken } = this.generateTokens(user);
+
+    // Create session
+    await this.createSession(user.id.toString(), refreshToken, userAgent, ipV4 || ipV6 || '');
+
+    // Record successful login (only for admin users)
+    if (user.role === 'admin') {
+      try {
+        const { browser, os, deviceType } = this.parseUserAgent(userAgent);
+        const geo = GeolocationUtil.getLocationFromIP(ipV4 || ipV6);
+        const isNewDevice = await this.adminLoginHistoryService.isNewDevice(user.id, ipV4 || ipV6 || '');
+
+        await this.adminLoginHistoryService.recordLogin({
+          adminId: user.id,
+          username: user.email,
+          role: user.role,
+          loginTime: new Date(),
+          loginStatus: 'success',
+          ipV4,
+          ipV6,
+          country: geo.country,
+          city: geo.city,
+          isp: null,
+          browser,
+          os,
+          deviceType,
+          userAgent,
+          twoFaStatus: 'not_enabled',
+          sessionId,
+          isNewDevice,
+          failedAttemptsBeforeSuccess: 0,
+        });
+      } catch (error) {
+        this.logger.error('Failed to record Google login in admin history', error);
+      }
+    }
+
+    // Return user info without sensitive data
+    const { password: _pw, refreshToken: _rt, ...userWithoutSensitive } = user;
+    return {
+      accessToken,
+      refreshToken,
+      user: userWithoutSensitive,
+    };
+  }
 }
