@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
+import { Repository, DataSource } from 'typeorm';
 import { Subscription } from '../../entities/subscription.entity';
 import { UserWallet } from '../../entities/user-wallet.entity';
 import { WalletTransaction } from '../../entities/wallet-transaction.entity';
@@ -36,6 +36,8 @@ export class SubscriptionService {
     private vmActionsLogRepository: Repository<VmActionsLog>,
     private userWalletService: UserWalletService,
     private ociService: OciService,
+    @InjectDataSource()
+    private dataSource: DataSource,
   ) {}
 
   async create(createSubscriptionDto: CreateSubscriptionDto): Promise<Subscription> {
@@ -423,7 +425,18 @@ export class SubscriptionService {
             this.logger.warn(`Failed to delete VM action logs: ${logError.message}`);
           }
 
-          // 1c. Delete VM instance record from database
+          // 1c. Delete bandwidth_logs records (to avoid foreign key constraint)
+          try {
+            const deletedBandwidth = await this.dataSource.query(
+              'DELETE FROM oracle.bandwidth_logs WHERE vm_instance_id = $1',
+              [vmInstance.id]
+            );
+            this.logger.log(`✅ Deleted bandwidth logs for VM instance ${vmInstance.id}`);
+          } catch (bandwidthError) {
+            this.logger.warn(`Failed to delete bandwidth logs: ${bandwidthError.message}`);
+          }
+
+          // 1d. Delete VM instance record from database
           await this.vmInstanceRepository.remove(vmInstance);
           this.logger.log(`✅ VM instance deleted from database`);
         } else {
