@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Subscription } from '../../entities/subscription.entity';
@@ -6,14 +6,19 @@ import { UserWallet } from '../../entities/user-wallet.entity';
 import { WalletTransaction } from '../../entities/wallet-transaction.entity';
 import { CloudPackage } from '../../entities/cloud-package.entity';
 import { Payment } from '../../entities/payment.entity';
+import { VmInstance } from '../../entities/vm-instance.entity';
+import { VmActionsLog } from '../../entities/vm-actions-log.entity';
 import * as crypto from 'crypto';
 import { CreateSubscriptionDto } from './dto/create-subscription.dto';
 import { UpdateSubscriptionDto } from './dto/update-subscription.dto';
 import { UserWalletService } from '../user-wallet/user-wallet.service';
+import { OciService } from '../oci/oci.service';
 import { v4 as uuidv4 } from 'uuid';
 
 @Injectable()
 export class SubscriptionService {
+  private readonly logger = new Logger(SubscriptionService.name);
+
   constructor(
     @InjectRepository(Subscription)
     private subscriptionRepository: Repository<Subscription>,
@@ -25,7 +30,12 @@ export class SubscriptionService {
     private cloudPackageRepository: Repository<CloudPackage>,
     @InjectRepository(Payment)
     private paymentRepository: Repository<Payment>,
+    @InjectRepository(VmInstance)
+    private vmInstanceRepository: Repository<VmInstance>,
+    @InjectRepository(VmActionsLog)
+    private vmActionsLogRepository: Repository<VmActionsLog>,
     private userWalletService: UserWalletService,
+    private ociService: OciService,
   ) {}
 
   async create(createSubscriptionDto: CreateSubscriptionDto): Promise<Subscription> {
@@ -370,12 +380,105 @@ export class SubscriptionService {
   }
 
   async remove(id: string): Promise<void> {
+    this.logger.log(`Starting deletion of subscription ${id}`);
+    
+    // Load subscription with all details
     const subscription = await this.findOne(id);
     
-    // Optionally, you might want to add business logic here
-    // For example, prevent deletion of active subscriptions
-    // or refund logic for cancelled subscriptions
-    
+    // Step 1: Delete VM instance if exists
+    if (subscription.vm_instance_id) {
+      this.logger.log(`Subscription has VM instance (ID: ${subscription.vm_instance_id}), proceeding with VM deletion...`);
+      
+      try {
+        // Load VM instance details
+        const vmInstance = await this.vmInstanceRepository.findOne({
+          where: { id: subscription.vm_instance_id },
+        });
+
+        if (vmInstance) {
+          this.logger.log(`Found VM instance: ${vmInstance.instance_name} (OCI ID: ${vmInstance.instance_id})`);
+          
+          // 1a. Terminate VM on Oracle Cloud if it exists and is not already terminated
+          if (vmInstance.instance_id && vmInstance.instance_id !== 'PENDING') {
+            try {
+              this.logger.log(`Terminating VM instance on OCI: ${vmInstance.instance_id}`);
+              await this.ociService.terminateInstance(vmInstance.instance_id, false);
+              this.logger.log(`✅ VM instance terminated on OCI successfully`);
+            } catch (ociError) {
+              // Log error but continue with database cleanup
+              // VM might already be terminated or not exist in OCI
+              this.logger.warn(`Failed to terminate VM on OCI (may already be terminated): ${ociError.message}`);
+            }
+          } else {
+            this.logger.log(`VM instance ID is PENDING, skipping OCI termination`);
+          }
+
+          // 1b. Delete VM actions logs
+          try {
+            const deletedLogs = await this.vmActionsLogRepository.delete({
+              vm_instance_id: vmInstance.id,
+            });
+            this.logger.log(`✅ Deleted ${deletedLogs.affected || 0} VM action logs`);
+          } catch (logError) {
+            this.logger.warn(`Failed to delete VM action logs: ${logError.message}`);
+          }
+
+          // 1c. Delete VM instance record from database
+          await this.vmInstanceRepository.remove(vmInstance);
+          this.logger.log(`✅ VM instance deleted from database`);
+        } else {
+          this.logger.warn(`VM instance with ID ${subscription.vm_instance_id} not found in database`);
+        }
+      } catch (vmError) {
+        this.logger.error(`Error deleting VM instance: ${vmError.message}`);
+        // Continue with subscription deletion even if VM deletion fails
+      }
+    } else {
+      this.logger.log(`Subscription has no VM instance, skipping VM deletion`);
+    }
+
+    // Step 2: Delete related payment records (optional - mark as deleted or keep for history)
+    try {
+      const payments = await this.paymentRepository.find({
+        where: { subscription_id: subscription.id },
+      });
+      
+      if (payments.length > 0) {
+        this.logger.log(`Found ${payments.length} payment records for subscription`);
+        // Option 1: Delete payments (uncomment if you want to delete)
+        // await this.paymentRepository.remove(payments);
+        // Option 2: Mark as deleted (keep for audit trail)
+        for (const payment of payments) {
+          payment.status = 'deleted';
+        }
+        await this.paymentRepository.save(payments);
+        this.logger.log(`✅ Marked ${payments.length} payment records as deleted`);
+      }
+    } catch (paymentError) {
+      this.logger.warn(`Failed to handle payment records: ${paymentError.message}`);
+    }
+
+    // Step 3: Delete wallet transactions related to this subscription (optional)
+    // Note: This is risky as it might affect user's transaction history
+    // Consider marking as deleted instead of actual deletion
+    try {
+      const walletTransactions = await this.walletTransactionRepository
+        .createQueryBuilder('wt')
+        .innerJoin('oracle.payments', 'p', 'p.id = wt.payment_id')
+        .where('p.subscription_id = :subscriptionId', { subscriptionId: subscription.id })
+        .getMany();
+      
+      if (walletTransactions.length > 0) {
+        this.logger.log(`Found ${walletTransactions.length} wallet transactions for subscription`);
+        // Keep wallet transactions for audit trail - don't delete
+        this.logger.log(`Keeping wallet transactions for audit trail`);
+      }
+    } catch (walletError) {
+      this.logger.warn(`Failed to check wallet transactions: ${walletError.message}`);
+    }
+
+    // Step 4: Finally, delete the subscription
     await this.subscriptionRepository.remove(subscription);
+    this.logger.log(`✅ Subscription ${id} deleted successfully`);
   }
 }

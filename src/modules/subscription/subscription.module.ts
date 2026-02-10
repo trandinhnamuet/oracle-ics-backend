@@ -7,12 +7,24 @@ import { UserWallet } from '../../entities/user-wallet.entity';
 import { WalletTransaction } from '../../entities/wallet-transaction.entity';
 import { CloudPackage } from '../../entities/cloud-package.entity';
 import { Payment } from '../../entities/payment.entity';
+import { VmInstance } from '../../entities/vm-instance.entity';
+import { VmActionsLog } from '../../entities/vm-actions-log.entity';
 import { UserWalletModule } from '../user-wallet/user-wallet.module';
+import { OciModule } from '../oci/oci.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Subscription, UserWallet, WalletTransaction, CloudPackage, Payment]),
+    TypeOrmModule.forFeature([
+      Subscription, 
+      UserWallet, 
+      WalletTransaction, 
+      CloudPackage, 
+      Payment,
+      VmInstance,
+      VmActionsLog,
+    ]),
     UserWalletModule,
+    OciModule,
   ],
   controllers: [SubscriptionController],
   providers: [SubscriptionService],
