@@ -491,9 +491,9 @@ export class AuthService {
     // Check if user has password (local auth) or is Google OAuth user
     if (!user.password) {
       // User registered with Google OAuth, no password set
-      this.logger.warn(`Login attempt with password for Google OAuth user: ${email}`);
+      this.logger.warn(`Login attempt with password for OAuth user without password: ${email}`);
       throw new UnauthorizedException(
-        'Tài khoản này được đăng ký bằng Google. Vui lòng sử dụng nút "Đăng nhập bằng Google".'
+        'Tài khoản này chưa có mật khẩu. Vui lòng sử dụng tính năng "Quên mật khẩu" để đặt mật khẩu hoặc đăng nhập bằng Google.'
       );
     }
 
