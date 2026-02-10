@@ -510,6 +510,58 @@ export class VmProvisioningService {
 
     this.logger.log(`Performing action ${action} on VM ${vmId}`);
 
+    // Step 1: Check if VM still exists on OCI before performing action
+    try {
+      const instanceDetails = await this.ociService.getInstance(vm.instance_id);
+      
+      // Update VM state from OCI
+      if (instanceDetails && instanceDetails.lifecycleState) {
+        vm.lifecycle_state = instanceDetails.lifecycleState;
+        await this.vmInstanceRepo.save(vm);
+        
+        this.logger.log(`VM ${vmId} exists on OCI with state: ${instanceDetails.lifecycleState}`);
+        
+        // Check if VM is in a state that doesn't allow this action
+        if (instanceDetails.lifecycleState === 'TERMINATED' || instanceDetails.lifecycleState === 'TERMINATING') {
+          throw new BadRequestException(
+            `VM is in ${instanceDetails.lifecycleState} state and cannot perform ${action} action.`
+          );
+        }
+      }
+    } catch (checkError: any) {
+      // If VM not found on OCI (404 error), mark as TERMINATED in database
+      if (checkError.statusCode === 404 || checkError.serviceCode === 'NotAuthorizedOrNotFound') {
+        this.logger.warn(`VM ${vmId} (OCI ID: ${vm.instance_id}) not found on Oracle Cloud. Marking as TERMINATED.`);
+        
+        vm.lifecycle_state = 'TERMINATED';
+        await this.vmInstanceRepo.save(vm);
+        
+        // Log the check failure
+        await this.logVmAction(
+          vmId,
+          userId,
+          'CHECK',
+          `VM not found on Oracle Cloud - marked as TERMINATED`,
+          { 
+            error: checkError.message,
+            instanceId: vm.instance_id 
+          },
+        );
+        
+        throw new NotFoundException(
+          `VM không còn tồn tại trên Oracle Cloud. VM có thể đã bị xóa thủ công hoặc do lỗi hệ thống. ` +
+          `Vui lòng xóa subscription này và tạo VM mới nếu cần.`
+        );
+      }
+      
+      // If it's another error, re-throw it
+      this.logger.error(`Error checking VM existence:`, checkError);
+      throw new InternalServerErrorException(
+        `Không thể kiểm tra trạng thái VM: ${checkError.message}`
+      );
+    }
+
+    // Step 2: Perform the action
     try {
       let result;
       switch (action) {
@@ -569,6 +621,16 @@ export class VmProvisioningService {
         `VM action failed: ${action}`,
         { error: error.message },
       );
+
+      // Check if it's a 404 error during action (VM was deleted between check and action)
+      if (error.statusCode === 404 || error.serviceCode === 'NotAuthorizedOrNotFound') {
+        vm.lifecycle_state = 'TERMINATED';
+        await this.vmInstanceRepo.save(vm);
+        
+        throw new NotFoundException(
+          `VM không còn tồn tại trên Oracle Cloud. VM có thể đã bị xóa trong khi thực hiện action.`
+        );
+      }
 
       throw new InternalServerErrorException(
         `Failed to ${action} VM: ${error.message}`,
