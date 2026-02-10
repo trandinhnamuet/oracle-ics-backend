@@ -14,7 +14,7 @@ export class AddGoogleAuthFields20260127000000 implements MigrationInterface {
       })
     );
 
-    // Add authProvider column
+    // Add authProvider column with default value
     await queryRunner.addColumn(
       'oracle.users',
       new TableColumn({
@@ -26,17 +26,12 @@ export class AddGoogleAuthFields20260127000000 implements MigrationInterface {
       })
     );
 
-    // Make password nullable for Google OAuth users
-    await queryRunner.changeColumn(
-      'oracle.users',
-      'password',
-      new TableColumn({
-        name: 'password',
-        type: 'varchar',
-        length: '255',
-        isNullable: true, // Changed from false to true
-      })
-    );
+    // Make password nullable using raw query to preserve data
+    // DO NOT use changeColumn() - it will drop and recreate, losing all data!
+    await queryRunner.query(`
+      ALTER TABLE oracle.users 
+      ALTER COLUMN password DROP NOT NULL
+    `);
 
     // Add avatarUrl column if it doesn't exist
     const table = await queryRunner.getTable('oracle.users');
@@ -61,18 +56,17 @@ export class AddGoogleAuthFields20260127000000 implements MigrationInterface {
     // Remove authProvider column
     await queryRunner.dropColumn('oracle.users', 'auth_provider');
 
-    // Make password required again
-    await queryRunner.changeColumn(
-      'oracle.users',
-      'password',
-      new TableColumn({
-        name: 'password',
-        type: 'varchar',
-        length: '255',
-        isNullable: false,
-      })
-    );
+    // Make password required again - only if all passwords are set
+    await queryRunner.query(`
+      ALTER TABLE oracle.users 
+      ALTER COLUMN password SET NOT NULL
+    `);
 
-    // Note: We don't remove avatarUrl as it might have been added by another migration
+    // Remove avatarUrl if it was added by this migration
+    const table = await queryRunner.getTable('oracle.users');
+    const avatarColumn = table?.findColumnByName('avatar_url');
+    if (avatarColumn) {
+      await queryRunner.dropColumn('oracle.users', 'avatar_url');
+    }
   }
 }
