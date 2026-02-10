@@ -488,6 +488,15 @@ export class AuthService {
       throw new UnauthorizedException('Email hoặc mật khẩu không đúng. Vui lòng kiểm tra lại thông tin đăng nhập.');
     }
 
+    // Check if user has password (local auth) or is Google OAuth user
+    if (!user.password) {
+      // User registered with Google OAuth, no password set
+      this.logger.warn(`Login attempt with password for Google OAuth user: ${email}`);
+      throw new UnauthorizedException(
+        'Tài khoản này được đăng ký bằng Google. Vui lòng sử dụng nút "Đăng nhập bằng Google".'
+      );
+    }
+
     // Check password first (before checking email verification)
     // This ensures we don't leak information about unverified accounts
     const isPasswordValid = await bcrypt.compare(password, user.password);
