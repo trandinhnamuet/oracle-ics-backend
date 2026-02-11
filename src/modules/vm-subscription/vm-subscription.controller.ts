@@ -94,4 +94,21 @@ export class VmSubscriptionController {
       vmActionDto.action,
     );
   }
+
+  /**
+   * Delete VM only (keep subscription)
+   * DELETE /vm-subscription/:subscriptionId/vm-only
+   */
+  @Delete(':subscriptionId/vm-only')
+  @HttpCode(HttpStatus.OK)
+  async deleteVmOnly(
+    @Request() req,
+    @Param('subscriptionId') subscriptionId: string,
+  ) {
+    const userId = req.user.id;
+    return this.vmSubscriptionService.deleteVmOnly(
+      subscriptionId,
+      userId,
+    );
+  }
 }

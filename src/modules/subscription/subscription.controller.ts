@@ -8,6 +8,7 @@ import {
   Delete,
   UseGuards,
   Request,
+  Query,
 } from '@nestjs/common';
 import { SubscriptionService } from './subscription.service';
 import { CreateSubscriptionDto } from './dto/create-subscription.dto';
@@ -57,8 +58,28 @@ export class SubscriptionController {
 
   @Get()
   @UseGuards(JwtAuthGuard)
-  async findAll() {
-    return await this.subscriptionService.findAll();
+  async findAll(
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('sortBy') sortBy?: string,
+    @Query('sortOrder') sortOrder?: 'ASC' | 'DESC',
+    @Query('status') status?: string,
+    @Query('userId') userId?: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+    @Query('searchTerm') searchTerm?: string,
+  ) {
+    return await this.subscriptionService.findAll({
+      page: page ? parseInt(page) : undefined,
+      limit: limit ? parseInt(limit) : undefined,
+      sortBy,
+      sortOrder,
+      status,
+      userId: userId ? parseInt(userId) : undefined,
+      startDate,
+      endDate,
+      searchTerm,
+    });
   }
 
   @Get('my-subscriptions')
