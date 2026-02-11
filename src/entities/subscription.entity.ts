@@ -36,7 +36,7 @@ export class Subscription {
   configuration: any; // Store VM configuration
 
   @Column({ type: 'int', nullable: true })
-  vm_instance_id: number; // Foreign key to vm_instances
+  vm_instance_id: number | null; // Foreign key to vm_instances
 
   @Column({ type: 'varchar', length: 50, default: 'pending_setup' })
   configuration_status: string; // pending_setup, configuring, provisioning, active, failed

@@ -1208,4 +1208,65 @@ net user ${windowsCredentials.username} *</div>
       message: 'This is the system admin public key. Add this to your VM\'s ~/.ssh/authorized_keys if needed.',
     };
   }
+
+  /**
+   * Delete VM only (keep subscription active)
+   * This allows user to reconfigure a new VM for the same subscription
+   */
+  async deleteVmOnly(subscriptionId: string, userId: number) {
+    this.logger.log(`Deleting VM only for subscription ${subscriptionId}`);
+
+    // Step 1: Load subscription
+    const subscription = await this.subscriptionRepo.findOne({
+      where: { id: subscriptionId, user_id: userId },
+    });
+
+    if (!subscription) {
+      throw new NotFoundException('Subscription not found');
+    }
+
+    if (!subscription.vm_instance_id) {
+      throw new BadRequestException('This subscription has no VM to delete');
+    }
+
+    // Step 2: Load VM instance
+    const vmInstance = await this.vmInstanceRepo.findOne({
+      where: { id: subscription.vm_instance_id },
+    });
+
+    if (!vmInstance) {
+      this.logger.warn(`VM instance ${subscription.vm_instance_id} not found in database`);
+      // Continue to clean up subscription reference
+    } else {
+      // Step 3: Terminate VM on OCI
+      if (vmInstance.instance_id && vmInstance.instance_id !== 'PENDING') {
+        try {
+          this.logger.log(`Terminating VM on OCI: ${vmInstance.instance_id}`);
+          await this.ociService.terminateInstance(vmInstance.instance_id, false);
+          this.logger.log(`✅ VM terminated on OCI successfully`);
+        } catch (ociError) {
+          this.logger.warn(`Failed to terminate VM on OCI: ${ociError.message}`);
+          // Continue with database cleanup even if OCI termination fails
+        }
+      }
+
+      // Step 4: Delete VM from database
+      await this.vmInstanceRepo.remove(vmInstance);
+      this.logger.log(`✅ VM instance deleted from database`);
+    }
+
+    // Step 5: Update subscription - reset VM reference and status
+    subscription.vm_instance_id = null;
+    subscription.configuration_status = 'pending_setup';
+    subscription.last_configured_at = null;
+    subscription.provisioning_error = null;
+    await this.subscriptionRepo.save(subscription);
+    this.logger.log(`✅ Subscription updated - VM reference cleared`);
+
+    return {
+      success: true,
+      message: 'VM deleted successfully. Subscription is still active and can be reconfigured with a new VM.',
+    };
+  }
 }
+

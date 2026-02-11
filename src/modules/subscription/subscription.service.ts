@@ -200,26 +200,115 @@ export class SubscriptionService {
     return { subscription: savedSubscription, payment: savedPayment };
   }
 
-  async findAll(): Promise<Subscription[]> {
+  async findAll(queryParams?: {
+    page?: number;
+    limit?: number;
+    sortBy?: string;
+    sortOrder?: 'ASC' | 'DESC';
+    status?: string;
+    userId?: number;
+    startDate?: string;
+    endDate?: string;
+    searchTerm?: string;
+  }): Promise<{
+    data: Subscription[];
+    total: number;
+    page: number;
+    limit: number;
+    totalPages: number;
+  }> {
     try {
-      return await this.subscriptionRepository.find({
-        relations: {
-          user: true,
-          cloudPackage: true,
-        },
-        order: {
-          created_at: 'DESC',
-        },
-      });
+      const page = queryParams?.page || 1;
+      const limit = queryParams?.limit || 20;
+      const sortBy = queryParams?.sortBy || 'created_at';
+      const sortOrder = queryParams?.sortOrder || 'DESC';
+      const skip = (page - 1) * limit;
+
+      // Build query
+      const queryBuilder = this.subscriptionRepository
+        .createQueryBuilder('subscription')
+        .leftJoinAndSelect('subscription.user', 'user')
+        .leftJoinAndSelect('subscription.cloudPackage', 'cloudPackage')
+        .leftJoinAndSelect('subscription.vmInstance', 'vmInstance');
+
+      // Apply filters
+      if (queryParams?.status) {
+        queryBuilder.andWhere('subscription.status = :status', { status: queryParams.status });
+      }
+
+      if (queryParams?.userId) {
+        queryBuilder.andWhere('subscription.user_id = :userId', { userId: queryParams.userId });
+      }
+
+      if (queryParams?.startDate) {
+        queryBuilder.andWhere('subscription.start_date >= :startDate', { startDate: queryParams.startDate });
+      }
+
+      if (queryParams?.endDate) {
+        queryBuilder.andWhere('subscription.end_date <= :endDate', { endDate: queryParams.endDate });
+      }
+
+      if (queryParams?.searchTerm) {
+        queryBuilder.andWhere(
+          '(CAST(subscription.id AS TEXT) ILIKE :searchTerm OR ' +
+          'CAST(subscription.user_id AS TEXT) ILIKE :searchTerm OR ' +
+          'user.email ILIKE :searchTerm OR ' +
+          'user.firstName ILIKE :searchTerm OR ' +
+          'user.lastName ILIKE :searchTerm OR ' +
+          'cloudPackage.name ILIKE :searchTerm)',
+          { searchTerm: `%${queryParams.searchTerm}%` }
+        );
+      }
+
+      // Apply sorting
+      if (sortBy === 'user_id') {
+        queryBuilder.orderBy('subscription.user_id', sortOrder);
+      } else if (sortBy === 'cloud_package_id') {
+        queryBuilder.orderBy('subscription.cloud_package_id', sortOrder);
+      } else if (sortBy === 'start_date') {
+        queryBuilder.orderBy('subscription.start_date', sortOrder);
+      } else if (sortBy === 'end_date') {
+        queryBuilder.orderBy('subscription.end_date', sortOrder);
+      } else if (sortBy === 'status') {
+        queryBuilder.orderBy('subscription.status', sortOrder);
+      } else {
+        queryBuilder.orderBy(`subscription.${sortBy}`, sortOrder);
+      }
+
+      // Get total count
+      const total = await queryBuilder.getCount();
+
+      // Apply pagination
+      queryBuilder.skip(skip).take(limit);
+
+      // Execute query
+      const data = await queryBuilder.getMany();
+
+      return {
+        data,
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      };
     } catch (error) {
-      console.error('Error in findAll with relations:', error);
-      // Fallback: try with array syntax for older TypeORM versions
-      return await this.subscriptionRepository.find({
-        relations: ['user', 'cloudPackage'],
+      this.logger.error('Error in findAll with pagination:', error);
+      // Fallback: return basic result
+      const subscriptions = await this.subscriptionRepository.find({
+        relations: ['user', 'cloudPackage', 'vmInstance'],
         order: {
           created_at: 'DESC',
         },
+        take: queryParams?.limit || 20,
       });
+
+      return {
+        data: subscriptions,
+        total: subscriptions.length,
+        page: 1,
+        limit: queryParams?.limit || 20,
+        totalPages: 1,
+      };
     }
   }
 
