@@ -52,10 +52,11 @@ export class VmProvisioningService {
     private readonly systemSshKeyService: SystemSshKeyService,
   ) {
     // Initialize email transporter
+    const smtpPort = parseInt(process.env.SMTP_PORT || '587');
     this.transporter = nodemailer.createTransport({
       host: process.env.SMTP_HOST || 'smtp.gmail.com',
-      port: parseInt(process.env.SMTP_PORT || '587'),
-      secure: false,
+      port: smtpPort,
+      secure: smtpPort === 465, // true for port 465 (SMTPS), false for 587 (STARTTLS)
       auth: {
         user: process.env.SMTP_USER,
         pass: process.env.SMTP_PASS,
