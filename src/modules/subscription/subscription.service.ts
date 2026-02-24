@@ -18,6 +18,7 @@ import { v4 as uuidv4 } from 'uuid';
 @Injectable()
 export class SubscriptionService {
   private readonly logger = new Logger(SubscriptionService.name);
+  private readonly pendingDeletionTimers = new Map<string, NodeJS.Timeout>();
 
   constructor(
     @InjectRepository(Subscription)
@@ -196,6 +197,9 @@ export class SubscriptionService {
     // Update payment with subscription reference
     savedPayment.subscription_id = savedSubscription.id;
     await this.paymentRepository.save(savedPayment);
+
+    // Schedule auto-deletion if payment is not completed within 10 minutes
+    this.schedulePendingDeletion(savedSubscription.id);
 
     return { subscription: savedSubscription, payment: savedPayment };
   }
@@ -401,6 +405,65 @@ export class SubscriptionService {
     return await this.subscriptionRepository.save(subscription);
   }
 
+  /**
+   * Schedule auto-deletion of a pending subscription after `delayMs` (default 10 minutes).
+   * If the subscription is paid before the timer fires, the check inside will skip deletion.
+   */
+  schedulePendingDeletion(subscriptionId: string, delayMs = 30 * 60 * 1000): void {
+    // Cancel any existing timer for this subscription
+    const existing = this.pendingDeletionTimers.get(subscriptionId);
+    if (existing) clearTimeout(existing);
+
+    const timer = setTimeout(async () => {
+      this.pendingDeletionTimers.delete(subscriptionId);
+      try {
+        const sub = await this.subscriptionRepository.findOne({ where: { id: subscriptionId } });
+        if (!sub || sub.status !== 'pending') {
+          this.logger.log(`[PendingCleanup] Subscription ${subscriptionId} is no longer pending — skipping auto-deletion`);
+          return;
+        }
+        this.logger.log(`[PendingCleanup] Auto-deleting pending subscription ${subscriptionId} after ${delayMs / 1000}s timeout`);
+        await this.remove(subscriptionId);
+        this.logger.log(`[PendingCleanup] ✅ Subscription ${subscriptionId} deleted`);
+      } catch (err) {
+        this.logger.error(`[PendingCleanup] Failed to auto-delete subscription ${subscriptionId}:`, err.message);
+      }
+    }, delayMs);
+
+    this.pendingDeletionTimers.set(subscriptionId, timer);
+    this.logger.log(`[PendingCleanup] Scheduled auto-deletion for subscription ${subscriptionId} in ${delayMs / 60000} min`);
+  }
+
+  /**
+   * Safety net: on startup, clean up any pending subscriptions older than 10 minutes
+   * that lost their timer due to a backend restart.
+   */
+  async cleanupStalePending(delayMs = 30 * 60 * 1000): Promise<void> {
+    const cutoff = new Date(Date.now() - delayMs);
+    const stale = await this.subscriptionRepository
+      .createQueryBuilder('s')
+      .where('s.status = :status', { status: 'pending' })
+      .andWhere('s.created_at < :cutoff', { cutoff })
+      .getMany();
+
+    if (stale.length === 0) {
+      this.logger.log('[PendingCleanup] No stale pending subscriptions found on startup');
+      return;
+    }
+
+    this.logger.log(`[PendingCleanup] Found ${stale.length} stale pending subscription(s) to clean up on startup`);
+    for (const sub of stale) {
+      // Skip ones already managed by an in-memory timer
+      if (this.pendingDeletionTimers.has(sub.id)) continue;
+      try {
+        await this.remove(sub.id);
+        this.logger.log(`[PendingCleanup] ✅ Deleted stale pending subscription ${sub.id}`);
+      } catch (err) {
+        this.logger.error(`[PendingCleanup] Failed to delete stale pending subscription ${sub.id}:`, err.message);
+      }
+    }
+  }
+
   async checkExpiredSubscriptions(): Promise<void> {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -539,25 +602,18 @@ export class SubscriptionService {
       this.logger.log(`Subscription has no VM instance, skipping VM deletion`);
     }
 
-    // Step 2: Delete related payment records (optional - mark as deleted or keep for history)
+    // Step 2: Keep related payment records for audit trail (do not modify status)
+    // Payment status only allows: pending, success, failed - do NOT set 'deleted'
     try {
       const payments = await this.paymentRepository.find({
         where: { subscription_id: subscription.id },
       });
       
       if (payments.length > 0) {
-        this.logger.log(`Found ${payments.length} payment records for subscription`);
-        // Option 1: Delete payments (uncomment if you want to delete)
-        // await this.paymentRepository.remove(payments);
-        // Option 2: Mark as deleted (keep for audit trail)
-        for (const payment of payments) {
-          payment.status = 'deleted';
-        }
-        await this.paymentRepository.save(payments);
-        this.logger.log(`✅ Marked ${payments.length} payment records as deleted`);
+        this.logger.log(`Found ${payments.length} payment records for subscription - keeping for audit trail`);
       }
     } catch (paymentError) {
-      this.logger.warn(`Failed to handle payment records: ${paymentError.message}`);
+      this.logger.warn(`Failed to check payment records: ${paymentError.message}`);
     }
 
     // Step 3: Delete wallet transactions related to this subscription (optional)
