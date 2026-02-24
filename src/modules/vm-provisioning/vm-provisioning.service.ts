@@ -610,6 +610,15 @@ export class VmProvisioningService {
       );
 
       this.logger.log(`Action ${action} completed successfully on VM ${vmId}`);
+
+      // Fire-and-forget: poll OCI in background until stable state, then update DB
+      const STABLE_STATES = ['RUNNING', 'STOPPED', 'TERMINATED'];
+      if (!STABLE_STATES.includes(vm.lifecycle_state)) {
+        this.pollVmUntilStable(vm.id, vm.instance_id).catch(err =>
+          this.logger.error(`Background poll error for VM ${vmId}:`, err),
+        );
+      }
+
       return this.formatVmResponse(vm);
     } catch (error) {
       this.logger.error(`Error performing action ${action}:`, error);
@@ -637,6 +646,51 @@ export class VmProvisioningService {
         `Failed to ${action} VM: ${error.message}`,
       );
     }
+  }
+
+  /**
+   * Background polling: update DB lifecycle_state until OCI reaches a stable state.
+   * Called fire-and-forget after any START/STOP/RESTART action.
+   */
+  private async pollVmUntilStable(
+    vmId: number,
+    instanceOcid: string,
+    maxWaitMs: number = 10 * 60 * 1000, // 10 minutes
+    pollIntervalMs: number = 10 * 1000,  // 10 seconds
+  ): Promise<void> {
+    const STABLE_STATES = ['RUNNING', 'STOPPED', 'TERMINATED'];
+    const startTime = Date.now();
+
+    this.logger.log(`[pollVmUntilStable] Starting background poll for VM ${vmId} (${instanceOcid})`);
+
+    while (Date.now() - startTime < maxWaitMs) {
+      await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+
+      try {
+        const instanceDetails = await this.ociService.getInstance(instanceOcid);
+        const currentState = instanceDetails?.lifecycleState;
+
+        this.logger.log(`[pollVmUntilStable] VM ${vmId} state: ${currentState}`);
+
+        // Always persist latest state from OCI
+        await this.vmInstanceRepo.update(vmId, { lifecycle_state: currentState });
+
+        if (STABLE_STATES.includes(currentState)) {
+          this.logger.log(`[pollVmUntilStable] VM ${vmId} reached stable state: ${currentState}`);
+          return;
+        }
+      } catch (err: any) {
+        if (err.statusCode === 404 || err.serviceCode === 'NotAuthorizedOrNotFound') {
+          this.logger.warn(`[pollVmUntilStable] VM ${vmId} not found on OCI — marking TERMINATED`);
+          await this.vmInstanceRepo.update(vmId, { lifecycle_state: 'TERMINATED' });
+          return;
+        }
+        this.logger.error(`[pollVmUntilStable] Error polling VM ${vmId}:`, err.message);
+        // Continue polling on transient errors
+      }
+    }
+
+    this.logger.warn(`[pollVmUntilStable] Timeout polling VM ${vmId} after ${maxWaitMs / 1000}s`);
   }
 
   /**
