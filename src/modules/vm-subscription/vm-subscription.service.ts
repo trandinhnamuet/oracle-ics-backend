@@ -108,17 +108,46 @@ export class VmSubscriptionService {
       let userSshKeyPair;
 
       if (existingVm) {
-        // Reconfigure existing VM for this subscription
-        this.logger.log(`Subscription ${subscriptionId} already has VM: ${existingVm.id}`);
-        
-        // TODO: Implement VM reconfiguration logic
-        // For now, we'll create a new VM
-        // In production, you might want to:
-        // 1. Stop the old VM
-        // 2. Create a new VM with new config
-        // 3. Optionally preserve data
-        
-        throw new BadRequestException('This subscription already has a VM. VM reconfiguration not yet implemented. Please delete the old VM first.');
+        // Reconfigure existing VM: terminate old VM then provision new one
+        this.logger.log(`Subscription ${subscriptionId} already has VM ${existingVm.id}. Terminating old VM before reinstall...`);
+
+        // Step A: Terminate old VM on OCI
+        if (existingVm.instance_id && existingVm.instance_id !== 'PENDING') {
+          try {
+            this.logger.log(`Terminating old VM on OCI: ${existingVm.instance_id}`);
+            await this.ociService.terminateInstance(existingVm.instance_id, false);
+            this.logger.log(`✅ Old VM terminated on OCI successfully`);
+          } catch (ociError) {
+            this.logger.warn(`Failed to terminate old VM on OCI (continuing): ${ociError.message}`);
+          }
+        }
+
+        // Step B: Delete old VM from database
+        await this.vmInstanceRepo.remove(existingVm);
+        this.logger.log(`✅ Old VM record deleted from database`);
+
+        // Step C: Clear subscription VM reference
+        subscription.vm_instance_id = null;
+        await this.subscriptionRepo.save(subscription);
+
+        // Step D: Provision new VM
+        subscription.configuration_status = 'provisioning';
+        await this.subscriptionRepo.save(subscription);
+
+        userSshKeyPair = this.generateSshKeyPair();
+
+        vmResult = await this.vmProvisioningService.provisionVm(userId, {
+          displayName: configureVmDto.displayName,
+          imageId: configureVmDto.imageId,
+          shape: configureVmDto.shape,
+          ocpus: configureVmDto.ocpus,
+          memoryInGBs: configureVmDto.memoryInGBs,
+          bootVolumeSizeInGBs: configureVmDto.bootVolumeSizeInGBs,
+          userSshPublicKey: userSshKeyPair.publicKey,
+          userSshPrivateKey: userSshKeyPair.privateKey,
+          description: configureVmDto.description || `VM for subscription ${subscriptionId}`,
+          subscriptionId: subscriptionId,
+        });
       } else {
         // Create new VM for this subscription
         this.logger.log(`Creating new VM for subscription ${subscriptionId}`);
