@@ -20,6 +20,17 @@ export class SubscriptionService {
   private readonly logger = new Logger(SubscriptionService.name);
   private readonly pendingDeletionTimers = new Map<string, NodeJS.Timeout>();
 
+  /**
+   * Normalize a Date to the very end of that calendar day (23:59:59.999).
+   * This ensures billing cycles are always measured in full days, independent
+   * of what time the subscription was purchased.
+   */
+  private toEndOfDay(date: Date): Date {
+    const d = new Date(date);
+    d.setHours(23, 59, 59, 999);
+    return d;
+  }
+
   constructor(
     @InjectRepository(Subscription)
     private subscriptionRepository: Repository<Subscription>,
@@ -51,15 +62,16 @@ export class SubscriptionService {
       throw new NotFoundException(`Cloud package with ID ${createSubscriptionDto.cloud_package_id} not found`);
     }
 
-    // Calculate dates
+    // Calculate dates — end_date is always the end of the last day of the billing cycle
     const startDate = new Date();
     const endDate = new Date();
     endDate.setMonth(endDate.getMonth() + (createSubscriptionDto.months_paid || 1));
+    const normalizedEndDate = this.toEndOfDay(endDate);
 
     const subscription = this.subscriptionRepository.create({
       ...createSubscriptionDto,
       start_date: startDate,
-      end_date: endDate,
+      end_date: normalizedEndDate,
       status: 'active',
     });
 
@@ -117,7 +129,7 @@ export class SubscriptionService {
 
     await this.walletTransactionRepository.save(walletTransaction);
 
-    // Create subscription
+    // Create subscription — end_date is always the end of the last day of the billing cycle
     const startDate = new Date();
     const endDate = new Date();
     endDate.setMonth(endDate.getMonth() + 1);
@@ -126,7 +138,7 @@ export class SubscriptionService {
       user_id: userId,
       cloud_package_id: cloudPackageId,
       start_date: startDate,
-      end_date: endDate,
+      end_date: this.toEndOfDay(endDate),
       status: 'active',
       auto_renew: autoRenew,
       amount_paid: packageCost,
@@ -176,7 +188,7 @@ export class SubscriptionService {
 
     const savedPayment = await this.paymentRepository.save(payment);
 
-    // Create subscription with pending status
+    // Create subscription with pending status — end_date is always the end of the last day of the billing cycle
     const startDate = new Date();
     const endDate = new Date();
     endDate.setMonth(endDate.getMonth() + monthsCount);
@@ -185,7 +197,7 @@ export class SubscriptionService {
       user_id: userId,
       cloud_package_id: cloudPackageId,
       start_date: startDate,
-      end_date: endDate,
+      end_date: this.toEndOfDay(endDate),
       status: 'pending',
       auto_renew: autoRenew,
       amount_paid: totalAmount,
@@ -465,8 +477,7 @@ export class SubscriptionService {
   }
 
   async checkExpiredSubscriptions(): Promise<void> {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const now = new Date();
 
     const expiredSubscriptions = await this.subscriptionRepository.find({
       where: {
@@ -476,7 +487,9 @@ export class SubscriptionService {
     });
 
     for (const subscription of expiredSubscriptions) {
-      if (subscription.end_date < today) {
+      // end_date is stored as 23:59:59.999 of the last valid day, so the
+      // subscription is expired only after that moment passes.
+      if (subscription.end_date < now) {
         if (subscription.auto_renew) {
           await this.attemptAutoRenewal(subscription);
         } else {
@@ -520,10 +533,11 @@ export class SubscriptionService {
 
       await this.walletTransactionRepository.save(walletTransaction);
 
-      // Extend end date by 1 month
+      // Extend end date by exactly 1 month from the previous end_date,
+      // then normalize to end-of-day to preserve full-day billing cycles.
       const newEndDate = new Date(subscription.end_date);
       newEndDate.setMonth(newEndDate.getMonth() + 1);
-      subscription.end_date = newEndDate;
+      subscription.end_date = this.toEndOfDay(newEndDate);
 
       await this.subscriptionRepository.save(subscription);
     } catch (error) {

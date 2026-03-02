@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { SubscriptionService } from '../subscription/subscription.service';
+import { VmSubscriptionService } from '../vm-subscription/vm-subscription.service';
 
 @Injectable()
 export class SchedulerService implements OnModuleInit {
@@ -8,6 +9,7 @@ export class SchedulerService implements OnModuleInit {
 
   constructor(
     private subscriptionService: SubscriptionService,
+    private vmSubscriptionService: VmSubscriptionService,
   ) {}
 
   /**
@@ -56,6 +58,21 @@ export class SchedulerService implements OnModuleInit {
       await this.subscriptionService.cleanupStalePending();
     } catch (error) {
       this.logger.error('[Scheduler] Hourly pending cleanup failed:', error);
+    }
+  }
+
+  /**
+   * Every hour: stop any running OCI VM instances whose subscription has
+   * expired or been cancelled. This ensures VMs are not left running after
+   * the user's subscription lapses.
+   */
+  @Cron(CronExpression.EVERY_HOUR)
+  async handleStopExpiredVms() {
+    this.logger.debug('[Scheduler] Running expired-subscription VM stop sweep');
+    try {
+      await this.vmSubscriptionService.stopExpiredSubscriptionVms();
+    } catch (error) {
+      this.logger.error('[Scheduler] Expired VM stop sweep failed:', error);
     }
   }
 }
