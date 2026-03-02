@@ -6,13 +6,22 @@ import { ValidationPipe, ClassSerializerInterceptor } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import * as cookieParser from 'cookie-parser';
 import { NestExpressApplication } from '@nestjs/platform-express';
+import { json, urlencoded } from 'express';
 import { join } from 'path';
 
 async function bootstrap() {
   await AppDataSource.initialize();
   await AppDataSource.runMigrations();
 
-  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  // Disable built-in body parser so we can set higher limits.
+  // json() and urlencoded() only process their own content-types and
+  // skip multipart/form-data, so file uploads are unaffected.
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    bodyParser: false,
+  });
+
+  app.use(json({ limit: '10mb' }));
+  app.use(urlencoded({ limit: '10mb', extended: true }));
 
   // Trust proxy - CRITICAL for getting real IP behind nginx/load balancer
   // This tells Express to trust the X-Forwarded-* headers
