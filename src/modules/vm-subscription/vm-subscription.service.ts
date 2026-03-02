@@ -6,7 +6,7 @@ import {
   InternalServerErrorException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { VmProvisioningService } from '../vm-provisioning/vm-provisioning.service';
 import { SystemSshKeyService } from '../system-ssh-key/system-ssh-key.service';
 import { OciService } from '../oci/oci.service';
@@ -1268,6 +1268,64 @@ net user ${windowsCredentials.username} *</div>
       success: true,
       message: 'VM deleted successfully. Subscription is still active and can be reconfigured with a new VM.',
     };
+  }
+
+  /**
+   * [Cronjob] Stop all VMs whose subscription has expired or been cancelled.
+   * Called periodically by SchedulerService.
+   */
+  async stopExpiredSubscriptionVms(): Promise<void> {
+    this.logger.log('[VmSubscription] Checking for VMs to stop due to expired/cancelled subscriptions...');
+
+    // 1. Find all expired or cancelled subscriptions
+    const inactiveSubscriptions = await this.subscriptionRepo.find({
+      where: { status: In(['expired', 'cancelled']) },
+      select: ['id'],
+    });
+
+    if (inactiveSubscriptions.length === 0) {
+      this.logger.debug('[VmSubscription] No expired/cancelled subscriptions found.');
+      return;
+    }
+
+    const subscriptionIds = inactiveSubscriptions.map((s) => s.id);
+
+    // 2. Find associated running VMs (not already STOPPED/TERMINATED)
+    const runningVms = await this.vmInstanceRepo.find({
+      where: {
+        subscription_id: In(subscriptionIds),
+        lifecycle_state: In(['RUNNING', 'STARTING']),
+      },
+    });
+
+    if (runningVms.length === 0) {
+      this.logger.debug('[VmSubscription] No running VMs found for expired/cancelled subscriptions.');
+      return;
+    }
+
+    this.logger.log(`[VmSubscription] Found ${runningVms.length} VM(s) to stop.`);
+
+    // 3. Stop each VM
+    for (const vm of runningVms) {
+      try {
+        this.logger.log(`[VmSubscription] Stopping VM ${vm.instance_id} (subscription: ${vm.subscription_id})`);
+        await this.ociService.stopInstance(vm.instance_id);
+
+        // Update lifecycle state in DB
+        vm.lifecycle_state = 'STOPPING';
+        await this.vmInstanceRepo.save(vm);
+
+        this.logger.log(`[VmSubscription] ✅ VM ${vm.instance_id} stop command sent successfully.`);
+      } catch (error) {
+        this.logger.error(
+          `[VmSubscription] ❌ Failed to stop VM ${vm.instance_id} (subscription: ${vm.subscription_id}):`,
+          error,
+        );
+        // Continue with other VMs even if one fails
+      }
+    }
+
+    this.logger.log(`[VmSubscription] Completed VM stop sweep. Processed ${runningVms.length} VM(s).`);
   }
 }
 
