@@ -23,7 +23,11 @@ export class ImageController {
 
   @Post('upload')
   @UseGuards(JwtAuthGuard)
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(FileInterceptor('file', {
+    limits: {
+      fileSize: 10 * 1024 * 1024, // 10MB
+    },
+  }))
   async uploadImage(
     @UploadedFile() file: any,
     @Req() req: any,
