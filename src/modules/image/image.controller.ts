@@ -8,6 +8,7 @@ import {
   UploadedFile,
   UseGuards,
   Req,
+  Res,
   BadRequestException,
   NotFoundException,
   ForbiddenException,
@@ -16,6 +17,9 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { ImageService } from './image.service';
 import { JwtAuthGuard } from '../../auth/jwt-auth.guard';
 import { Image } from './image.entity';
+import { Response } from 'express';
+import { join } from 'path';
+import { existsSync } from 'fs';
 
 @Controller('images')
 export class ImageController {
@@ -42,14 +46,29 @@ export class ImageController {
       throw new BadRequestException('Invalid file type. Only images are allowed');
     }
 
-    // Validate file size (5MB max)
-    const maxSize = 5 * 1024 * 1024; // 5MB
+    // Validate file size (10MB max)
+    const maxSize = 10 * 1024 * 1024; // 10MB
     if (file.size > maxSize) {
       throw new BadRequestException('File size too large. Maximum 5MB allowed');
     }
 
     const userId = req.user?.id;
     return await this.imageService.saveImage(file, userId);
+  }
+
+  @Get('serve/:filename')
+  serveFile(
+    @Param('filename') filename: string,
+    @Res() res: Response,
+  ): void {
+    // Sanitize filename to prevent path traversal
+    const safeFilename = filename.replace(/[^a-zA-Z0-9._-]/g, '');
+    const filePath = join(process.cwd(), 'uploads', safeFilename);
+    if (!existsSync(filePath)) {
+      res.status(404).json({ message: 'File not found' });
+      return;
+    }
+    res.sendFile(filePath);
   }
 
   @Get(':id')

@@ -38,7 +38,7 @@ export class ImageService {
       mimeType: file.mimetype,
       size: file.size,
       path: filePath,
-      url: `/uploads/${filename}`,
+      url: `/images/serve/${filename}`,
       uploadedBy,
     });
 
