@@ -23,6 +23,18 @@ export class User {
   @Column({ length: 255, nullable: true })
   company?: string;
 
+  @Column({ length: 10, nullable: true })
+  gender?: string;
+
+  @Column({ name: 'id_card', length: 20, nullable: true })
+  idCard?: string;
+
+  @Column({ name: 'backup_email', length: 255, nullable: true })
+  backupEmail?: string;
+
+  @Column({ length: 500, nullable: true })
+  address?: string;
+
   @Column({ name: 'google_id', unique: true, nullable: true })
   googleId?: string;
 
