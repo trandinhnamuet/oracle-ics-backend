@@ -27,6 +27,25 @@ export class CreateUserDto {
   company?: string;
 
   @IsOptional()
+  @IsString({ message: 'Giới tính phải là chuỗi ký tự' })
+  @MaxLength(10, { message: 'Giới tính không được quá 10 ký tự' })
+  gender?: string;
+
+  @IsOptional()
+  @IsString({ message: 'CCCD phải là chuỗi ký tự' })
+  @MaxLength(20, { message: 'CCCD không được quá 20 ký tự' })
+  idCard?: string;
+
+  @IsOptional()
+  @IsEmail({}, { message: 'Email dự phòng không hợp lệ' })
+  backupEmail?: string;
+
+  @IsOptional()
+  @IsString({ message: 'Địa chỉ phải là chuỗi ký tự' })
+  @MaxLength(500, { message: 'Địa chỉ không được quá 500 ký tự' })
+  address?: string;
+
+  @IsOptional()
   @IsBoolean({ message: 'Trạng thái hoạt động phải là boolean' })
   isActive?: boolean = true;
 

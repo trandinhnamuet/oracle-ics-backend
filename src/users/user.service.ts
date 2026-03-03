@@ -1,10 +1,12 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import * as bcrypt from 'bcryptjs';
 import { User } from '../entities/user.entity';
 import { UserWallet } from '../entities/user-wallet.entity';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { ChangePasswordDto } from './dto/change-password.dto';
 
 @Injectable()
 export class UserService {
@@ -68,5 +70,22 @@ export class UserService {
     const user = await this.userRepository.findOne({ where: { id } });
     if (!user) throw new Error('User not found');
     return user;
+  }
+
+  async changePassword(id: number, changePasswordDto: ChangePasswordDto): Promise<void> {
+    const user = await this.userRepository.findOne({ where: { id } });
+    if (!user) throw new BadRequestException('Người dùng không tồn tại.');
+
+    if (!user.password) {
+      throw new BadRequestException('Tài khoản này không có mật khẩu (đăng nhập qua Google). Vui lòng đặt mật khẩu trước.');
+    }
+
+    const isMatch = await bcrypt.compare(changePasswordDto.currentPassword, user.password);
+    if (!isMatch) {
+      throw new BadRequestException('Mật khẩu hiện tại không đúng.');
+    }
+
+    const hashed = await bcrypt.hash(changePasswordDto.newPassword, 10);
+    await this.userRepository.update(id, { password: hashed });
   }
 }
