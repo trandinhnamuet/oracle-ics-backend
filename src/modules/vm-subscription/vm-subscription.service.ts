@@ -1281,7 +1281,7 @@ net user ${windowsCredentials.username} *</div>
     }
     console.log('✅ Step 3 PASSED: VM found');
     console.log('   VM ID:', vm.id);
-    console.log('   VM Status:', vm.status);
+    console.log('   VM Lifecycle State:', vm.lifecycle_state);
     console.log('   VM Compartment ID:', vm.compartment_id);
 
     // Perform the action using VmProvisioningService
