@@ -88,6 +88,14 @@ export class VmSubscriptionController {
     @Body() vmActionDto: VmActionDto,
   ) {
     const userId = req.user.id;
+    console.log('\n========== VM ACTION ENDPOINT ==========');
+    console.log('📍 Endpoint: POST /vm-subscription/:subscriptionId/action');
+    console.log('📋 Subscription ID:', subscriptionId);
+    console.log('👤 User ID:', userId);
+    console.log('🎯 Action:', vmActionDto.action);
+    console.log('👤 Full user object:', req.user);
+    console.log('========================================\n');
+    
     return this.vmSubscriptionService.performVmAction(
       subscriptionId,
       userId,
