@@ -52,28 +52,67 @@ export class VmSubscriptionService {
    * Check if subscription can be configured (paid and not expired)
    */
   async checkSubscriptionEligibility(subscriptionId: string, userId: number) {
+    console.log('\n========== CHECK SUBSCRIPTION ELIGIBILITY ==========');
+    console.log('🔍 Searching for subscription...');
+    console.log('📋 Subscription ID:', subscriptionId);
+    console.log('👤 User ID:', userId);
+    console.log('👤 User ID Type:', typeof userId);
+    
     const subscription = await this.subscriptionRepo.findOne({
       where: { id: subscriptionId, user_id: userId },
       relations: ['cloudPackage'],
     });
 
     if (!subscription) {
+      // Log all subscriptions for this user to help debug
+      console.log('❌ Subscription NOT FOUND');
+      const allUserSubscriptions = await this.subscriptionRepo.find({
+        where: { user_id: userId },
+      });
+      console.log('📊 Total subscriptions for user:', allUserSubscriptions.length);
+      console.log('📋 All subscriptions for this user:');
+      allUserSubscriptions.forEach((sub, index) => {
+        console.log(`  [${index}] ID: ${sub.id}, Status: ${sub.status}, Created: ${sub.created_at}`);
+      });
+      
+      // Also check if subscription exists with ANY user_id
+      const subscriptionAnyUser = await this.subscriptionRepo.findOne({
+        where: { id: subscriptionId },
+      });
+      if (subscriptionAnyUser) {
+        console.log('⚠️  Subscription EXISTS but belongs to different user!');
+        console.log('   Subscription user_id:', subscriptionAnyUser.user_id);
+        console.log('   Request user_id:', userId);
+      } else {
+        console.log('❌ Subscription does NOT exist in database at all');
+      }
+      console.log('=============================================\n');
       throw new NotFoundException('Subscription not found');
     }
 
+    console.log('✅ Subscription FOUND');
+    console.log('📊 Subscription Status:', subscription.status);
+    console.log('📊 Configuration Status:', subscription.configuration_status);
+    console.log('📊 VM Instance ID:', subscription.vm_instance_id);
+
     // Check if subscription is paid
     if (subscription.status === 'pending') {
+      console.log('⚠️  Subscription payment is pending');
       throw new BadRequestException('Subscription payment is pending');
     }
 
     if (subscription.status === 'cancelled') {
+      console.log('⚠️  Subscription is cancelled');
       throw new BadRequestException('Subscription is cancelled');
     }
 
     if (subscription.status === 'expired') {
+      console.log('⚠️  Subscription has expired');
       throw new BadRequestException('Subscription has expired');
     }
 
+    console.log('✅ Subscription eligibility check PASSED');
+    console.log('=============================================\n');
     return subscription;
   }
 
@@ -368,17 +407,36 @@ export class VmSubscriptionService {
    * Get VM details for a subscription
    */
   async getSubscriptionVm(subscriptionId: string, userId: number) {
+    console.log('\n========== GET SUBSCRIPTION VM ==========');
+    console.log('🔑 Subscription ID:', subscriptionId);
+    console.log('👤 User ID:', userId);
+    
     const subscription = await this.subscriptionRepo.findOne({
       where: { id: subscriptionId, user_id: userId },
       relations: ['cloudPackage', 'user'],
     });
 
     if (!subscription) {
+      console.log('❌ Subscription NOT FOUND');
+      // Log all subscriptions for this user to help debug
+      const allUserSubscriptions = await this.subscriptionRepo.find({
+        where: { user_id: userId },
+      });
+      console.log('📊 Total subscriptions for user:', allUserSubscriptions.length);
+      console.log('📋 All subscription IDs:');
+      allUserSubscriptions.forEach((sub, index) => {
+        console.log(`  [${index}] ${sub.id}`);
+      });
+      console.log('========================================\n');
       throw new NotFoundException('Subscription not found');
     }
+    
+    console.log('✅ Subscription FOUND');
 
     // If no VM OCID, subscription is not configured yet
     if (!subscription.vm_instance_id) {
+      console.log('⚠️  VM not configured yet for this subscription');
+      console.log('========================================\n');
       return {
         subscription: {
           id: subscription.id,
@@ -392,12 +450,16 @@ export class VmSubscriptionService {
       };
     }
 
+    console.log('🔑 VM Instance ID:', subscription.vm_instance_id);
+
     // Find VM by ID
     const vm = await this.vmInstanceRepo.findOne({
       where: { id: subscription.vm_instance_id },
     });
 
     if (!vm) {
+      console.log('⚠️  VM Instance not found in database');
+      console.log('========================================\n');
       this.logger.warn(`VM not found for subscription ${subscriptionId}, ID: ${subscription.vm_instance_id}`);
       return {
         subscription: {
@@ -412,8 +474,12 @@ export class VmSubscriptionService {
       };
     }
 
+    console.log('✅ VM found in database');
+
     // Get fresh data from OCI
     const vmDetail = await this.vmProvisioningService.getVmById(userId, vm.id);
+    console.log('✅ VM details retrieved from OCI');
+    console.log('========================================\n');
 
     return {
       subscription: {
@@ -1184,30 +1250,50 @@ net user ${windowsCredentials.username} *</div>
     userId: number,
     action: VmActionType,
   ) {
+    console.log('\n========== PERFORM VM ACTION SERVICE ==========');
+    console.log(`🎯 Action: ${action}`);
+    console.log(`📋 Subscription ID: ${subscriptionId}`);
+    console.log(`👤 User ID: ${userId}`);
     this.logger.log(`Performing ${action} on VM for subscription ${subscriptionId}`);
 
     // Check subscription eligibility
+    console.log('🔍 Step 1: Checking subscription eligibility...');
     const subscription = await this.checkSubscriptionEligibility(subscriptionId, userId);
+    console.log('✅ Step 1 PASSED: Subscription eligible');
 
+    console.log('🔍 Step 2: Checking VM instance configuration...');
     if (!subscription.vm_instance_id) {
+      console.log('❌ Step 2 FAILED: VM not configured');
       throw new BadRequestException('VM not configured for this subscription');
     }
+    console.log('✅ Step 2 PASSED: VM configured, ID:', subscription.vm_instance_id);
 
     // Find VM by database ID
+    console.log('🔍 Step 3: Loading VM instance from database...');
     const vm = await this.vmInstanceRepo.findOne({
       where: { id: subscription.vm_instance_id },
     });
 
     if (!vm) {
+      console.log('❌ Step 3 FAILED: VM instance not found in database');
+      console.log('   VM ID searched:', subscription.vm_instance_id);
       throw new NotFoundException('VM not found');
     }
+    console.log('✅ Step 3 PASSED: VM found');
+    console.log('   VM ID:', vm.id);
+    console.log('   VM Status:', vm.status);
+    console.log('   VM Compartment ID:', vm.compartment_id);
 
     // Perform the action using VmProvisioningService
+    console.log('🔍 Step 4: Executing VM action on OCI...');
     const result = await this.vmProvisioningService.performVmAction(
       userId,
       vm.id,
       action,
     );
+    console.log('✅ Step 4 PASSED: Action executed successfully');
+    console.log('✅ ALL STEPS PASSED');
+    console.log('==============================================\n');
 
     this.logger.log(`Action ${action} completed successfully on VM ${vm.id}`);
 
