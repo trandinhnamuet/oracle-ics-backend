@@ -2,6 +2,8 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { SubscriptionService } from '../subscription/subscription.service';
 import { VmSubscriptionService } from '../vm-subscription/vm-subscription.service';
+import { NotificationService } from '../notification/notification.service';
+import { NotificationType } from '../../entities/notification.entity';
 
 @Injectable()
 export class SchedulerService implements OnModuleInit {
@@ -10,6 +12,7 @@ export class SchedulerService implements OnModuleInit {
   constructor(
     private subscriptionService: SubscriptionService,
     private vmSubscriptionService: VmSubscriptionService,
+    private notificationService: NotificationService,
   ) {}
 
   /**
@@ -73,6 +76,30 @@ export class SchedulerService implements OnModuleInit {
       await this.vmSubscriptionService.stopExpiredSubscriptionVms();
     } catch (error) {
       this.logger.error('[Scheduler] Expired VM stop sweep failed:', error);
+    }
+  }
+
+  /**
+   * Daily at 8 AM: notify users whose subscriptions expire in 3 days.
+   */
+  @Cron('0 8 * * *')
+  async handleExpiryWarnings() {
+    this.logger.debug('[Scheduler] Sending subscription expiry warning notifications');
+    try {
+      const expiringSubs = await this.subscriptionService.findExpiringSoon(3);
+      for (const sub of expiringSubs) {
+        const pkgName = (sub as any).cloudPackage?.name ?? `#${sub.cloud_package_id}`;
+        const endDate = new Date(sub.end_date).toLocaleDateString('vi-VN');
+        await this.notificationService.notify(
+          sub.user_id,
+          NotificationType.SUBSCRIPTION_EXPIRING,
+          '⚠️ Gói dịch vụ sắp hết hạn',
+          `Gói "${pkgName}" của bạn sẽ hết hạn vào ${endDate}. Hãy gia hạn để không bị gián đoạn dịch vụ.`,
+          { subscription_id: sub.id, end_date: sub.end_date, package_name: pkgName },
+        );
+      }
+    } catch (error) {
+      this.logger.error('[Scheduler] Expiry warning notifications failed:', error);
     }
   }
 }

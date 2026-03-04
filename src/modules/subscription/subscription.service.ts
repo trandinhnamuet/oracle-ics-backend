@@ -14,6 +14,8 @@ import { UpdateSubscriptionDto } from './dto/update-subscription.dto';
 import { UserWalletService } from '../user-wallet/user-wallet.service';
 import { OciService } from '../oci/oci.service';
 import { v4 as uuidv4 } from 'uuid';
+import { NotificationService } from '../notification/notification.service';
+import { NotificationType } from '../../entities/notification.entity';
 
 @Injectable()
 export class SubscriptionService {
@@ -50,6 +52,7 @@ export class SubscriptionService {
     private ociService: OciService,
     @InjectDataSource()
     private dataSource: DataSource,
+    private notificationService: NotificationService,
   ) {}
 
   async create(createSubscriptionDto: CreateSubscriptionDto): Promise<Subscription> {
@@ -149,6 +152,23 @@ export class SubscriptionService {
 
     // Save wallet transaction (không cần update reference_id vì đã tạo payment_id)
     await this.walletTransactionRepository.save(walletTransaction);
+
+    // Notify user: subscription created + wallet debit
+    const fmtCost = new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(packageCost);
+    await this.notificationService.notify(
+      userId,
+      NotificationType.SUBSCRIPTION_CREATED,
+      '🚀 Đăng ký gói dịch vụ thành công',
+      `Gói "${cloudPackage.name}" đã được kích hoạt. Đã trừ ${fmtCost} từ ví của bạn.`,
+      { subscription_id: savedSubscription.id, package_name: cloudPackage.name, amount: packageCost },
+    );
+    await this.notificationService.notify(
+      userId,
+      NotificationType.WALLET_DEBIT,
+      '💸 Ví bị trừ tiền',
+      `Đã trừ ${fmtCost} cho gói dịch vụ "${cloudPackage.name}". Số dư còn lại: ${new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(balanceAfter)}.`,
+      { amount: packageCost, balance_after: balanceAfter, subscription_id: savedSubscription.id },
+    );
 
     return savedSubscription;
   }
@@ -495,6 +515,16 @@ export class SubscriptionService {
         } else {
           subscription.status = 'expired';
           await this.subscriptionRepository.save(subscription);
+
+          // Notify user: subscription expired
+          const pkgName = subscription.cloudPackage?.name ?? `#${subscription.cloud_package_id}`;
+          await this.notificationService.notify(
+            subscription.user_id,
+            NotificationType.SUBSCRIPTION_EXPIRED,
+            '⚠️ Gói dịch vụ đã hết hạn',
+            `Gói "${pkgName}" của bạn đã hết hạn. Hãy đăng ký lại để tiếp tục sử dụng dịch vụ.`,
+            { subscription_id: subscription.id, package_name: pkgName },
+          );
         }
       }
     }
@@ -513,6 +543,15 @@ export class SubscriptionService {
         // Insufficient balance, expire subscription
         subscription.status = 'expired';
         await this.subscriptionRepository.save(subscription);
+
+        // Notify user: auto-renewal failed → subscription expired
+        await this.notificationService.notify(
+          subscription.user_id,
+          NotificationType.SUBSCRIPTION_EXPIRED,
+          '⚠️ Gói dịch vụ đã hết hạn',
+          `Gói "${subscription.cloudPackage?.name ?? `#${subscription.cloud_package_id}`}" đã hết hạn do số dư ví không đủ để gia hạn tự động.`,
+          { subscription_id: subscription.id },
+        );
         return;
       }
 
@@ -540,6 +579,25 @@ export class SubscriptionService {
       subscription.end_date = this.toEndOfDay(newEndDate);
 
       await this.subscriptionRepository.save(subscription);
+
+      // Notify user: renewed + wallet debit
+      const pkgName = subscription.cloudPackage?.name ?? `#${subscription.cloud_package_id}`;
+      const fmtCost = new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(packageCost);
+      const fmtEnd = subscription.end_date.toLocaleDateString('vi-VN');
+      await this.notificationService.notify(
+        subscription.user_id,
+        NotificationType.SUBSCRIPTION_RENEWED,
+        '✅ Gói dịch vụ đã được gia hạn',
+        `Gói "${pkgName}" đã được tự động gia hạn đến ${fmtEnd}. Đã trừ ${fmtCost} từ ví của bạn.`,
+        { subscription_id: subscription.id, package_name: pkgName, amount: packageCost, new_end_date: subscription.end_date },
+      );
+      await this.notificationService.notify(
+        subscription.user_id,
+        NotificationType.WALLET_DEBIT,
+        '💸 Ví bị trừ tiền',
+        `Đã trừ ${fmtCost} để gia hạn gói "${pkgName}". Số dư còn lại: ${new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(balanceAfter)}.`,
+        { amount: packageCost, balance_after: balanceAfter, subscription_id: subscription.id },
+      );
     } catch (error) {
       // If renewal fails, expire subscription
       subscription.status = 'expired';
@@ -652,5 +710,23 @@ export class SubscriptionService {
     // Step 4: Finally, delete the subscription
     await this.subscriptionRepository.remove(subscription);
     this.logger.log(`✅ Subscription ${id} deleted successfully`);
+  }
+
+  /**
+   * Find active subscriptions expiring within the given number of days.
+   * Used by the scheduler to send "expiring soon" notifications.
+   */
+  async findExpiringSoon(days: number): Promise<Subscription[]> {
+    const now = new Date();
+    const threshold = new Date();
+    threshold.setDate(threshold.getDate() + days);
+
+    return this.subscriptionRepository
+      .createQueryBuilder('s')
+      .leftJoinAndSelect('s.cloudPackage', 'cloudPackage')
+      .where('s.status = :status', { status: 'active' })
+      .andWhere('s.end_date >= :now', { now })
+      .andWhere('s.end_date <= :threshold', { threshold })
+      .getMany();
   }
 }

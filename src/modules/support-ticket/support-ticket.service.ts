@@ -3,12 +3,22 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { SupportTicket, TicketStatus } from '../../entities/support-ticket.entity';
 import { CreateSupportTicketDto, UpdateSupportTicketDto } from './dto/support-ticket.dto';
+import { NotificationService } from '../notification/notification.service';
+import { NotificationType } from '../../entities/notification.entity';
+
+const STATUS_LABELS: Record<string, string> = {
+  open: 'Mở',
+  in_progress: 'Đang xử lý',
+  resolved: 'Đã giải quyết',
+  closed: 'Đã đóng',
+};
 
 @Injectable()
 export class SupportTicketService {
   constructor(
     @InjectRepository(SupportTicket)
     private ticketRepo: Repository<SupportTicket>,
+    private notificationService: NotificationService,
   ) {}
 
   async create(dto: CreateSupportTicketDto, userId?: number): Promise<SupportTicket> {
@@ -16,7 +26,20 @@ export class SupportTicketService {
       ...dto,
       user_id: userId ?? undefined,
     });
-    return this.ticketRepo.save(ticket);
+    const saved = await this.ticketRepo.save(ticket);
+
+    // Notify the logged-in user that their ticket was received
+    if (userId) {
+      await this.notificationService.notify(
+        userId,
+        NotificationType.SUPPORT_TICKET_CREATED,
+        '🎫 Yêu cầu hỗ trợ đã được tiếp nhận',
+        `Yêu cầu hỗ trợ #${saved.id} — "${saved.title}" đã được ghi nhận. Chúng tôi sẽ phản hồi sớm nhất có thể.`,
+        { ticket_id: saved.id, title: saved.title },
+      );
+    }
+
+    return saved;
   }
 
   async findAll(): Promise<SupportTicket[]> {
@@ -52,12 +75,27 @@ export class SupportTicketService {
 
   async update(id: number, dto: UpdateSupportTicketDto, adminId?: number): Promise<SupportTicket> {
     const ticket = await this.findOne(id);
+    const previousStatus = ticket.status;
     Object.assign(ticket, dto);
     if (dto.status === TicketStatus.RESOLVED && !ticket.resolved_at) {
       ticket.resolved_at = new Date();
       ticket.resolved_by = adminId ?? null;
     }
-    return this.ticketRepo.save(ticket);
+    const saved = await this.ticketRepo.save(ticket);
+
+    // Notify owner if status changed and ticket belongs to a user
+    if (ticket.user_id && dto.status && dto.status !== previousStatus) {
+      const newLabel = STATUS_LABELS[dto.status] ?? dto.status;
+      await this.notificationService.notify(
+        ticket.user_id,
+        NotificationType.SUPPORT_TICKET_UPDATED,
+        '🔔 Cập nhật yêu cầu hỗ trợ',
+        `Yêu cầu hỗ trợ #${id} — "${ticket.title}" đã được cập nhật trạng thái: ${newLabel}.`,
+        { ticket_id: id, status: dto.status, title: ticket.title },
+      );
+    }
+
+    return saved;
   }
 
   async remove(id: number): Promise<void> {

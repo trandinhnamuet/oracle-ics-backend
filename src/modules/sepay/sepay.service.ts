@@ -5,6 +5,8 @@ import { SepayWebhookDto, CreatePaymentDto } from './dto/sepay.dto';
 import { Payment } from '../../entities/payment.entity';
 import { Subscription } from '../../entities/subscription.entity';
 import { UserWalletService } from '../user-wallet/user-wallet.service';
+import { NotificationService } from '../notification/notification.service';
+import { NotificationType } from '../../entities/notification.entity';
 
 @Injectable()
 export class SepayService {
@@ -16,6 +18,7 @@ export class SepayService {
     @InjectRepository(Subscription)
     private subscriptionRepository: Repository<Subscription>,
     private userWalletService: UserWalletService,
+    private notificationService: NotificationService,
   ) {}
 
   async handleWebhook(webhookData: SepayWebhookDto): Promise<{ success: boolean; message: string }> {
@@ -66,8 +69,18 @@ export class SepayService {
         // Xử lý theo loại payment
         if (payment.payment_type === 'deposit') {
           // Nạp tiền vào wallet
-          await this.userWalletService.addBalance(payment.user_id, payment.amount);
+          const updatedWallet = await this.userWalletService.addBalance(payment.user_id, payment.amount);
           this.logger.log(`Added ${payment.amount} VND to user ${payment.user_id} wallet`);
+
+          // Notification: wallet credit
+          const formatted = new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(payment.amount);
+          await this.notificationService.notify(
+            payment.user_id,
+            NotificationType.WALLET_CREDIT,
+            '💰 Tiền đã được nạp vào tài khoản',
+            `Tài khoản của bạn vừa được cộng ${formatted}. Số dư mới: ${new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(updatedWallet.balance)}.`,
+            { amount: payment.amount, balance_after: updatedWallet.balance, payment_id: payment.id },
+          );
         } else if (payment.payment_type === 'subscription') {
           // Kích hoạt subscription
           if (payment.subscription_id) {
