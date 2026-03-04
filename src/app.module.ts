@@ -24,6 +24,7 @@ import { VmSubscriptionModule } from './modules/vm-subscription/vm-subscription.
 import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { BandwidthModule } from './modules/bandwidth/bandwidth.module';
 import { TerminalModule } from './modules/terminal/terminal.module';
+import { SupportTicketModule } from './modules/support-ticket/support-ticket.module';
 
 dotenv.config();
 
@@ -60,6 +61,7 @@ dotenv.config();
     AnalyticsModule,
     BandwidthModule,
     TerminalModule,
+    SupportTicketModule,
   ],
   controllers: [AppController],
   providers: [AppService],
