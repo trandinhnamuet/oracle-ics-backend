@@ -19,6 +19,8 @@ import { CompartmentAccount } from '../../entities/compartment-account.entity';
 import { Subscription } from '../../entities/subscription.entity';
 import { CreateVmDto, VmActionType } from './dto';
 import * as nodemailer from 'nodemailer';
+import { NotificationService } from '../notification/notification.service';
+import { NotificationType } from '../../entities/notification.entity';
 
 @Injectable()
 export class VmProvisioningService {
@@ -50,6 +52,7 @@ export class VmProvisioningService {
     private readonly subscriptionRepo: Repository<Subscription>,
     private readonly ociService: OciService,
     private readonly systemSshKeyService: SystemSshKeyService,
+    private readonly notificationService: NotificationService,
   ) {
     // Initialize email transporter
     const smtpPort = parseInt(process.env.SMTP_PORT || '587');
@@ -303,6 +306,15 @@ export class VmProvisioningService {
         'CREATE',
         `VM instance created: ${instanceName} with shape ${usedShape}`,
         { ociInstanceId: ociInstance.id, shape: usedShape },
+      );
+
+      // Notify user: VM provisioned
+      await this.notificationService.notify(
+        userId,
+        NotificationType.VM_PROVISIONED,
+        '🖥️ VM đã được khởi tạo thành công',
+        `Máy chủ ảo "${instanceName}" (${usedShape}) vừa được tạo thành công. IP công khai: ${ociInstance.id ? 'đang cấp phát...' : 'chưa có'}.`,
+        { vm_id: savedVm.id, instance_name: instanceName, shape: usedShape },
       );
 
       // Step 9: Get fresh instance state from OCI
@@ -608,6 +620,19 @@ export class VmProvisioningService {
         `VM action performed: ${action}`,
         { result },
       );
+
+      // Notify user about VM action result
+      const vmName = vm.instance_name || `VM #${vmId}`;
+      const VM_NOTIFY_MAP: Record<string, { type: NotificationType; title: string; msg: string }> = {
+        [VmActionType.START]:     { type: NotificationType.VM_STARTED,    title: '▶️ VM đã được bật',        msg: `Máy chủ "${vmName}" đã được khởi động thành công.` },
+        [VmActionType.STOP]:      { type: NotificationType.VM_STOPPED,    title: '⏹️ VM đã được tắt',         msg: `Máy chủ "${vmName}" đã được tắt thành công.` },
+        [VmActionType.RESTART]:   { type: NotificationType.VM_RESTARTED,  title: '🔄 VM đã được khởi động lại', msg: `Máy chủ "${vmName}" đã được khởi động lại thành công.` },
+        [VmActionType.TERMINATE]: { type: NotificationType.VM_TERMINATED, title: '🗑️ VM đã bị xoá',           msg: `Máy chủ "${vmName}" đã được huỷ và xoá khỏi hệ thống.` },
+      };
+      const notifyInfo = VM_NOTIFY_MAP[action];
+      if (notifyInfo) {
+        await this.notificationService.notify(userId, notifyInfo.type, notifyInfo.title, notifyInfo.msg, { vm_id: vmId, action });
+      }
 
       this.logger.log(`Action ${action} completed successfully on VM ${vmId}`);
 

@@ -12,6 +12,8 @@ import { EmailService } from '../modules/email/email.service';
 import { AdminLoginHistoryService } from './admin-login-history.service';
 import { CreateAdminLoginHistoryDto } from './dto/admin-login-history.dto';
 import { GeolocationUtil } from '../utils/geolocation.util';
+import { NotificationService } from '../modules/notification/notification.service';
+import { NotificationType } from '../entities/notification.entity';
 
 interface JwtPayload {
   sub: string;
@@ -32,6 +34,7 @@ export class AuthService {
     private readonly configService: ConfigService,
     private emailService: EmailService,
     private adminLoginHistoryService: AdminLoginHistoryService,
+    private readonly notificationService: NotificationService,
   ) {}
 
   async register(registerDto: RegisterDto) {
@@ -616,6 +619,16 @@ export class AuthService {
 
     // Return user info without sensitive data
     const { password: _pw, refreshToken: _rt, ...userWithoutSensitive } = user;
+
+    // Notify user: login success
+    await this.notificationService.notify(
+      user.id,
+      NotificationType.ACCOUNT_LOGIN,
+      '🔐 Đăng nhập thành công',
+      `Tài khoản của bạn vừa được đăng nhập${ipV4 || ipV6 ? ` từ IP ${ipV4 || ipV6}` : ''}. Nếu không phải bạn, hãy đổi mật khẩu ngay.`,
+      { ip: ipV4 || ipV6 || 'unknown' },
+    );
+
     return {
       accessToken,
       refreshToken,
@@ -808,6 +821,14 @@ export class AuthService {
     user.passwordResetOtpExpiresAt = undefined;
     await this.userRepository.save(user);
 
+    // Notify user: password reset success
+    await this.notificationService.notify(
+      user.id,
+      NotificationType.PASSWORD_RESET,
+      '🔑 Mật khẩu đã được đặt lại',
+      'Mật khẩu của bạn vừa được đặt lại thành công qua OTP. Nếu không phải bạn thực hiện, hãy liên hệ hỗ trợ ngay lập tức.',
+    );
+
     return {
       message: 'Password has been reset successfully. You can now login with your new password.',
       success: true,
@@ -927,6 +948,16 @@ export class AuthService {
 
     // Return user info without sensitive data
     const { password: _pw, refreshToken: _rt, ...userWithoutSensitive } = user;
+
+    // Notify user: Google login success
+    await this.notificationService.notify(
+      user.id,
+      NotificationType.ACCOUNT_LOGIN,
+      '🔐 Đăng nhập Google thành công',
+      `Tài khoản của bạn vừa được đăng nhập qua Google${ipV4 || ipV6 ? ` từ IP ${ipV4 || ipV6}` : ''}. Nếu không phải bạn, hãy liên hệ hỗ trợ ngay.`,
+      { ip: ipV4 || ipV6 || 'unknown', provider: 'google' },
+    );
+
     return {
       accessToken,
       refreshToken,

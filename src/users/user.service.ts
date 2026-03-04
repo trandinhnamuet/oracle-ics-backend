@@ -7,6 +7,8 @@ import { UserWallet } from '../entities/user-wallet.entity';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
+import { NotificationService } from '../modules/notification/notification.service';
+import { NotificationType } from '../entities/notification.entity';
 
 @Injectable()
 export class UserService {
@@ -15,6 +17,7 @@ export class UserService {
     private readonly userRepository: Repository<User>,
     @InjectRepository(UserWallet)
     private readonly userWalletRepository: Repository<UserWallet>,
+    private readonly notificationService: NotificationService,
   ) {}
 
   async create(createUserDto: CreateUserDto): Promise<User> {
@@ -87,5 +90,12 @@ export class UserService {
 
     const hashed = await bcrypt.hash(changePasswordDto.newPassword, 10);
     await this.userRepository.update(id, { password: hashed });
+
+    await this.notificationService.notify(
+      id,
+      NotificationType.PASSWORD_CHANGED,
+      '🔒 Mật khẩu đã được thay đổi',
+      'Mật khẩu tài khoản của bạn vừa được cập nhật thành công. Nếu không phải bạn thực hiện, hãy liên hệ hỗ trợ ngay.',
+    );
   }
 }
