@@ -1364,12 +1364,15 @@ net user ${windowsCredentials.username} *</div>
    * Delete VM only (keep subscription active)
    * This allows user to reconfigure a new VM for the same subscription
    */
-  async deleteVmOnly(subscriptionId: string, userId: number) {
-    this.logger.log(`Deleting VM only for subscription ${subscriptionId}`);
+  async deleteVmOnly(subscriptionId: string, userId: number, userRole?: string) {
+    const isAdmin = userRole === 'admin';
+    this.logger.log(`Deleting VM only for subscription ${subscriptionId} (role: ${userRole})`);
 
     // Step 1: Load subscription
     const subscription = await this.subscriptionRepo.findOne({
-      where: { id: subscriptionId, user_id: userId },
+      where: isAdmin
+        ? { id: subscriptionId }
+        : { id: subscriptionId, user_id: userId },
     });
 
     if (!subscription) {

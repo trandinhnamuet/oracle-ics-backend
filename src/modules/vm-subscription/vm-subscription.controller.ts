@@ -116,9 +116,11 @@ export class VmSubscriptionController {
     @Param('subscriptionId') subscriptionId: string,
   ) {
     const userId = req.user.id;
+    const userRole = req.user.role;
     return this.vmSubscriptionService.deleteVmOnly(
       subscriptionId,
       userId,
+      userRole,
     );
   }
 }
