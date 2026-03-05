@@ -1401,7 +1401,18 @@ net user ${windowsCredentials.username} *</div>
         }
       }
 
-      // Step 4: Delete VM from database
+      // Step 4a: Delete bandwidth_logs first (FK NOT NULL constraint prevents SET NULL cascade)
+      try {
+        await this.vmInstanceRepo.manager.query(
+          'DELETE FROM oracle.bandwidth_logs WHERE vm_instance_id = $1',
+          [vmInstance.id],
+        );
+        this.logger.log(`✅ Deleted bandwidth_logs for VM instance ${vmInstance.id}`);
+      } catch (bwError) {
+        this.logger.warn(`Failed to delete bandwidth_logs: ${bwError.message}`);
+      }
+
+      // Step 4b: Delete VM from database
       await this.vmInstanceRepo.remove(vmInstance);
       this.logger.log(`✅ VM instance deleted from database`);
     }
