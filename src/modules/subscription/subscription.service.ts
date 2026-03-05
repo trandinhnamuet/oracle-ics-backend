@@ -153,6 +153,21 @@ export class SubscriptionService {
     // Save wallet transaction (không cần update reference_id vì đã tạo payment_id)
     await this.walletTransactionRepository.save(walletTransaction);
 
+    // Tạo Payment record để giao dịch hiển thị trong lịch sử thanh toán (/checkout/history)
+    const transactionCode = `BAL${Date.now()}${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+    const paymentRecord = this.paymentRepository.create({
+      user_id: userId,
+      subscription_id: savedSubscription.id,
+      cloud_package_id: cloudPackageId,
+      payment_method: 'account_balance',
+      payment_type: 'subscription',
+      amount: packageCost,
+      status: 'success',
+      transaction_code: transactionCode,
+      description: `Thanh toán gói ${cloudPackage.name} bằng số dư tài khoản`,
+    });
+    await this.paymentRepository.save(paymentRecord);
+
     // Notify user: subscription created + wallet debit
     const fmtCost = new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(packageCost);
     await this.notificationService.notify(
