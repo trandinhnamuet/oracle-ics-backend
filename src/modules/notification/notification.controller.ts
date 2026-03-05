@@ -28,7 +28,11 @@ export class NotificationController {
   ) {
     const p = parseInt(page || '1', 10);
     const l = Math.min(parseInt(limit || '20', 10), 100);
-    return this.notificationService.findByUser(req.user.id, p, l);
+    const result = await this.notificationService.findByUser(req.user.id, p, l);
+    return {
+      ...result,
+      server_time: new Date().toISOString(),
+    };
   }
 
   /** GET /notifications/my/unread-count */
