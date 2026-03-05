@@ -1249,17 +1249,50 @@ net user ${windowsCredentials.username} *</div>
     subscriptionId: string,
     userId: number,
     action: VmActionType,
+    userRole?: string,
   ) {
+    const isAdmin = userRole === 'admin';
     console.log('\n========== PERFORM VM ACTION SERVICE ==========');
     console.log(`🎯 Action: ${action}`);
     console.log(`📋 Subscription ID: ${subscriptionId}`);
     console.log(`👤 User ID: ${userId}`);
-    this.logger.log(`Performing ${action} on VM for subscription ${subscriptionId}`);
+    console.log(`👤 User Role: ${userRole} | isAdmin: ${isAdmin}`);
+    this.logger.log(`Performing ${action} on VM for subscription ${subscriptionId} (role: ${userRole})`);
 
-    // Check subscription eligibility
-    console.log('🔍 Step 1: Checking subscription eligibility...');
-    const subscription = await this.checkSubscriptionEligibility(subscriptionId, userId);
-    console.log('✅ Step 1 PASSED: Subscription eligible');
+    // Step 1: Find subscription
+    // Admin can access any subscription regardless of owner
+    console.log('🔍 Step 1: Looking up subscription...');
+    let subscription: Subscription | null;
+    if (isAdmin) {
+      console.log('🔐 Admin mode: searching without user_id filter');
+      subscription = await this.subscriptionRepo.findOne({
+        where: { id: subscriptionId },
+        relations: ['cloudPackage'],
+      });
+    } else {
+      subscription = await this.subscriptionRepo.findOne({
+        where: { id: subscriptionId, user_id: userId },
+        relations: ['cloudPackage'],
+      });
+    }
+
+    if (!subscription) {
+      console.log('❌ Step 1 FAILED: Subscription not found');
+      throw new NotFoundException('Subscription not found');
+    }
+    console.log('✅ Step 1 PASSED: Subscription found, owner user_id:', subscription.user_id);
+    console.log('📊 Subscription Status:', subscription.status);
+
+    // Check subscription status (applies to admin too)
+    if (subscription.status === 'pending') {
+      throw new BadRequestException('Subscription payment is pending');
+    }
+    if (subscription.status === 'cancelled') {
+      throw new BadRequestException('Subscription is cancelled');
+    }
+    if (subscription.status === 'expired') {
+      throw new BadRequestException('Subscription has expired');
+    }
 
     console.log('🔍 Step 2: Checking VM instance configuration...');
     if (!subscription.vm_instance_id) {
@@ -1281,13 +1314,15 @@ net user ${windowsCredentials.username} *</div>
     }
     console.log('✅ Step 3 PASSED: VM found');
     console.log('   VM ID:', vm.id);
-    console.log('   VM Lifecycle State:', vm.lifecycle_state);
+    console.log('   VM user_id (owner):', vm.user_id);
     console.log('   VM Compartment ID:', vm.compartment_id);
 
-    // Perform the action using VmProvisioningService
-    console.log('🔍 Step 4: Executing VM action on OCI...');
+    // Use the subscription owner's user_id when calling vmProvisioningService
+    // This is crucial for admin: admin (user 8) controlling user 82's VM
+    const ownerUserId = subscription.user_id;
+    console.log(`🔍 Step 4: Executing VM action on OCI (using owner user_id: ${ownerUserId})...`);
     const result = await this.vmProvisioningService.performVmAction(
-      userId,
+      ownerUserId,
       vm.id,
       action,
     );
@@ -1295,7 +1330,7 @@ net user ${windowsCredentials.username} *</div>
     console.log('✅ ALL STEPS PASSED');
     console.log('==============================================\n');
 
-    this.logger.log(`Action ${action} completed successfully on VM ${vm.id}`);
+    this.logger.log(`Action ${action} completed successfully on VM ${vm.id} (owner: ${ownerUserId}, actor: ${userId})`);
 
     return {
       success: true,
