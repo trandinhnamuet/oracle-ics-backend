@@ -19,7 +19,7 @@ export class WalletTransactionService {
 
   async findAll(): Promise<WalletTransaction[]> {
     return await this.walletTransactionRepository.find({
-      relations: ['user', 'wallet'],
+      relations: ['wallet', 'wallet.user'],
       order: {
         created_at: 'DESC',
       },

@@ -1878,10 +1878,6 @@ chmod 600 ~/.ssh/authorized_keys`;
         - VCN Resources: ${deletedVcns.length}
         - User Compartments: ${deletedCompartments.length}
       `);
-
-      // Commit transaction after successful cleanup
-      await queryRunner.commitTransaction();
-      this.logger.log('✅ Database cleanup completed successfully');
     } catch (error) {
       await queryRunner.rollbackTransaction();
       this.logger.error('❌ Error cleaning up database records:', error);
