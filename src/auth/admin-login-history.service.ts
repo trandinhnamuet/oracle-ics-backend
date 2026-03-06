@@ -71,10 +71,30 @@ export class AdminLoginHistoryService {
     // Get total count
     const total = await queryBuilder.getCount();
 
+    // Map frontend sortBy keys to entity property names
+    const sortByMap: Record<string, string> = {
+      loginTime: 'loginTime',
+      login_time: 'loginTime',
+      status: 'loginStatus',
+      loginStatus: 'loginStatus',
+      login_status: 'loginStatus',
+      username: 'username',
+      role: 'role',
+      ipV4: 'ipV4',
+      ip_v4: 'ipV4',
+      country: 'country',
+      browser: 'browser',
+      os: 'os',
+      deviceType: 'deviceType',
+      device_type: 'deviceType',
+      id: 'id',
+    };
+    const resolvedSortBy = sortByMap[sortBy] ?? 'loginTime';
+
     // Apply sorting and pagination
     const offset = (page - 1) * limit;
     const data = await queryBuilder
-      .orderBy(`login.${sortBy}`, sortOrder)
+      .orderBy(`login.${resolvedSortBy}`, sortOrder)
       .skip(offset)
       .take(limit)
       .getMany();
