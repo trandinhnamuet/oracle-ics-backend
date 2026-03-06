@@ -128,40 +128,55 @@ export class AuthController {
   }
 
   @Post('logout')
-  @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async logout(@Req() req: Request, @Res({ passthrough: true }) response: Response) {
     const refreshToken = req.cookies?.refreshToken as string | undefined;
-    const userId = String((req.user as any)?.id);
+
+    // Decode userId from the refreshToken cookie (no verification needed — we just need the sub claim
+    // to invalidate the token in DB). This works even when the accessToken is expired.
+    let userId: string | undefined;
+    if (refreshToken) {
+      try {
+        const payload = JSON.parse(Buffer.from(refreshToken.split('.')[1], 'base64url').toString('utf-8'));
+        userId = String(payload.sub);
+      } catch (_) { /* invalid token format — still clear the cookie below */ }
+    }
 
     if (refreshToken && userId && userId !== 'undefined') {
       await this.authService.logout(userId, refreshToken);
     }
 
-    // Clear refresh token cookie - MUST use same options as when setting
+    // Always clear the cookie regardless of token validity
     const clearOptions = this.getCookieOptions(0);
-    delete clearOptions.maxAge; // Remove maxAge when clearing
+    delete clearOptions.maxAge;
     response.clearCookie('refreshToken', clearOptions);
 
     return { message: 'Logged out successfully' };
   }
 
   @Post('logout-all')
-  @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async logoutAll(
     @Req() req: Request,
     @Res({ passthrough: true }) response: Response,
   ) {
-    const userId = String((req.user as any)?.id);
+    const refreshToken = req.cookies?.refreshToken as string | undefined;
+
+    let userId: string | undefined;
+    if (refreshToken) {
+      try {
+        const payload = JSON.parse(Buffer.from(refreshToken.split('.')[1], 'base64url').toString('utf-8'));
+        userId = String(payload.sub);
+      } catch (_) { /* invalid token format */ }
+    }
 
     if (userId && userId !== 'undefined') {
       await this.authService.logoutAll(userId);
     }
 
-    // Clear refresh token cookie - MUST use same options as when setting
+    // Always clear the cookie regardless of token validity
     const clearOptions = this.getCookieOptions(0);
-    delete clearOptions.maxAge; // Remove maxAge when clearing
+    delete clearOptions.maxAge;
     response.clearCookie('refreshToken', clearOptions);
 
     return { message: 'Logged out from all devices successfully' };
