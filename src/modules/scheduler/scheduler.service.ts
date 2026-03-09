@@ -74,9 +74,9 @@ export class SchedulerService implements OnModuleInit {
   }
 
   /**
-   * Every 30 minutes: mark pending payments older than 60 minutes as failed.
+   * Every 60 minutes: mark pending payments older than 60 minutes as failed.
    */
-  @Cron('*/30 * * * *')
+  @Cron(CronExpression.EVERY_HOUR)
   async handleExpiredPaymentCleanup() {
     this.logger.debug('[Scheduler] Running expired pending payment cleanup');
     try {

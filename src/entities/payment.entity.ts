@@ -26,7 +26,7 @@ export class Payment {
   amount: number;
 
   @Column({ type: 'varchar', length: 20, default: 'pending' })
-  status: string; // pending, success, failed
+  status: string; // pending, success, failed, expired
 
   @Column({ type: 'varchar', length: 255, nullable: true })
   transaction_code: string; // Unique transaction code for bank transfer
