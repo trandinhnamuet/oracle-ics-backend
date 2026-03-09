@@ -222,11 +222,11 @@ export class PaymentService {
     if (stale.length === 0) return;
 
     for (const payment of stale) {
-      payment.status = 'failed';
+      payment.status = 'expired';
       await this.paymentRepository.save(payment);
     }
 
-    console.log(`[PaymentService] Marked ${stale.length} expired pending payment(s) as failed (older than ${ageMinutes} min)`);
+    console.log(`[PaymentService] Marked ${stale.length} expired pending payment(s) as expired (older than ${ageMinutes} min)`);
   }
 
   // Admin manually accept a pending payment
