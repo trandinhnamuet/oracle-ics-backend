@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, Req, Put, ForbiddenException, HttpCode, HttpStatus } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, Req, Put, ForbiddenException, HttpCode, HttpStatus, Query } from '@nestjs/common';
 import { UserService } from './user.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -17,9 +17,16 @@ export class UserController {
   }
 
   @Get()
-  async findAll() {
-    const users = await this.userService.findAll();
-    return users.map(({ password, ...user }) => user);
+  async findAll(
+    @Query('page') page = '1',
+    @Query('limit') limit = '20',
+    @Query('search') search = '',
+  ) {
+    const result = await this.userService.findAll(+page, +limit, search);
+    return {
+      ...result,
+      data: result.data.map(({ password, ...user }) => user),
+    };
   }
 
   // Static routes must come before dynamic :id routes
