@@ -312,6 +312,8 @@ export class SubscriptionService {
           'user.email ILIKE :searchTerm OR ' +
           'user.firstName ILIKE :searchTerm OR ' +
           'user.lastName ILIKE :searchTerm OR ' +
+          "CONCAT(user.firstName, ' ', user.lastName) ILIKE :searchTerm OR " +
+          "CONCAT(user.lastName, ' ', user.firstName) ILIKE :searchTerm OR " +
           'cloudPackage.name ILIKE :searchTerm)',
           { searchTerm: `%${queryParams.searchTerm}%` }
         );
