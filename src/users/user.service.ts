@@ -45,11 +45,25 @@ export class UserService {
     return savedUser;
   }
 
+  private readonly sortableColumns: Record<string, string> = {
+    id: 'user.id',
+    email: 'user.email',
+    firstName: 'user.firstName',
+    lastName: 'user.lastName',
+    company: 'user.company',
+    role: 'user.role',
+    isActive: 'user.isActive',
+    createdAt: 'user.createdAt',
+    updatedAt: 'user.updatedAt',
+  };
+
   async findAll(
     page = 1,
     limit = 20,
     search = '',
-  ): Promise<{ data: User[]; total: number; page: number; limit: number; totalPages: number }> {
+    sortBy = 'createdAt',
+    sortOrder: 'ASC' | 'DESC' = 'DESC',
+  ): Promise<{ data: User[]; total: number; totalActive: number; totalInactive: number; page: number; limit: number; totalPages: number }> {
     const query = this.userRepository.createQueryBuilder('user');
 
     if (search?.trim()) {
@@ -65,13 +79,22 @@ export class UserService {
       );
     }
 
+    const col = this.sortableColumns[sortBy] ?? 'user.createdAt';
+    const order = sortOrder === 'ASC' ? 'ASC' : 'DESC';
+
     const [data, total] = await query
-      .orderBy('user.createdAt', 'DESC')
+      .orderBy(col, order)
       .skip((page - 1) * limit)
       .take(limit)
       .getManyAndCount();
 
-    return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
+    // Global active/inactive counts (independent of search/page)
+    const [totalActive, totalInactive] = await Promise.all([
+      this.userRepository.count({ where: { isActive: true } }),
+      this.userRepository.count({ where: { isActive: false } }),
+    ]);
+
+    return { data, total, totalActive, totalInactive, page, limit, totalPages: Math.ceil(total / limit) };
   }
 
   async findOne(id: number): Promise<User | null> {
