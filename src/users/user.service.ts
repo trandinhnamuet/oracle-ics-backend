@@ -45,8 +45,33 @@ export class UserService {
     return savedUser;
   }
 
-  async findAll(): Promise<User[]> {
-    return await this.userRepository.find();
+  async findAll(
+    page = 1,
+    limit = 20,
+    search = '',
+  ): Promise<{ data: User[]; total: number; page: number; limit: number; totalPages: number }> {
+    const query = this.userRepository.createQueryBuilder('user');
+
+    if (search?.trim()) {
+      const s = `%${search.trim()}%`;
+      query.where(
+        `user.email ILIKE :s OR ` +
+        `user.first_name ILIKE :s OR ` +
+        `user.last_name ILIKE :s OR ` +
+        `CONCAT(user.first_name, ' ', user.last_name) ILIKE :s OR ` +
+        `CONCAT(user.last_name, ' ', user.first_name) ILIKE :s OR ` +
+        `user.company ILIKE :s`,
+        { s },
+      );
+    }
+
+    const [data, total] = await query
+      .orderBy('user.createdAt', 'DESC')
+      .skip((page - 1) * limit)
+      .take(limit)
+      .getManyAndCount();
+
+    return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
   }
 
   async findOne(id: number): Promise<User | null> {
