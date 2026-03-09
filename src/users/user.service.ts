@@ -67,16 +67,18 @@ export class UserService {
     const query = this.userRepository.createQueryBuilder('user');
 
     if (search?.trim()) {
-      const s = `%${search.trim()}%`;
-      query.where(
-        `user.email ILIKE :s OR ` +
-        `user.first_name ILIKE :s OR ` +
-        `user.last_name ILIKE :s OR ` +
-        `CONCAT(user.first_name, ' ', user.last_name) ILIKE :s OR ` +
-        `CONCAT(user.last_name, ' ', user.first_name) ILIKE :s OR ` +
-        `user.company ILIKE :s`,
-        { s },
-      );
+      // Split into tokens and AND them: each token must appear in at least one searchable field.
+      // This handles full-name searches with spaces (e.g. "Nguyen Ann") regardless of which
+      // field (first_name / last_name) each part is stored in, without relying on CONCAT
+      // which TypeORM does not map inside SQL function arguments.
+      const tokens = search.trim().split(/\s+/).filter(Boolean);
+      tokens.forEach((token, idx) => {
+        const p = `s${idx}`;
+        query.andWhere(
+          `(user.email ILIKE :${p} OR user.first_name ILIKE :${p} OR user.last_name ILIKE :${p} OR user.company ILIKE :${p})`,
+          { [p]: `%${token}%` },
+        );
+      });
     }
 
     const col = this.sortableColumns[sortBy] ?? 'user.createdAt';

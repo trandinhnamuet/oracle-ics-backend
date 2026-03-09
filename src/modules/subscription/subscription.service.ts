@@ -306,17 +306,30 @@ export class SubscriptionService {
       }
 
       if (queryParams?.searchTerm) {
-        queryBuilder.andWhere(
-          '(CAST(subscription.id AS TEXT) ILIKE :searchTerm OR ' +
-          'CAST(subscription.user_id AS TEXT) ILIKE :searchTerm OR ' +
-          'user.email ILIKE :searchTerm OR ' +
-          'user.firstName ILIKE :searchTerm OR ' +
-          'user.lastName ILIKE :searchTerm OR ' +
-          "CONCAT(user.firstName, ' ', user.lastName) ILIKE :searchTerm OR " +
-          "CONCAT(user.lastName, ' ', user.firstName) ILIKE :searchTerm OR " +
-          'cloudPackage.name ILIKE :searchTerm)',
-          { searchTerm: `%${queryParams.searchTerm}%` }
-        );
+        const tokens = queryParams.searchTerm.trim().split(/\s+/).filter(Boolean);
+        if (tokens.length === 1) {
+          // Single token: search across all fields including ID and package name
+          queryBuilder.andWhere(
+            '(CAST(subscription.id AS TEXT) ILIKE :st0 OR ' +
+            'CAST(subscription.user_id AS TEXT) ILIKE :st0 OR ' +
+            'user.email ILIKE :st0 OR ' +
+            'user.firstName ILIKE :st0 OR ' +
+            'user.lastName ILIKE :st0 OR ' +
+            'cloudPackage.name ILIKE :st0)',
+            { st0: `%${tokens[0]}%` }
+          );
+        } else {
+          // Multiple tokens: each token must appear in at least one name/email/package field.
+          // This handles full-name searches with spaces (e.g. "Nguyen Ann") without relying
+          // on CONCAT which TypeORM does not reliably map inside SQL function arguments.
+          tokens.forEach((token, idx) => {
+            const p = `st${idx}`;
+            queryBuilder.andWhere(
+              `(user.email ILIKE :${p} OR user.firstName ILIKE :${p} OR user.lastName ILIKE :${p} OR cloudPackage.name ILIKE :${p})`,
+              { [p]: `%${token}%` }
+            );
+          });
+        }
       }
 
       // Apply sorting
