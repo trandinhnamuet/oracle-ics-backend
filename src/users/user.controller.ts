@@ -21,8 +21,10 @@ export class UserController {
     @Query('page') page = '1',
     @Query('limit') limit = '20',
     @Query('search') search = '',
+    @Query('sortBy') sortBy = 'createdAt',
+    @Query('sortOrder') sortOrder: 'ASC' | 'DESC' = 'DESC',
   ) {
-    const result = await this.userService.findAll(+page, +limit, search);
+    const result = await this.userService.findAll(+page, +limit, search, sortBy, sortOrder);
     return {
       ...result,
       data: result.data.map(({ password, ...user }) => user),
