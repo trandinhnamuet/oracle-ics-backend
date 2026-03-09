@@ -3,8 +3,8 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { SubscriptionService } from '../subscription/subscription.service';
 import { VmSubscriptionService } from '../vm-subscription/vm-subscription.service';
 import { NotificationService } from '../notification/notification.service';
-import { PaymentService } from '../payment/payment.service';
 import { NotificationType } from '../../entities/notification.entity';
+import { PaymentService } from '../payment/payment.service';
 
 @Injectable()
 export class SchedulerService implements OnModuleInit {
@@ -18,8 +18,8 @@ export class SchedulerService implements OnModuleInit {
   ) {}
 
   /**
-   * On startup: delete any pending subscriptions older than 10 minutes
-   * that lost their in-memory timer due to a backend restart.
+   * On startup: delete any pending subscriptions older than 30 minutes
+   * and mark expired pending payments as failed.
    */
   async onModuleInit() {
     this.logger.log('[Scheduler] Running startup cleanup for stale pending subscriptions...');
@@ -29,9 +29,9 @@ export class SchedulerService implements OnModuleInit {
       this.logger.error('[Scheduler] Startup pending cleanup failed:', error);
     }
 
-    this.logger.log('[Scheduler] Running startup cleanup for stale pending payments...');
+    this.logger.log('[Scheduler] Running startup cleanup for expired pending payments...');
     try {
-      await this.paymentService.cleanupStalePendingPayments(60);
+      await this.paymentService.cleanupExpiredPendingPayments(60);
     } catch (error) {
       this.logger.error('[Scheduler] Startup payment cleanup failed:', error);
     }
@@ -74,19 +74,15 @@ export class SchedulerService implements OnModuleInit {
   }
 
   /**
-   * Every hour: mark pending payments older than 60 minutes as 'failed'.
-   * This prevents the admin payments screen from accumulating stale pending records.
+   * Every 30 minutes: mark pending payments older than 60 minutes as failed.
    */
-  @Cron(CronExpression.EVERY_HOUR)
-  async handleHourlyPaymentCleanup() {
-    this.logger.debug('[Scheduler] Running hourly stale pending payment cleanup');
+  @Cron('*/30 * * * *')
+  async handleExpiredPaymentCleanup() {
+    this.logger.debug('[Scheduler] Running expired pending payment cleanup');
     try {
-      const count = await this.paymentService.cleanupStalePendingPayments(60);
-      if (count > 0) {
-        this.logger.log(`[Scheduler] Marked ${count} stale pending payment(s) as failed`);
-      }
+      await this.paymentService.cleanupExpiredPendingPayments(60);
     } catch (error) {
-      this.logger.error('[Scheduler] Hourly payment cleanup failed:', error);
+      this.logger.error('[Scheduler] Expired payment cleanup failed:', error);
     }
   }
 
