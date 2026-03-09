@@ -3,6 +3,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { SubscriptionService } from '../subscription/subscription.service';
 import { VmSubscriptionService } from '../vm-subscription/vm-subscription.service';
 import { NotificationService } from '../notification/notification.service';
+import { PaymentService } from '../payment/payment.service';
 import { NotificationType } from '../../entities/notification.entity';
 
 @Injectable()
@@ -13,6 +14,7 @@ export class SchedulerService implements OnModuleInit {
     private subscriptionService: SubscriptionService,
     private vmSubscriptionService: VmSubscriptionService,
     private notificationService: NotificationService,
+    private paymentService: PaymentService,
   ) {}
 
   /**
@@ -25,6 +27,13 @@ export class SchedulerService implements OnModuleInit {
       await this.subscriptionService.cleanupStalePending();
     } catch (error) {
       this.logger.error('[Scheduler] Startup pending cleanup failed:', error);
+    }
+
+    this.logger.log('[Scheduler] Running startup cleanup for stale pending payments...');
+    try {
+      await this.paymentService.cleanupStalePendingPayments(60);
+    } catch (error) {
+      this.logger.error('[Scheduler] Startup payment cleanup failed:', error);
     }
   }
 
@@ -61,6 +70,23 @@ export class SchedulerService implements OnModuleInit {
       await this.subscriptionService.cleanupStalePending();
     } catch (error) {
       this.logger.error('[Scheduler] Hourly pending cleanup failed:', error);
+    }
+  }
+
+  /**
+   * Every hour: mark pending payments older than 60 minutes as 'failed'.
+   * This prevents the admin payments screen from accumulating stale pending records.
+   */
+  @Cron(CronExpression.EVERY_HOUR)
+  async handleHourlyPaymentCleanup() {
+    this.logger.debug('[Scheduler] Running hourly stale pending payment cleanup');
+    try {
+      const count = await this.paymentService.cleanupStalePendingPayments(60);
+      if (count > 0) {
+        this.logger.log(`[Scheduler] Marked ${count} stale pending payment(s) as failed`);
+      }
+    } catch (error) {
+      this.logger.error('[Scheduler] Hourly payment cleanup failed:', error);
     }
   }
 

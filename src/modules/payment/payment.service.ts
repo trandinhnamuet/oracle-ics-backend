@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Payment } from '../../entities/payment.entity';
@@ -11,7 +11,7 @@ import { v4 as uuidv4 } from 'uuid';
 
 @Injectable()
 export class PaymentService {
-  constructor(
+  private readonly logger = new Logger(PaymentService.name);
     @InjectRepository(Payment)
     private paymentRepository: Repository<Payment>,
     @InjectRepository(UserWallet)
@@ -218,5 +218,36 @@ export class PaymentService {
     // Use the same logic as successful payment processing
     // This will handle both deposit (update wallet) and subscription (activate subscription) payments
     return await this.completePayment(payment);
+  }
+
+  /**
+   * Mark stale pending payments as 'failed'.
+   * Any payment still in 'pending' status after `thresholdMinutes` minutes is considered expired.
+   * Default: 60 minutes.
+   */
+  async cleanupStalePendingPayments(thresholdMinutes = 60): Promise<number> {
+    const cutoff = new Date(Date.now() - thresholdMinutes * 60 * 1000);
+
+    const stale = await this.paymentRepository
+      .createQueryBuilder('payment')
+      .where('payment.status = :status', { status: 'pending' })
+      .andWhere('payment.created_at < :cutoff', { cutoff })
+      .getMany();
+
+    if (stale.length === 0) {
+      this.logger.log('[PaymentCleanup] No stale pending payments found');
+      return 0;
+    }
+
+    this.logger.log(`[PaymentCleanup] Marking ${stale.length} stale pending payment(s) as failed (older than ${thresholdMinutes}min)`);
+
+    for (const payment of stale) {
+      payment.status = 'failed';
+      payment.updated_at = new Date();
+      await this.paymentRepository.save(payment);
+      this.logger.log(`[PaymentCleanup] ✅ Payment ${payment.id} (${payment.transaction_code}) marked as failed`);
+    }
+
+    return stale.length;
   }
 }
