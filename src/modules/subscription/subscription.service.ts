@@ -291,11 +291,17 @@ export class SubscriptionService {
         queryBuilder.andWhere('subscription.user_id = :userId', { userId: queryParams.userId });
       }
 
-      if (queryParams?.startDate) {
+      if (queryParams?.startDate && !queryParams?.endDate) {
+        // Only start date selected → exact day match on start_date
+        queryBuilder.andWhere("DATE(subscription.start_date) = DATE(:startDate)", { startDate: queryParams.startDate });
+      } else if (queryParams?.startDate) {
         queryBuilder.andWhere('subscription.start_date >= :startDate', { startDate: queryParams.startDate });
       }
 
-      if (queryParams?.endDate) {
+      if (queryParams?.endDate && !queryParams?.startDate) {
+        // Only end date selected → exact day match on end_date
+        queryBuilder.andWhere("DATE(subscription.end_date) = DATE(:endDate)", { endDate: queryParams.endDate });
+      } else if (queryParams?.endDate) {
         queryBuilder.andWhere('subscription.end_date <= :endDate', { endDate: queryParams.endDate });
       }
 
