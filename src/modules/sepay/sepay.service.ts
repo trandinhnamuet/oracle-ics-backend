@@ -90,28 +90,31 @@ export class SepayService {
             this.logger.log(`Activated subscription ${payment.subscription_id}`);
           }
           
-          // Tạo 2 wallet transactions: credit và debit để cân bằng
+          // Ghi nhận 2 giao dịch thống kê cho subscription qua QR:
+          //   credit (+amount, 'qr_payment_received')    → tính vào Tổng nạp
+          //   debit  (-amount, 'qr_subscription_payment') → tính vào Tổng chi
+          // Ví của người dùng không thay đổi (tiền đến thẳng ngân hàng).
           const userWallet = await this.userWalletService.findByUserId(payment.user_id);
-          
-          // Transaction 1: Credit (tiền vào) 
+
+          // Credit — Tổng nạp
           await this.userWalletService.createTransaction({
             wallet_id: userWallet.id,
             payment_id: payment.id,
-            change_amount: payment.amount, // Positive for credit
+            change_amount: payment.amount,
             balance_after: userWallet.balance,
-            type: 'subscription_payment_in',
+            type: 'qr_payment_received',
           });
-          
-          // Transaction 2: Debit (tiền ra)
+
+          // Debit — Tổng chi
           await this.userWalletService.createTransaction({
             wallet_id: userWallet.id,
             payment_id: payment.id,
-            change_amount: -payment.amount, // Negative for debit
+            change_amount: -payment.amount,
             balance_after: userWallet.balance,
-            type: 'subscription_payment_out',
+            type: 'qr_subscription_payment',
           });
-          
-          this.logger.log(`Created balanced wallet transactions for subscription payment`);
+
+          this.logger.log(`Recorded QR credit+debit for payment ${payment.id}`);
         }
         
         this.logger.log(`Updated payment ${payment.id} to success for amount ${webhookData.transferAmount}`);

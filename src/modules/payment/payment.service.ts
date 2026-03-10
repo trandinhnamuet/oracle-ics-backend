@@ -122,9 +122,61 @@ export class PaymentService {
     // if payment type is subscription, change status of subscription to active
     if (payment.payment_type === 'subscription' && payment.subscription_id) {
       await this.activateSubscription(payment.subscription_id);
+      // Record the expense in wallet_transactions so admin costs page counts it in totalSpent
+      await this.recordSubscriptionExpense(payment);
     }
 
     return payment;
+  }
+
+  /**
+   * Record two statistical wallet_transactions for a QR / direct subscription payment.
+   * The actual wallet balance is NOT changed (money went straight to the bank).
+   *
+   * - credit (+amount, type='qr_payment_received')  → counts in admin "Tổng nạp"
+   * - debit  (-amount, type='qr_subscription_payment') → counts in admin "Tổng chi"
+   */
+  private async recordSubscriptionExpense(payment: Payment): Promise<void> {
+    const userWallet = await this.userWalletRepository.findOne({
+      where: { user_id: payment.user_id },
+    });
+
+    if (!userWallet) {
+      console.warn(
+        `[PaymentService][recordSubscriptionExpense] No wallet found for user ${payment.user_id}`,
+      );
+      return;
+    }
+
+    const currentBalance = Number(userWallet.balance);
+    const amount = Number(payment.amount);
+
+    // Credit: tiền vào hệ thống qua QR — tính vào Tổng nạp
+    await this.walletTransactionRepository.save(
+      this.walletTransactionRepository.create({
+        wallet_id: userWallet.id,
+        payment_id: payment.id,
+        change_amount: amount,
+        balance_after: currentBalance,
+        type: 'qr_payment_received',
+      }),
+    );
+
+    // Debit: chi phí gói dịch vụ — tính vào Tổng chi
+    await this.walletTransactionRepository.save(
+      this.walletTransactionRepository.create({
+        wallet_id: userWallet.id,
+        payment_id: payment.id,
+        change_amount: -amount,
+        balance_after: currentBalance,
+        type: 'qr_subscription_payment',
+      }),
+    );
+
+    console.log(
+      `[PaymentService][recordSubscriptionExpense] Recorded QR credit+debit ` +
+        `paymentId=${payment.id} amount=${amount} userId=${payment.user_id}`,
+    );
   }
 
   private async activateSubscription(subscriptionId: string): Promise<void> {
