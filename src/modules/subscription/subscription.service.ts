@@ -168,25 +168,18 @@ export class SubscriptionService {
     });
     await this.paymentRepository.save(paymentRecord);
 
-    // Notify user: subscription created + wallet debit
+    // Notify user: subscription created (no separate wallet debit notification)
     const fmtCost = new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(packageCost);
+    const fmtEnd = new Date(savedSubscription.end_date).toLocaleDateString('vi-VN');
+    const fmtEndEn = new Date(savedSubscription.end_date).toLocaleDateString('en-US');
     await this.notificationService.notify(
       userId,
       NotificationType.SUBSCRIPTION_CREATED,
       '🚀 Đăng ký gói dịch vụ thành công',
-      `Gói "${cloudPackage.name}" đã được kích hoạt. Đã trừ ${fmtCost} từ ví của bạn.`,
-      { subscription_id: savedSubscription.id, package_name: cloudPackage.name, amount: packageCost },
+      `Gói "${cloudPackage.name}" đã được kích hoạt đến ${fmtEnd}. Đã trừ ${fmtCost} từ ví của bạn.`,
+      { subscription_id: savedSubscription.id, package_name: cloudPackage.name, amount: packageCost, end_date: savedSubscription.end_date },
       '🚀 Subscription activated',
-      `"${cloudPackage.name}" has been activated. ${fmtCost} was deducted from your wallet.`,
-    );
-    await this.notificationService.notify(
-      userId,
-      NotificationType.WALLET_DEBIT,
-      '💸 Ví bị trừ tiền',
-      `Đã trừ ${fmtCost} cho gói dịch vụ "${cloudPackage.name}". Số dư còn lại: ${new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(balanceAfter)}.`,
-      { amount: packageCost, balance_after: balanceAfter, subscription_id: savedSubscription.id },
-      '💸 Wallet debited',
-      `${fmtCost} was deducted for "${cloudPackage.name}" plan. Remaining balance: ${new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(balanceAfter)}.`,
+      `"${cloudPackage.name}" is now active until ${fmtEndEn}. ${fmtCost} was deducted from your wallet.`,
     );
 
     return savedSubscription;
