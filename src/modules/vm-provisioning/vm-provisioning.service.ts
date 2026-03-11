@@ -315,6 +315,8 @@ export class VmProvisioningService {
         '🖥️ VM đã được khởi tạo thành công',
         `Máy chủ ảo "${instanceName}" (${usedShape}) vừa được tạo thành công. IP công khai: ${ociInstance.id ? 'đang cấp phát...' : 'chưa có'}.`,
         { vm_id: savedVm.id, instance_name: instanceName, shape: usedShape },
+        '🖥️ VM created successfully',
+        `Virtual machine "${instanceName}" (${usedShape}) was created successfully. Public IP: ${ociInstance.id ? 'being assigned...' : 'not yet available'}.`,
       );
 
       // Step 9: Get fresh instance state from OCI
@@ -623,15 +625,15 @@ export class VmProvisioningService {
 
       // Notify user about VM action result
       const vmName = vm.instance_name || `VM #${vmId}`;
-      const VM_NOTIFY_MAP: Record<string, { type: NotificationType; title: string; msg: string }> = {
-        [VmActionType.START]:     { type: NotificationType.VM_STARTED,    title: '▶️ VM đã được bật',        msg: `Máy chủ "${vmName}" đã được khởi động thành công.` },
-        [VmActionType.STOP]:      { type: NotificationType.VM_STOPPED,    title: '⏹️ VM đã được tắt',         msg: `Máy chủ "${vmName}" đã được tắt thành công.` },
-        [VmActionType.RESTART]:   { type: NotificationType.VM_RESTARTED,  title: '🔄 VM đã được khởi động lại', msg: `Máy chủ "${vmName}" đã được khởi động lại thành công.` },
-        [VmActionType.TERMINATE]: { type: NotificationType.VM_TERMINATED, title: '🗑️ VM đã bị xoá',           msg: `Máy chủ "${vmName}" đã được huỷ và xoá khỏi hệ thống.` },
+      const VM_NOTIFY_MAP: Record<string, { type: NotificationType; title: string; msg: string; titleEn: string; msgEn: string }> = {
+        [VmActionType.START]:     { type: NotificationType.VM_STARTED,    title: '▶️ VM đã được bật',           msg: `Máy chủ "${vmName}" đã được khởi động thành công.`,  titleEn: '▶️ VM started',    msgEn: `Server "${vmName}" started successfully.` },
+        [VmActionType.STOP]:      { type: NotificationType.VM_STOPPED,    title: '⏹️ VM đã được tắt',           msg: `Máy chủ "${vmName}" đã được tắt thành công.`,         titleEn: '⏹️ VM stopped',    msgEn: `Server "${vmName}" stopped successfully.` },
+        [VmActionType.RESTART]:   { type: NotificationType.VM_RESTARTED,  title: '🔄 VM đã được khởi động lại', msg: `Máy chủ "${vmName}" đã được khởi động lại thành công.`, titleEn: '🔄 VM restarted',  msgEn: `Server "${vmName}" restarted successfully.` },
+        [VmActionType.TERMINATE]: { type: NotificationType.VM_TERMINATED, title: '🗑️ VM đã bị xoá',             msg: `Máy chủ "${vmName}" đã được huỷ và xoá khỏi hệ thống.`,   titleEn: '🗑️ VM terminated', msgEn: `Server "${vmName}" was terminated and removed from the system.` },
       };
       const notifyInfo = VM_NOTIFY_MAP[action];
       if (notifyInfo) {
-        await this.notificationService.notify(userId, notifyInfo.type, notifyInfo.title, notifyInfo.msg, { vm_id: vmId, action });
+        await this.notificationService.notify(userId, notifyInfo.type, notifyInfo.title, notifyInfo.msg, { vm_id: vmId, action }, notifyInfo.titleEn, notifyInfo.msgEn);
       }
 
       this.logger.log(`Action ${action} completed successfully on VM ${vmId}`);

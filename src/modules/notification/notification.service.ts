@@ -26,22 +26,28 @@ export class NotificationService {
       type: dto.type,
       title: dto.title,
       message: dto.message,
+      title_en: dto.title_en ?? null,
+      message_en: dto.message_en ?? null,
       data: dto.data ?? null,
       is_read: false,
     });
     return this.notificationRepo.save(notification);
   }
 
-  /** Helper: create notification without throwing on failure */
+  /** Helper: create notification without throwing on failure.
+   *  titleEn / messageEn are optional English translations.
+   *  If omitted, the notification will only have the default (Vietnamese) text. */
   async notify(
     userId: number,
     type: NotificationType,
     title: string,
     message: string,
     data?: Record<string, any>,
+    titleEn?: string,
+    messageEn?: string,
   ): Promise<void> {
     try {
-      await this.create({ user_id: userId, type, title, message, data });
+      await this.create({ user_id: userId, type, title, message, data, title_en: titleEn, message_en: messageEn });
     } catch (err) {
       console.error('[NotificationService] Failed to create notification:', err);
     }

@@ -112,12 +112,15 @@ export class SchedulerService implements OnModuleInit {
       for (const sub of expiringSubs) {
         const pkgName = (sub as any).cloudPackage?.name ?? `#${sub.cloud_package_id}`;
         const endDate = new Date(sub.end_date).toLocaleDateString('vi-VN');
+        const endDateEn = new Date(sub.end_date).toLocaleDateString('en-US');
         await this.notificationService.notify(
           sub.user_id,
           NotificationType.SUBSCRIPTION_EXPIRING,
           '⚠️ Gói dịch vụ sắp hết hạn',
           `Gói "${pkgName}" của bạn sẽ hết hạn vào ${endDate}. Hãy gia hạn để không bị gián đoạn dịch vụ.`,
           { subscription_id: sub.id, end_date: sub.end_date, package_name: pkgName },
+          '⚠️ Subscription expiring soon',
+          `Your "${pkgName}" plan will expire on ${endDateEn}. Renew now to avoid service interruption.`,
         );
       }
     } catch (error) {

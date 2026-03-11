@@ -627,6 +627,8 @@ export class AuthService {
       '🔐 Đăng nhập thành công',
       `Tài khoản của bạn vừa được đăng nhập${ipV4 || ipV6 ? ` từ IP ${ipV4 || ipV6}` : ''}. Nếu không phải bạn, hãy đổi mật khẩu ngay.`,
       { ip: ipV4 || ipV6 || 'unknown' },
+      '🔐 Login successful',
+      `Your account was just logged in${ipV4 || ipV6 ? ` from IP ${ipV4 || ipV6}` : ''}. If this wasn't you, change your password immediately.`,
     );
 
     return {
@@ -827,6 +829,9 @@ export class AuthService {
       NotificationType.PASSWORD_RESET,
       '🔑 Mật khẩu đã được đặt lại',
       'Mật khẩu của bạn vừa được đặt lại thành công qua OTP. Nếu không phải bạn thực hiện, hãy liên hệ hỗ trợ ngay lập tức.',
+      undefined,
+      '🔑 Password has been reset',
+      'Your password was successfully reset via OTP. If you did not initiate this, contact support immediately.',
     );
 
     return {
@@ -956,6 +961,8 @@ export class AuthService {
       '🔐 Đăng nhập Google thành công',
       `Tài khoản của bạn vừa được đăng nhập qua Google${ipV4 || ipV6 ? ` từ IP ${ipV4 || ipV6}` : ''}. Nếu không phải bạn, hãy liên hệ hỗ trợ ngay.`,
       { ip: ipV4 || ipV6 || 'unknown', provider: 'google' },
+      '🔐 Google login successful',
+      `Your account was logged in via Google${ipV4 || ipV6 ? ` from IP ${ipV4 || ipV6}` : ''}. If this wasn't you, contact support immediately.`,
     );
 
     return {
