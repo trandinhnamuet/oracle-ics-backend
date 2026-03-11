@@ -37,7 +37,7 @@ export class SchedulerService implements OnModuleInit {
     }
   }
 
-  @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
+  @Cron(CronExpression.EVERY_MINUTE)
   async handleDailySubscriptionCheck() {
     this.logger.debug('Running daily subscription check at midnight');
     
