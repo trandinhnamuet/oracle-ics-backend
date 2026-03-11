@@ -1,10 +1,11 @@
-import { Controller, Post, Body, Res, UseGuards, Get, Req, Logger, UnauthorizedException, HttpCode, HttpStatus } from '@nestjs/common';
+import { Controller, Post, Body, Res, UseGuards, Get, Req, Headers, Logger, UnauthorizedException, HttpCode, HttpStatus } from '@nestjs/common';
 import { Response, Request } from 'express';
 import { AuthGuard } from '@nestjs/passport';
 import { AuthService } from './auth.service';
 import { ConfigService } from '@nestjs/config';
 import { LoginDto, RegisterDto, VerifyOtpDto, ResendOtpDto, ForgotPasswordDto, VerifyResetOtpDto, ResetPasswordDto } from './dto/auth.dto';
 import { JwtAuthGuard } from './jwt-auth.guard';
+import { extractLang, t } from '../i18n/auth-messages';
 
 @Controller('auth')
 export class AuthController {
@@ -34,36 +35,60 @@ export class AuthController {
   }
 
   @Post('register')
-  async register(@Body() registerDto: RegisterDto) {
+  async register(
+    @Body() registerDto: RegisterDto,
+    @Headers('accept-language') acceptLang?: string,
+  ) {
+    const lang = extractLang(acceptLang);
     this.logger.log(`Register request: ${JSON.stringify({ email: registerDto.email })}`);
-    return await this.authService.register(registerDto);
+    return await this.authService.register(registerDto, lang);
   }
 
   @Post('verify-otp')
-  async verifyOtp(@Body() verifyOtpDto: VerifyOtpDto) {
+  async verifyOtp(
+    @Body() verifyOtpDto: VerifyOtpDto,
+    @Headers('accept-language') acceptLang?: string,
+  ) {
+    const lang = extractLang(acceptLang);
     this.logger.log(`Verify OTP request: ${JSON.stringify(verifyOtpDto)}`);
-    return await this.authService.verifyOtp(verifyOtpDto);
+    return await this.authService.verifyOtp(verifyOtpDto, lang);
   }
 
   @Post('resend-otp')
-  async resendOtp(@Body() resendOtpDto: ResendOtpDto) {
+  async resendOtp(
+    @Body() resendOtpDto: ResendOtpDto,
+    @Headers('accept-language') acceptLang?: string,
+  ) {
+    const lang = extractLang(acceptLang);
     this.logger.log(`Resend OTP request: ${JSON.stringify(resendOtpDto)}`);
-    return await this.authService.resendOtp(resendOtpDto);
+    return await this.authService.resendOtp(resendOtpDto, lang);
   }
 
   @Post('forgot-password')
-  async forgotPassword(@Body() forgotPasswordDto: ForgotPasswordDto) {
-    return await this.authService.forgotPassword(forgotPasswordDto);
+  async forgotPassword(
+    @Body() forgotPasswordDto: ForgotPasswordDto,
+    @Headers('accept-language') acceptLang?: string,
+  ) {
+    const lang = extractLang(acceptLang);
+    return await this.authService.forgotPassword(forgotPasswordDto, lang);
   }
 
   @Post('verify-reset-otp')
-  async verifyResetOtp(@Body() verifyResetOtpDto: VerifyResetOtpDto) {
-    return await this.authService.verifyResetOtp(verifyResetOtpDto);
+  async verifyResetOtp(
+    @Body() verifyResetOtpDto: VerifyResetOtpDto,
+    @Headers('accept-language') acceptLang?: string,
+  ) {
+    const lang = extractLang(acceptLang);
+    return await this.authService.verifyResetOtp(verifyResetOtpDto, lang);
   }
 
   @Post('reset-password')
-  async resetPassword(@Body() resetPasswordDto: ResetPasswordDto) {
-    return await this.authService.resetPassword(resetPasswordDto);
+  async resetPassword(
+    @Body() resetPasswordDto: ResetPasswordDto,
+    @Headers('accept-language') acceptLang?: string,
+  ) {
+    const lang = extractLang(acceptLang);
+    return await this.authService.resetPassword(resetPasswordDto, lang);
   }
 
   @Post('login')
@@ -73,10 +98,11 @@ export class AuthController {
     @Req() req: Request,
     @Res({ passthrough: true }) response: Response
   ) {
+    const lang = extractLang(req.headers['accept-language'] as string);
     const userAgent = req.headers['user-agent'] || '';
     
     // Extract real IP from proxy headers
-    const result = await this.authService.login(loginDto, userAgent, req);
+    const result = await this.authService.login(loginDto, userAgent, req, lang);
     
     // Check if verification is required (unverified account)
     if ('requiresVerification' in result && result.requiresVerification) {
@@ -104,9 +130,10 @@ export class AuthController {
     @Req() req: Request,
     @Res({ passthrough: true }) response: Response,
   ) {
+    const lang = extractLang(req.headers['accept-language'] as string);
     const refreshToken = req.cookies?.refreshToken as string | undefined;
     if (!refreshToken) {
-      throw new UnauthorizedException('Refresh token not found');
+      throw new UnauthorizedException(t('common.refreshTokenNotFound', lang));
     }
 
     const userAgent = req.headers['user-agent'] || '';
@@ -115,6 +142,7 @@ export class AuthController {
       refreshToken,
       userAgent,
       req,
+      lang,
     );
 
     // Set new refresh token as httpOnly cookie (token rotation)
@@ -130,6 +158,7 @@ export class AuthController {
   @Post('logout')
   @HttpCode(HttpStatus.OK)
   async logout(@Req() req: Request, @Res({ passthrough: true }) response: Response) {
+    const lang = extractLang(req.headers['accept-language'] as string);
     const refreshToken = req.cookies?.refreshToken as string | undefined;
 
     // Decode userId from the refreshToken cookie (no verification needed — we just need the sub claim
@@ -151,7 +180,7 @@ export class AuthController {
     delete clearOptions.maxAge;
     response.clearCookie('refreshToken', clearOptions);
 
-    return { message: 'Logged out successfully' };
+    return { message: t('common.logoutSuccess', lang) };
   }
 
   @Post('logout-all')
@@ -160,6 +189,7 @@ export class AuthController {
     @Req() req: Request,
     @Res({ passthrough: true }) response: Response,
   ) {
+    const lang = extractLang(req.headers['accept-language'] as string);
     const refreshToken = req.cookies?.refreshToken as string | undefined;
 
     let userId: string | undefined;
@@ -179,7 +209,7 @@ export class AuthController {
     delete clearOptions.maxAge;
     response.clearCookie('refreshToken', clearOptions);
 
-    return { message: 'Logged out from all devices successfully' };
+    return { message: t('common.logoutAllSuccess', lang) };
   }
 
   @Post('me')
@@ -210,12 +240,13 @@ export class AuthController {
     try {
       const googleUser = req.user as any;
       const userAgent = req.headers['user-agent'] || '';
+      const lang = extractLang(req.headers['accept-language'] as string);
 
       // Validate user from Google profile
-      const user = await this.authService.validateGoogleUser(googleUser);
+      const user = await this.authService.validateGoogleUser(googleUser, lang);
 
       // Login with Google
-      const result = await this.authService.loginWithGoogle(user, userAgent, req);
+      const result = await this.authService.loginWithGoogle(user, userAgent, req, lang);
 
       // Set refresh token cookie
       response.cookie('refreshToken', result.refreshToken, this.getCookieOptions());
