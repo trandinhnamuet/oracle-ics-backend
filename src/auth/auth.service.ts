@@ -5,6 +5,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, LessThan } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
 import { UAParser } from 'ua-parser-js';
+import { t, DEFAULT_LANG } from '../i18n/auth-messages';
 import { User } from '../entities/user.entity';
 import { UserSession } from './user-session.entity';
 import { LoginDto, RegisterDto, VerifyOtpDto, ResendOtpDto, ForgotPasswordDto, VerifyResetOtpDto, ResetPasswordDto } from './dto/auth.dto';
@@ -37,7 +38,7 @@ export class AuthService {
     private readonly notificationService: NotificationService,
   ) {}
 
-  async register(registerDto: RegisterDto) {
+  async register(registerDto: RegisterDto, lang: string = DEFAULT_LANG) {
     const { email, password, firstName, lastName } = registerDto;
     this.logger.log(`Registration attempt for email: ${email}`);
 
@@ -45,7 +46,7 @@ export class AuthService {
     const existingUser = await this.userRepository.findOne({ where: { email } });
     if (existingUser) {
       this.logger.warn(`Registration failed: User already exists - ${email}`);
-      throw new ConflictException('Email này đã được đăng ký. Vui lòng sử dụng email khác hoặc đăng nhập.');
+      throw new ConflictException(t('register.emailAlreadyExists', lang));
     }
 
     // Hash password
@@ -87,13 +88,13 @@ export class AuthService {
     }
 
     return {
-      message: 'Registration successful. Please check your email for OTP verification.',
+      message: t('register.success', lang),
       email: user.email,
       requiresVerification: true,
     };
   }
 
-  async verifyOtp(verifyOtpDto: VerifyOtpDto) {
+  async verifyOtp(verifyOtpDto: VerifyOtpDto, lang: string = DEFAULT_LANG) {
     const { email, otp, ipv4: ipv4Raw, ipv6: ipv6Raw } = verifyOtpDto;
     const ipv4 = ipv4Raw || null;
     const ipv6 = ipv6Raw || null;
@@ -103,7 +104,7 @@ export class AuthService {
     const user = await this.userRepository.findOne({ where: { email } });
     if (!user) {
       this.logger.warn(`OTP verification failed: User not found - ${email}`);
-      throw new BadRequestException('Không tìm thấy tài khoản với email này.');
+      throw new BadRequestException(t('verifyOtp.userNotFound', lang));
     }
 
     this.logger.log(`User found: ${email}, isActive: ${user.isActive}, stored OTP: ${user.emailVerificationOtp}, expires: ${user.otpExpiresAt}`);
@@ -111,19 +112,19 @@ export class AuthService {
     // Check if already active
     if (user.isActive) {
       this.logger.warn(`OTP verification failed: Email already verified - ${email}`);
-      throw new BadRequestException('Email đã được xác thực. Bạn có thể đăng nhập ngay.');
+      throw new BadRequestException(t('verifyOtp.alreadyVerified', lang));
     }
 
     // Check OTP
     if (!user.emailVerificationOtp || user.emailVerificationOtp !== otp) {
       this.logger.warn(`OTP verification failed: Invalid OTP for ${email}. Expected: ${user.emailVerificationOtp}, Received: ${otp}`);
-      throw new BadRequestException('Mã OTP không đúng. Vui lòng kiểm tra lại.');
+      throw new BadRequestException(t('verifyOtp.invalidOtp', lang));
     }
 
     // Check OTP expiration
     if (!user.otpExpiresAt || new Date() > user.otpExpiresAt) {
       this.logger.warn(`OTP verification failed: OTP expired for ${email}. Expiry: ${user.otpExpiresAt}, Current: ${new Date()}`);
-      throw new BadRequestException('Mã OTP đã hết hạn. Vui lòng yêu cầu gửi lại mã mới.');
+      throw new BadRequestException(t('verifyOtp.otpExpired', lang));
     }
 
     // Activate user
@@ -165,7 +166,7 @@ export class AuthService {
     }
 
     return {
-      message: 'Email verified successfully. You can now login.',
+      message: t('verifyOtp.success', lang),
       success: true,
       user: {
         id: user.id,
@@ -177,20 +178,20 @@ export class AuthService {
     };
   }
 
-  async resendOtp(resendOtpDto: ResendOtpDto) {
+  async resendOtp(resendOtpDto: ResendOtpDto, lang: string = DEFAULT_LANG) {
     const { email } = resendOtpDto;
     this.logger.log(`Resend OTP request for email: ${email}`);
     // Find user
     const user = await this.userRepository.findOne({ where: { email } });
     if (!user) {
       this.logger.warn(`Resend OTP failed: User not found - ${email}`);
-      throw new BadRequestException('Không tìm thấy tài khoản với email này.');
+      throw new BadRequestException(t('resendOtp.userNotFound', lang));
     }
 
     // Check if already active
     if (user.isActive) {
       this.logger.warn(`Resend OTP failed: Email already verified - ${email}`);
-      throw new BadRequestException('Email đã được xác thực. Bạn có thể đăng nhập ngay.');
+      throw new BadRequestException(t('resendOtp.alreadyVerified', lang));
     }
 
     // Generate new OTP
@@ -219,7 +220,7 @@ export class AuthService {
     }
 
     return {
-      message: 'OTP has been resent to your email',
+      message: t('resendOtp.success', lang),
       success: true,
     };
   }
@@ -436,7 +437,7 @@ export class AuthService {
     return { accessToken, refreshToken };
   }
 
-  async login(loginDto: LoginDto, userAgent: string, request: any) {
+  async login(loginDto: LoginDto, userAgent: string, request: any, lang: string = DEFAULT_LANG) {
     const { email, password, ipv4: ipv4Raw, ipv6: ipv6Raw } = loginDto;
     const ipv4Frontend = ipv4Raw || null;
     const ipv6Frontend = ipv6Raw || null;
@@ -488,16 +489,14 @@ export class AuthService {
       }
 
       // Don't reveal that email doesn't exist (security)
-      throw new UnauthorizedException('Email hoặc mật khẩu không đúng. Vui lòng kiểm tra lại thông tin đăng nhập.');
+      throw new UnauthorizedException(t('login.invalidCredentials', lang));
     }
 
     // Check if user has password (local auth) or is Google OAuth user
     if (!user.password) {
       // User registered with Google OAuth, no password set
       this.logger.warn(`Login attempt with password for OAuth user without password: ${email}`);
-      throw new UnauthorizedException(
-        'Tài khoản này chưa có mật khẩu. Vui lòng sử dụng tính năng "Quên mật khẩu" để đặt mật khẩu hoặc đăng nhập bằng Google.'
-      );
+      throw new UnauthorizedException(t('login.noPassword', lang));
     }
 
     // Check password first (before checking email verification)
@@ -534,7 +533,7 @@ export class AuthService {
       }
 
       // Don't reveal that email exists (security)
-      throw new UnauthorizedException('Email hoặc mật khẩu không đúng. Vui lòng kiểm tra lại thông tin đăng nhập.');
+      throw new UnauthorizedException(t('login.invalidCredentials', lang));
     }
 
     // Check if email is verified - if not, generate and send new OTP
@@ -571,7 +570,7 @@ export class AuthService {
       return {
         requiresVerification: true,
         email: user.email,
-        message: `Tài khoản này chưa xác thực. OTP đã được gửi về email ${user.email}. Vui lòng nhập OTP để xác thực tài khoản.`,
+        message: t('login.requiresVerification', lang, { email: user.email }),
       };
     }
 
@@ -621,14 +620,15 @@ export class AuthService {
     const { password: _pw, refreshToken: _rt, ...userWithoutSensitive } = user;
 
     // Notify user: login success
+    const ip = ipV4 || ipV6;
     await this.notificationService.notify(
       user.id,
       NotificationType.ACCOUNT_LOGIN,
-      '🔐 Đăng nhập thành công',
-      `Tài khoản của bạn vừa được đăng nhập${ipV4 || ipV6 ? ` từ IP ${ipV4 || ipV6}` : ''}. Nếu không phải bạn, hãy đổi mật khẩu ngay.`,
-      { ip: ipV4 || ipV6 || 'unknown' },
-      '🔐 Login successful',
-      `Your account was just logged in${ipV4 || ipV6 ? ` from IP ${ipV4 || ipV6}` : ''}. If this wasn't you, change your password immediately.`,
+      t('notifications.loginTitle', 'vi'),
+      t('notifications.loginBody', 'vi', { ipSuffix: ip ? t('notifications.loginIpSuffix', 'vi', { ip }) : '' }),
+      { ip: ip || 'unknown' },
+      t('notifications.loginTitle', 'en'),
+      t('notifications.loginBody', 'en', { ipSuffix: ip ? t('notifications.loginIpSuffix', 'en', { ip }) : '' }),
     );
 
     return {
@@ -641,7 +641,7 @@ export class AuthService {
   async validateUser(userId: number) {
     const user = await this.userRepository.findOne({ where: { id: userId } });
     if (!user) {
-      throw new UnauthorizedException('Không tìm thấy tài khoản.');
+      throw new UnauthorizedException(t('validateUser.userNotFound', DEFAULT_LANG));
     }
     return user;
   }
@@ -650,6 +650,7 @@ export class AuthService {
     refreshToken: string,
     userAgent: string,
     request: any,
+    lang: string = DEFAULT_LANG,
   ): Promise<{ accessToken: string; refreshToken: string }> {
     // Extract real IP from request
     const { ipV4, ipV6 } = this.extractIpAddress(request);
@@ -660,24 +661,24 @@ export class AuthService {
         secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
       });
     } catch {
-      throw new UnauthorizedException('Phiên đăng nhập hết hạn. Vui lòng đăng nhập lại.');
+      throw new UnauthorizedException(t('refresh.jwtExpired', lang));
     }
 
     const session = await this.findSessionByToken(payload.sub, refreshToken);
     if (!session) {
-      throw new UnauthorizedException('Phiên đăng nhập không hợp lệ. Vui lòng đăng nhập lại.');
+      throw new UnauthorizedException(t('refresh.invalidSession', lang));
     }
 
     if (new Date() > session.expiresAt) {
       await this.deleteSession(session.id);
-      throw new UnauthorizedException('Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.');
+      throw new UnauthorizedException(t('refresh.sessionExpired', lang));
     }
 
     const user = await this.userRepository.findOne({ 
       where: { id: parseInt(payload.sub) } 
     });
     if (!user) {
-      throw new UnauthorizedException('Không tìm thấy tài khoản.');
+      throw new UnauthorizedException(t('validateUser.userNotFound', lang));
     }
 
     // Token rotation: delete old session
@@ -726,7 +727,7 @@ export class AuthService {
   /**
    * Forgot Password - Send OTP to email
    */
-  async forgotPassword(forgotPasswordDto: ForgotPasswordDto) {
+  async forgotPassword(forgotPasswordDto: ForgotPasswordDto, lang: string = DEFAULT_LANG) {
     const { email } = forgotPasswordDto;
 
     // Find user
@@ -734,7 +735,7 @@ export class AuthService {
     if (!user) {
       // Don't reveal if user exists or not for security
       return {
-        message: 'If your email exists in our system, you will receive a password reset OTP',
+        message: t('forgotPassword.notFound', lang),
         success: true,
       };
     }
@@ -758,7 +759,7 @@ export class AuthService {
     });
 
     return {
-      message: 'Password reset OTP has been sent to your email',
+      message: t('forgotPassword.success', lang),
       email: user.email,
       success: true,
     };
@@ -767,27 +768,27 @@ export class AuthService {
   /**
    * Verify Reset OTP
    */
-  async verifyResetOtp(verifyResetOtpDto: VerifyResetOtpDto) {
+  async verifyResetOtp(verifyResetOtpDto: VerifyResetOtpDto, lang: string = DEFAULT_LANG) {
     const { email, otp } = verifyResetOtpDto;
 
     // Find user
     const user = await this.userRepository.findOne({ where: { email } });
     if (!user) {
-      throw new BadRequestException('Không tìm thấy tài khoản với email này.');
+      throw new BadRequestException(t('verifyResetOtp.userNotFound', lang));
     }
 
     // Check OTP
     if (!user.passwordResetOtp || user.passwordResetOtp !== otp) {
-      throw new BadRequestException('Mã OTP không đúng. Vui lòng kiểm tra lại.');
+      throw new BadRequestException(t('verifyResetOtp.invalidOtp', lang));
     }
 
     // Check OTP expiration
     if (!user.passwordResetOtpExpiresAt || new Date() > user.passwordResetOtpExpiresAt) {
-      throw new BadRequestException('Mã OTP đã hết hạn. Vui lòng yêu cầu gửi lại mã mới.');
+      throw new BadRequestException(t('verifyResetOtp.otpExpired', lang));
     }
 
     return {
-      message: 'OTP verified successfully. You can now reset your password.',
+      message: t('verifyResetOtp.success', lang),
       success: true,
     };
   }
@@ -795,23 +796,23 @@ export class AuthService {
   /**
    * Reset Password - Change password with OTP
    */
-  async resetPassword(resetPasswordDto: ResetPasswordDto) {
+  async resetPassword(resetPasswordDto: ResetPasswordDto, lang: string = DEFAULT_LANG) {
     const { email, otp, newPassword } = resetPasswordDto;
 
     // Find user
     const user = await this.userRepository.findOne({ where: { email } });
     if (!user) {
-      throw new BadRequestException('Không tìm thấy tài khoản với email này.');
+      throw new BadRequestException(t('resetPassword.userNotFound', lang));
     }
 
     // Check OTP
     if (!user.passwordResetOtp || user.passwordResetOtp !== otp) {
-      throw new BadRequestException('Mã OTP không đúng. Vui lòng kiểm tra lại.');
+      throw new BadRequestException(t('resetPassword.invalidOtp', lang));
     }
 
     // Check OTP expiration
     if (!user.passwordResetOtpExpiresAt || new Date() > user.passwordResetOtpExpiresAt) {
-      throw new BadRequestException('Mã OTP đã hết hạn. Vui lòng yêu cầu gửi lại mã mới.');
+      throw new BadRequestException(t('resetPassword.otpExpired', lang));
     }
 
     // Hash new password
@@ -827,15 +828,15 @@ export class AuthService {
     await this.notificationService.notify(
       user.id,
       NotificationType.PASSWORD_RESET,
-      '🔑 Mật khẩu đã được đặt lại',
-      'Mật khẩu của bạn vừa được đặt lại thành công qua OTP. Nếu không phải bạn thực hiện, hãy liên hệ hỗ trợ ngay lập tức.',
+      t('notifications.passwordResetTitle', 'vi'),
+      t('notifications.passwordResetBody', 'vi'),
       undefined,
-      '🔑 Password has been reset',
-      'Your password was successfully reset via OTP. If you did not initiate this, contact support immediately.',
+      t('notifications.passwordResetTitle', 'en'),
+      t('notifications.passwordResetBody', 'en'),
     );
 
     return {
-      message: 'Password has been reset successfully. You can now login with your new password.',
+      message: t('resetPassword.success', lang),
       success: true,
     };
   }
@@ -849,7 +850,7 @@ export class AuthService {
     firstName: string;
     lastName: string;
     picture?: string;
-  }) {
+  }, lang: string = DEFAULT_LANG) {
     const { googleId, email, firstName, lastName, picture } = googleProfile;
     this.logger.log(`Google OAuth validation for email: ${email}`);
 
@@ -877,9 +878,7 @@ export class AuthService {
         }
       } else {
         // Different auth provider
-        throw new UnauthorizedException(
-          `Email này đã được đăng ký bằng phương thức khác. Vui lòng sử dụng phương thức đăng nhập ban đầu.`
-        );
+        throw new UnauthorizedException(t('googleAuth.differentProvider', lang));
       }
     } else {
       // New user - create account
@@ -904,7 +903,7 @@ export class AuthService {
   /**
    * Login with Google - similar to regular login but for Google OAuth users
    */
-  async loginWithGoogle(user: User, userAgent: string, request: any) {
+  async loginWithGoogle(user: User, userAgent: string, request: any, lang: string = DEFAULT_LANG) {
     this.logger.log(`Google login for user: ${user.email}`);
 
     // Extract IP address
@@ -955,14 +954,15 @@ export class AuthService {
     const { password: _pw, refreshToken: _rt, ...userWithoutSensitive } = user;
 
     // Notify user: Google login success
+    const googleIp = ipV4 || ipV6;
     await this.notificationService.notify(
       user.id,
       NotificationType.ACCOUNT_LOGIN,
-      '🔐 Đăng nhập Google thành công',
-      `Tài khoản của bạn vừa được đăng nhập qua Google${ipV4 || ipV6 ? ` từ IP ${ipV4 || ipV6}` : ''}. Nếu không phải bạn, hãy liên hệ hỗ trợ ngay.`,
-      { ip: ipV4 || ipV6 || 'unknown', provider: 'google' },
-      '🔐 Google login successful',
-      `Your account was logged in via Google${ipV4 || ipV6 ? ` from IP ${ipV4 || ipV6}` : ''}. If this wasn't you, contact support immediately.`,
+      t('notifications.googleLoginTitle', 'vi'),
+      t('notifications.googleLoginBody', 'vi', { ipSuffix: googleIp ? t('notifications.loginIpSuffix', 'vi', { ip: googleIp }) : '' }),
+      { ip: googleIp || 'unknown', provider: 'google' },
+      t('notifications.googleLoginTitle', 'en'),
+      t('notifications.googleLoginBody', 'en', { ipSuffix: googleIp ? t('notifications.loginIpSuffix', 'en', { ip: googleIp }) : '' }),
     );
 
     return {
