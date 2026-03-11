@@ -1,15 +1,50 @@
 import {
   Controller, Get, Post, Patch, Delete,
   Body, Param, UseGuards, Req, HttpCode, HttpStatus,
+  UseInterceptors, UploadedFiles, BadRequestException,
 } from '@nestjs/common';
+import { FilesInterceptor } from '@nestjs/platform-express';
 import { SupportTicketService } from './support-ticket.service';
 import { CreateSupportTicketDto, UpdateSupportTicketDto } from './dto/support-ticket.dto';
 import { JwtAuthGuard } from '../../auth/jwt-auth.guard';
 import { OptionalJwtAuthGuard } from '../../auth/optional-jwt-auth.guard';
+import { ImageService } from '../image/image.service';
+
+const ALLOWED_MIME_TYPES = new Set([
+  'image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp',
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'text/plain',
+]);
 
 @Controller('support-tickets')
 export class SupportTicketController {
-  constructor(private readonly service: SupportTicketService) {}
+  constructor(
+    private readonly service: SupportTicketService,
+    private readonly imageService: ImageService,
+  ) {}
+
+  /** Upload files for a support ticket (images + PDF + common docs) */
+  @Post('upload-files')
+  @UseGuards(OptionalJwtAuthGuard)
+  @UseInterceptors(FilesInterceptor('files', 10, { limits: { fileSize: 20 * 1024 * 1024 } }))
+  async uploadFiles(
+    @UploadedFiles() files: any[],
+    @Req() req: any,
+  ): Promise<{ url: string; name: string; mimeType: string; size: number }[]> {
+    if (!files || files.length === 0) return [];
+    const userId: number | undefined = req?.user?.id;
+    const results: { url: string; name: string; mimeType: string; size: number }[] = [];
+    for (const file of files) {
+      if (!ALLOWED_MIME_TYPES.has(file.mimetype)) {
+        throw new BadRequestException(`File type '${file.mimetype}' is not allowed`);
+      }
+      const saved = await this.imageService.saveImage(file, userId);
+      results.push({ url: saved.url, name: file.originalname, mimeType: file.mimetype, size: file.size });
+    }
+    return results;
+  }
 
   /** Any visitor OR logged-in user can submit a ticket */
   @Post()

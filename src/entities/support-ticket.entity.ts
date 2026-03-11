@@ -44,8 +44,11 @@ export class SupportTicket {
   @Column({ type: 'text' })
   content: string;
 
-  @Column({ type: 'varchar', length: 500, nullable: true })
+  @Column({ type: 'text', nullable: true })
   attachment_url: string;
+
+  @Column({ type: 'text', nullable: true })
+  attachments: string; // JSON: Array<{ url: string; name: string; mimeType: string; size: number }>
 
   @Column({
     type: 'varchar',

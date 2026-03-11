@@ -41,6 +41,10 @@ export class CreateSupportTicketDto {
   attachment_url?: string;
 
   @IsOptional()
+  @IsString()
+  attachments?: string; // JSON string: Array<{ url, name, mimeType, size }>
+
+  @IsOptional()
   @IsEnum(TicketPriority)
   priority?: TicketPriority;
 }
