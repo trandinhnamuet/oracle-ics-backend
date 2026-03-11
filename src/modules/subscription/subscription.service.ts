@@ -471,6 +471,101 @@ export class SubscriptionService {
   }
 
   /**
+   * Manual renewal of an expired subscription by the user.
+   * Deducts the package cost from the wallet, resets status to active,
+   * extends end_date by 1 month, and starts the VM if present.
+   */
+  async manualRenew(id: string, userId: number): Promise<Subscription> {
+    const subscription = await this.subscriptionRepository.findOne({
+      where: { id, user_id: userId },
+      relations: ['cloudPackage'],
+    });
+
+    if (!subscription) {
+      throw new NotFoundException('Subscription not found');
+    }
+
+    if (subscription.status !== 'expired') {
+      throw new BadRequestException('Only expired subscriptions can be manually renewed');
+    }
+
+    const userWallet = await this.userWalletService.findByUserId(userId);
+    const currentBalance = parseFloat(userWallet.balance.toString());
+    const packageCost = parseFloat(subscription.cloudPackage.cost_vnd.toString());
+
+    if (currentBalance < packageCost) {
+      throw new BadRequestException(
+        'Bạn không đủ tiền trong tài khoản để gia hạn, xin hãy nạp thêm',
+      );
+    }
+
+    // Deduct wallet
+    const balanceBefore = currentBalance;
+    const balanceAfter = balanceBefore - packageCost;
+    await this.userWalletService.deductBalance(userId, packageCost);
+
+    const walletTransaction = this.walletTransactionRepository.create({
+      wallet_id: userWallet.id,
+      payment_id: crypto.randomUUID(),
+      change_amount: -packageCost,
+      balance_after: balanceAfter,
+      type: 'manual_renewal',
+    });
+    await this.walletTransactionRepository.save(walletTransaction);
+
+    // Extend end_date by 1 month from today (not from expired end_date) and normalize to end-of-day
+    const newEndDate = new Date();
+    newEndDate.setMonth(newEndDate.getMonth() + 1);
+    subscription.end_date = this.toEndOfDay(newEndDate);
+    subscription.status = 'active';
+    await this.subscriptionRepository.save(subscription);
+
+    // Start VM if configured
+    if (subscription.vm_instance_id) {
+      try {
+        const vm = await this.vmInstanceRepository.findOne({
+          where: { id: subscription.vm_instance_id },
+        });
+        if (vm && vm.instance_id && vm.instance_id !== 'PENDING' &&
+            !['RUNNING', 'STARTING'].includes(vm.lifecycle_state)) {
+          await this.ociService.startInstance(vm.instance_id);
+          vm.lifecycle_state = 'STARTING';
+          await this.vmInstanceRepository.save(vm);
+        }
+      } catch (vmError) {
+        this.logger.warn(`[ManualRenew] Failed to start VM for subscription ${id}: ${vmError.message}`);
+      }
+    }
+
+    // Send notifications
+    const pkgName = subscription.cloudPackage?.name ?? `#${subscription.cloud_package_id}`;
+    const fmtCost = new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(packageCost);
+    const fmtEnd = subscription.end_date.toLocaleDateString('vi-VN');
+    const fmtEndEn = subscription.end_date.toLocaleDateString('en-US');
+
+    await this.notificationService.notify(
+      userId,
+      NotificationType.SUBSCRIPTION_RENEWED,
+      '✅ Gói dịch vụ đã được gia hạn',
+      `Gói "${pkgName}" đã được gia hạn đến ${fmtEnd}. Đã trừ ${fmtCost} từ ví của bạn.`,
+      { subscription_id: subscription.id, package_name: pkgName, amount: packageCost, new_end_date: subscription.end_date },
+      '✅ Subscription renewed',
+      `"${pkgName}" was renewed until ${fmtEndEn}. ${fmtCost} was deducted from your wallet.`,
+    );
+    await this.notificationService.notify(
+      userId,
+      NotificationType.WALLET_DEBIT,
+      '💸 Ví bị trừ tiền',
+      `Đã trừ ${fmtCost} để gia hạn gói "${pkgName}". Số dư còn lại: ${new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(balanceAfter)}.`,
+      { amount: packageCost, balance_after: balanceAfter, subscription_id: subscription.id },
+      '💸 Wallet debited',
+      `${fmtCost} was deducted to renew "${pkgName}". Remaining balance: ${new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(balanceAfter)}.`,
+    );
+
+    return subscription;
+  }
+
+  /**
    * Schedule auto-deletion of a pending subscription after `delayMs` (default 10 minutes).
    * If the subscription is paid before the timer fires, the check inside will skip deletion.
    */

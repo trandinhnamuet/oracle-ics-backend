@@ -121,6 +121,12 @@ export class SubscriptionController {
     return await this.subscriptionService.reactivate(id);
   }
 
+  @Post(':id/renew')
+  @UseGuards(JwtAuthGuard)
+  async manualRenew(@Param('id') id: string, @Request() req) {
+    return await this.subscriptionService.manualRenew(id, req.user.id);
+  }
+
   @Delete(':id')
   @UseGuards(JwtAuthGuard)
   async remove(@Param('id') id: string) {
