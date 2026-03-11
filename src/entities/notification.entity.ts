@@ -49,6 +49,12 @@ export class Notification {
   @Column({ type: 'text' })
   message: string;
 
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  title_en: string | null;
+
+  @Column({ type: 'text', nullable: true })
+  message_en: string | null;
+
   @Column({ type: 'jsonb', nullable: true })
   data: Record<string, any> | null;
 

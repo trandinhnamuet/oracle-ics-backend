@@ -17,6 +17,14 @@ export class CreateNotificationDto {
   @IsOptional()
   @IsObject()
   data?: Record<string, any>;
+
+  @IsOptional()
+  @IsString()
+  title_en?: string;
+
+  @IsOptional()
+  @IsString()
+  message_en?: string;
 }
 
 export class QueryNotificationsDto {

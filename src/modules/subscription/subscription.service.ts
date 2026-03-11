@@ -176,6 +176,8 @@ export class SubscriptionService {
       '🚀 Đăng ký gói dịch vụ thành công',
       `Gói "${cloudPackage.name}" đã được kích hoạt. Đã trừ ${fmtCost} từ ví của bạn.`,
       { subscription_id: savedSubscription.id, package_name: cloudPackage.name, amount: packageCost },
+      '🚀 Subscription activated',
+      `"${cloudPackage.name}" has been activated. ${fmtCost} was deducted from your wallet.`,
     );
     await this.notificationService.notify(
       userId,
@@ -183,6 +185,8 @@ export class SubscriptionService {
       '💸 Ví bị trừ tiền',
       `Đã trừ ${fmtCost} cho gói dịch vụ "${cloudPackage.name}". Số dư còn lại: ${new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(balanceAfter)}.`,
       { amount: packageCost, balance_after: balanceAfter, subscription_id: savedSubscription.id },
+      '💸 Wallet debited',
+      `${fmtCost} was deducted for "${cloudPackage.name}" plan. Remaining balance: ${new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(balanceAfter)}.`,
     );
 
     return savedSubscription;
@@ -560,6 +564,8 @@ export class SubscriptionService {
             '⚠️ Gói dịch vụ đã hết hạn',
             `Gói "${pkgName}" của bạn đã hết hạn. Hãy đăng ký lại để tiếp tục sử dụng dịch vụ.`,
             { subscription_id: subscription.id, package_name: pkgName },
+            '⚠️ Subscription expired',
+            `Your "${pkgName}" plan has expired. Subscribe again to continue using the service.`,
           );
         }
       }
@@ -587,6 +593,8 @@ export class SubscriptionService {
           '⚠️ Gói dịch vụ đã hết hạn',
           `Gói "${subscription.cloudPackage?.name ?? `#${subscription.cloud_package_id}`}" đã hết hạn do số dư ví không đủ để gia hạn tự động.`,
           { subscription_id: subscription.id },
+          '⚠️ Subscription expired',
+          `Your "${subscription.cloudPackage?.name ?? `#${subscription.cloud_package_id}`}" plan expired due to insufficient wallet balance for automatic renewal.`,
         );
         return;
       }
@@ -620,12 +628,15 @@ export class SubscriptionService {
       const pkgName = subscription.cloudPackage?.name ?? `#${subscription.cloud_package_id}`;
       const fmtCost = new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(packageCost);
       const fmtEnd = subscription.end_date.toLocaleDateString('vi-VN');
+      const fmtEndEn = subscription.end_date.toLocaleDateString('en-US');
       await this.notificationService.notify(
         subscription.user_id,
         NotificationType.SUBSCRIPTION_RENEWED,
         '✅ Gói dịch vụ đã được gia hạn',
         `Gói "${pkgName}" đã được tự động gia hạn đến ${fmtEnd}. Đã trừ ${fmtCost} từ ví của bạn.`,
         { subscription_id: subscription.id, package_name: pkgName, amount: packageCost, new_end_date: subscription.end_date },
+        '✅ Subscription renewed',
+        `"${pkgName}" was automatically renewed until ${fmtEndEn}. ${fmtCost} was deducted from your wallet.`,
       );
       await this.notificationService.notify(
         subscription.user_id,
@@ -633,6 +644,8 @@ export class SubscriptionService {
         '💸 Ví bị trừ tiền',
         `Đã trừ ${fmtCost} để gia hạn gói "${pkgName}". Số dư còn lại: ${new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(balanceAfter)}.`,
         { amount: packageCost, balance_after: balanceAfter, subscription_id: subscription.id },
+        '💸 Wallet debited',
+        `${fmtCost} was deducted to renew "${pkgName}". Remaining balance: ${new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(balanceAfter)}.`,
       );
     } catch (error) {
       // If renewal fails, expire subscription

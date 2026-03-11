@@ -36,6 +36,8 @@ export class SupportTicketService {
         '🎫 Yêu cầu hỗ trợ đã được tiếp nhận',
         `Yêu cầu hỗ trợ #${saved.id} — "${saved.title}" đã được ghi nhận. Chúng tôi sẽ phản hồi sớm nhất có thể.`,
         { ticket_id: saved.id, title: saved.title },
+        '🎫 Support request received',
+        `Support request #${saved.id} — "${saved.title}" has been submitted. We will respond as soon as possible.`,
       );
     }
 
@@ -92,6 +94,8 @@ export class SupportTicketService {
         '🔔 Cập nhật yêu cầu hỗ trợ',
         `Yêu cầu hỗ trợ #${id} — "${ticket.title}" đã được cập nhật trạng thái: ${newLabel}.`,
         { ticket_id: id, status: dto.status, title: ticket.title },
+        '🔔 Support request updated',
+        `Support request #${id} — "${ticket.title}" status updated: ${newLabel}.`,
       );
     }
 

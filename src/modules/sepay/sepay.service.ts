@@ -80,6 +80,8 @@ export class SepayService {
             '💰 Tiền đã được nạp vào tài khoản',
             `Tài khoản của bạn vừa được cộng ${formatted}. Số dư mới: ${new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(updatedWallet.balance)}.`,
             { amount: payment.amount, balance_after: updatedWallet.balance, payment_id: payment.id },
+            '💰 Balance topped up',
+            `${formatted} was added to your account. New balance: ${new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(updatedWallet.balance)}.`,
           );
         } else if (payment.payment_type === 'subscription') {
           // Kích hoạt subscription
@@ -88,6 +90,38 @@ export class SepayService {
               status: 'active' 
             });
             this.logger.log(`Activated subscription ${payment.subscription_id}`);
+
+            // Send notification to user about successful subscription payment
+            try {
+              const subscription = await this.subscriptionRepository.findOne({
+                where: { id: payment.subscription_id },
+                relations: ['cloudPackage'],
+              });
+
+              if (subscription && subscription.cloudPackage) {
+                const pkgName = subscription.cloudPackage.name;
+                const fmtAmount = new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(payment.amount);
+                const endDate = new Date(subscription.end_date).toLocaleDateString('vi-VN');
+
+                await this.notificationService.notify(
+                  payment.user_id,
+                  NotificationType.SUBSCRIPTION_CREATED,
+                  '🚀 Đăng ký gói dịch vụ thành công',
+                  `Gói "${pkgName}" (${fmtAmount}) đã được kích hoạt. Hạn sử dụng: ${endDate}. Vui lòng tham khảo trang "Gói dịch vụ" để khởi tạo máy ảo.`,
+                  { 
+                    subscription_id: subscription.id, 
+                    package_name: pkgName, 
+                    amount: payment.amount,
+                    end_date: subscription.end_date 
+                  },
+                  '🚀 Subscription activated',
+                  `"${pkgName}" (${fmtAmount}) is now active until ${new Date(subscription.end_date).toLocaleDateString('en-US')}. Visit the "Service Package" page to create your virtual machine.`,
+                );
+                this.logger.log(`Sent subscription notification to user ${payment.user_id}`);
+              }
+            } catch (notificationErr) {
+              this.logger.error(`Failed to send subscription notification: ${notificationErr.message}`);
+            }
           }
           
           // Ghi nhận 2 giao dịch thống kê cho subscription qua QR:

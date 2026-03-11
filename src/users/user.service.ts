@@ -146,6 +146,9 @@ export class UserService {
       NotificationType.PASSWORD_CHANGED,
       '🔒 Mật khẩu đã được thay đổi',
       'Mật khẩu tài khoản của bạn vừa được cập nhật thành công. Nếu không phải bạn thực hiện, hãy liên hệ hỗ trợ ngay.',
+      undefined,
+      '🔒 Password changed',
+      'Your account password was updated successfully. If you did not do this, contact support immediately.',
     );
   }
 }

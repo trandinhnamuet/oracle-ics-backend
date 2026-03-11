@@ -7,6 +7,8 @@ import { WalletTransaction } from '../../entities/wallet-transaction.entity';
 import { Subscription } from '../../entities/subscription.entity';
 import { CreatePaymentDto } from './dto/create-payment.dto';
 import { UpdatePaymentDto } from './dto/update-payment.dto';
+import { NotificationService } from '../notification/notification.service';
+import { NotificationType } from '../../entities/notification.entity';
 import { v4 as uuidv4 } from 'uuid';
 
 @Injectable()
@@ -20,6 +22,7 @@ export class PaymentService {
     private walletTransactionRepository: Repository<WalletTransaction>,
     @InjectRepository(Subscription)
     private subscriptionRepository: Repository<Subscription>,
+    private notificationService: NotificationService,
   ) {}
 
   async create(createPaymentDto: CreatePaymentDto): Promise<Payment> {
@@ -183,6 +186,7 @@ export class PaymentService {
     console.log(`[PaymentService][activateSubscription] activating subscription id=${subscriptionId}`);
     const subscription = await this.subscriptionRepository.findOne({
       where: { id: subscriptionId },
+      relations: ['cloudPackage'],
     });
 
     if (!subscription) {
@@ -193,6 +197,40 @@ export class PaymentService {
     subscription.status = 'active';
     await this.subscriptionRepository.save(subscription);
     console.log(`[PaymentService][activateSubscription] subscription activated id=${subscriptionId}`);
+
+    // Send notification to user about successful subscription payment
+    try {
+      if (subscription && subscription.cloudPackage) {
+        const pkgName = subscription.cloudPackage.name;
+        // Get the payment to know the amount paid
+        const payment = await this.paymentRepository.findOne({
+          where: { subscription_id: subscriptionId },
+        });
+        
+        if (payment) {
+          const fmtAmount = new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(payment.amount);
+          const endDate = new Date(subscription.end_date).toLocaleDateString('vi-VN');
+
+          await this.notificationService.notify(
+            subscription.user_id,
+            NotificationType.SUBSCRIPTION_CREATED,
+            '🚀 Đăng ký gói dịch vụ thành công',
+            `Gói "${pkgName}" (${fmtAmount}) đã được kích hoạt. Hạn sử dụng: ${endDate}. Vui lòng tham khảo trang "Gói dịch vụ" để khởi tạo máy ảo.`,
+            { 
+              subscription_id: subscription.id, 
+              package_name: pkgName, 
+              amount: payment.amount,
+              end_date: subscription.end_date 
+            },
+            '🚀 Subscription activated',
+            `"${pkgName}" (${fmtAmount}) is now active until ${new Date(subscription.end_date).toLocaleDateString('en-US')}. Visit the "Service Package" page to create your virtual machine.`,
+          );
+          console.log(`[PaymentService][activateSubscription] Sent subscription notification to user ${subscription.user_id}`);
+        }
+      }
+    } catch (notificationErr) {
+      console.error(`[PaymentService][activateSubscription] Failed to send subscription notification: ${notificationErr.message}`);
+    }
   }
 
   private async updateUserWallet(payment: Payment): Promise<void> {
