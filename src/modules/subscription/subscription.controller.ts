@@ -9,6 +9,7 @@ import {
   UseGuards,
   Request,
   Query,
+  ForbiddenException,
 } from '@nestjs/common';
 import { SubscriptionService } from './subscription.service';
 import { CreateSubscriptionDto } from './dto/create-subscription.dto';
@@ -90,8 +91,12 @@ export class SubscriptionController {
 
   @Get(':id')
   @UseGuards(JwtAuthGuard)
-  async findOne(@Param('id') id: string) {
-    return await this.subscriptionService.findOne(id);
+  async findOne(@Param('id') id: string, @Request() req) {
+    const subscription = await this.subscriptionService.findOne(id);
+    if (subscription.user_id !== req.user.id && req.user.role !== 'admin') {
+      throw new ForbiddenException('You do not have access to this subscription');
+    }
+    return subscription;
   }
 
   @Patch(':id')
@@ -99,25 +104,40 @@ export class SubscriptionController {
   async update(
     @Param('id') id: string,
     @Body() updateSubscriptionDto: UpdateSubscriptionDto,
+    @Request() req,
   ) {
+    const subscription = await this.subscriptionService.findOne(id);
+    if (subscription.user_id !== req.user.id && req.user.role !== 'admin') {
+      throw new ForbiddenException('You do not have access to this subscription');
+    }
     return await this.subscriptionService.update(id, updateSubscriptionDto);
   }
 
   @Patch(':id/cancel')
   @UseGuards(JwtAuthGuard)
-  async cancel(@Param('id') id: string) {
+  async cancel(@Param('id') id: string, @Request() req) {
+    const subscription = await this.subscriptionService.findOne(id);
+    if (subscription.user_id !== req.user.id && req.user.role !== 'admin') {
+      throw new ForbiddenException('You do not have access to this subscription');
+    }
     return await this.subscriptionService.cancel(id);
   }
 
   @Patch(':id/suspend')
   @UseGuards(JwtAuthGuard)
-  async suspend(@Param('id') id: string) {
+  async suspend(@Param('id') id: string, @Request() req) {
+    if (req.user.role !== 'admin') {
+      throw new ForbiddenException('Only admins can suspend subscriptions');
+    }
     return await this.subscriptionService.suspend(id);
   }
 
   @Patch(':id/reactivate')
   @UseGuards(JwtAuthGuard)
-  async reactivate(@Param('id') id: string) {
+  async reactivate(@Param('id') id: string, @Request() req) {
+    if (req.user.role !== 'admin') {
+      throw new ForbiddenException('Only admins can reactivate subscriptions');
+    }
     return await this.subscriptionService.reactivate(id);
   }
 
@@ -129,7 +149,11 @@ export class SubscriptionController {
 
   @Delete(':id')
   @UseGuards(JwtAuthGuard)
-  async remove(@Param('id') id: string) {
+  async remove(@Param('id') id: string, @Request() req) {
+    const subscription = await this.subscriptionService.findOne(id);
+    if (subscription.user_id !== req.user.id && req.user.role !== 'admin') {
+      throw new ForbiddenException('You do not have access to this subscription');
+    }
     return await this.subscriptionService.remove(id);
   }
 }
