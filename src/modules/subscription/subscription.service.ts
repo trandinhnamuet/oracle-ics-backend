@@ -165,9 +165,6 @@ export class SubscriptionService {
 
     const savedSubscription = await this.subscriptionRepository.save(subscription);
 
-    // Save wallet transaction (không cần update reference_id vì đã tạo payment_id)
-    await this.walletTransactionRepository.save(walletTransaction);
-
     // Không tạo Payment record cho phương thức account_balance vì tiền đã có sẵn trong hệ thống.
     // Payment chỉ ghi nhận các giao dịch tiền đi vào hệ thống (nạp tiền, QR, chuyển khoản).
 
@@ -509,7 +506,7 @@ export class SubscriptionService {
 
     const walletTransaction = this.walletTransactionRepository.create({
       wallet_id: userWallet.id,
-      payment_id: crypto.randomUUID(),
+      payment_id: null,
       change_amount: -packageCost,
       balance_after: balanceAfter,
       type: 'manual_renewal',
@@ -745,16 +742,15 @@ export class SubscriptionService {
       await this.userWalletService.deductBalance(subscription.user_id, packageCost);
       this.appendRenewalLog(`    [AutoRenew] Đã trừ ví: ${balanceBefore} → ${balanceAfter}`);
 
-      const renewalPaymentId = crypto.randomUUID();
       const walletTransaction = this.walletTransactionRepository.create({
         wallet_id: userWallet.id,
-        payment_id: renewalPaymentId,
+        payment_id: null,
         change_amount: -packageCost,
         balance_after: balanceAfter,
         type: 'auto_renewal',
       });
       await this.walletTransactionRepository.save(walletTransaction);
-      this.appendRenewalLog(`    [AutoRenew] Đã tạo wallet_transaction id=${walletTransaction.id ?? renewalPaymentId}`);
+      this.appendRenewalLog(`    [AutoRenew] Đã tạo wallet_transaction id=${walletTransaction.id}`);
 
       const prevEndDate = new Date(subscription.end_date);
       const newEndDate = new Date(prevEndDate);

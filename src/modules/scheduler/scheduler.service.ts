@@ -49,18 +49,6 @@ export class SchedulerService implements OnModuleInit {
     }
   }
 
-  // Run every hour as backup
-  @Cron(CronExpression.EVERY_HOUR)
-  async handleHourlySubscriptionCheck() {
-    this.logger.debug('Running hourly subscription check');
-    
-    try {
-      await this.subscriptionService.checkExpiredSubscriptions();
-    } catch (error) {
-      this.logger.error('Error during hourly subscription check:', error);
-    }
-  }
-
   // Safety net: every 24h, clean up pending subscriptions older than 30 minutes
   // that may have lost their in-memory timer (e.g., from a previous restart)
   @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
