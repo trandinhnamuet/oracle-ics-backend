@@ -760,6 +760,7 @@ export class SubscriptionService {
       const newEndDate = new Date(prevEndDate);
       newEndDate.setMonth(newEndDate.getMonth() + 1);
       subscription.end_date = this.toEndOfDay(newEndDate);
+      subscription.status = 'active';
       await this.subscriptionRepository.save(subscription);
 
       this.appendRenewalLog(
