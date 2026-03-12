@@ -153,6 +153,7 @@ export class PaymentService {
 
     const currentBalance = Number(userWallet.balance);
     const amount = Number(payment.amount);
+    const balanceAfterCredit = currentBalance + amount;
 
     // Credit: tiền vào hệ thống qua QR — tính vào Tổng nạp
     await this.walletTransactionRepository.save(
@@ -160,7 +161,7 @@ export class PaymentService {
         wallet_id: userWallet.id,
         payment_id: payment.id,
         change_amount: amount,
-        balance_after: currentBalance,
+        balance_after: balanceAfterCredit,
         type: 'qr_payment_received',
       }),
     );
