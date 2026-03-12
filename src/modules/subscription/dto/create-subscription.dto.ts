@@ -17,7 +17,7 @@ export class CreateSubscriptionDto {
 
   @IsBoolean()
   @IsOptional()
-  auto_renew?: boolean;
+  auto_renew?: boolean = true;
 
   @IsOptional()
   configuration?: any;

@@ -23,7 +23,7 @@ export class Subscription {
   @Column({ type: 'varchar', length: 20, default: 'active' })
   status: string; // active, expired, cancelled, suspended
 
-  @Column({ type: 'boolean', default: false })
+  @Column({ type: 'boolean', default: true })
   auto_renew: boolean;
 
   @Column({ type: 'decimal', precision: 15, scale: 2 })

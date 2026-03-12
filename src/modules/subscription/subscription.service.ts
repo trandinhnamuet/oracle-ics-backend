@@ -632,25 +632,33 @@ export class SubscriptionService {
     this.appendRenewalLog(`===== BẮT ĐẦU KIỂM TRA SUBSCRIPTION =====`);
     this.appendRenewalLog(`Thời điểm kiểm tra (now): ${now.toISOString()}`);
 
-    let allActive: Subscription[];
+    // Quét cả active lẫn expired có auto_renew=true để retry gia hạn
+    let allCandidates: Subscription[];
     try {
-      allActive = await this.subscriptionRepository.find({
-        where: { status: 'active' },
-        relations: ['cloudPackage'],
-      });
+      const [active, expiredAutoRenew] = await Promise.all([
+        this.subscriptionRepository.find({
+          where: { status: 'active' },
+          relations: ['cloudPackage'],
+        }),
+        this.subscriptionRepository.find({
+          where: { status: 'expired', auto_renew: true },
+          relations: ['cloudPackage'],
+        }),
+      ]);
+      allCandidates = [...active, ...expiredAutoRenew];
     } catch (dbErr: any) {
       this.appendRenewalLog(`LỖI truy vấn DB: ${dbErr?.message ?? dbErr}`);
       return;
     }
 
-    this.appendRenewalLog(`Tổng số subscription đang active: ${allActive.length}`);
+    this.appendRenewalLog(`Tổng số subscription cần kiểm tra: ${allCandidates.length} (active + expired có auto_renew)`);
 
     let countChecked = 0;
     let countExpiredNoRenew = 0;
     let countAutoRenew = 0;
     let countNotYetExpired = 0;
 
-    for (const subscription of allActive) {
+    for (const subscription of allCandidates) {
       const endDateRaw = subscription.end_date;
       const endDate = new Date(endDateRaw);
       const isExpired = endDate < now;
