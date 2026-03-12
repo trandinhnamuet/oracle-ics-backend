@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, Between } from 'typeorm';
 import { WalletTransaction } from '../../entities/wallet-transaction.entity';
 import { CreateWalletTransactionDto } from './dto/create-wallet-transaction.dto';
 import { UpdateWalletTransactionDto } from './dto/update-wallet-transaction.dto';
@@ -102,6 +102,44 @@ export class WalletTransactionService {
       totalDeposits,
       totalWithdrawals,
       netAmount: totalDeposits - totalWithdrawals,
+    };
+  }
+
+  async adminFindAll(options: {
+    page: number;
+    limit: number;
+    userId?: number;
+    month?: string; // 'YYYY-MM'
+  }): Promise<{ data: WalletTransaction[]; total: number; page: number; limit: number; totalPages: number }> {
+    const { page, limit, userId, month } = options;
+    const skip = (page - 1) * limit;
+
+    const qb = this.walletTransactionRepository
+      .createQueryBuilder('wt')
+      .leftJoinAndSelect('wt.wallet', 'wallet')
+      .leftJoinAndSelect('wallet.user', 'user')
+      .orderBy('wt.created_at', 'DESC');
+
+    if (userId) {
+      qb.andWhere('wallet.user_id = :userId', { userId });
+    }
+
+    if (month) {
+      // month format: YYYY-MM
+      const [year, mon] = month.split('-').map(Number);
+      const start = new Date(year, mon - 1, 1);
+      const end = new Date(year, mon, 1); // exclusive
+      qb.andWhere('wt.created_at >= :start AND wt.created_at < :end', { start, end });
+    }
+
+    const [data, total] = await qb.skip(skip).take(limit).getManyAndCount();
+
+    return {
+      data,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
     };
   }
 }
