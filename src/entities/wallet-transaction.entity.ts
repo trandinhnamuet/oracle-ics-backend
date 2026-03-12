@@ -9,8 +9,8 @@ export class WalletTransaction {
   @Column({ type: 'integer' })
   wallet_id: number;
 
-  @Column({ type: 'uuid' })
-  payment_id: string;
+  @Column({ type: 'uuid', nullable: true })
+  payment_id: string | null;
 
   @Column({ type: 'numeric', precision: 18, scale: 6 })
   change_amount: number;
