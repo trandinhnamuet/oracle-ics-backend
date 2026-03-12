@@ -9,6 +9,8 @@ import { Payment } from '../../entities/payment.entity';
 import { VmInstance } from '../../entities/vm-instance.entity';
 import { VmActionsLog } from '../../entities/vm-actions-log.entity';
 import * as crypto from 'crypto';
+import * as fs from 'fs';
+import * as path from 'path';
 import { CreateSubscriptionDto } from './dto/create-subscription.dto';
 import { UpdateSubscriptionDto } from './dto/update-subscription.dto';
 import { UserWalletService } from '../user-wallet/user-wallet.service';
@@ -21,6 +23,19 @@ import { NotificationType } from '../../entities/notification.entity';
 export class SubscriptionService {
   private readonly logger = new Logger(SubscriptionService.name);
   private readonly pendingDeletionTimers = new Map<string, NodeJS.Timeout>();
+
+  /** Ghi log chi tiết vào file logs/subscription-renewal.log để dễ debug */
+  private appendRenewalLog(message: string): void {
+    try {
+      const logDir = path.join(process.cwd(), 'logs');
+      if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+      const logFile = path.join(logDir, 'subscription-renewal.log');
+      const ts = new Date().toISOString();
+      fs.appendFileSync(logFile, `[${ts}] ${message}\n`, 'utf8');
+    } catch (_) {
+      // Không để lỗi log file làm ảnh hưởng logic chính
+    }
+  }
 
   /**
    * Normalize a Date to the very end of that calendar day (23:59:59.999).
@@ -614,26 +629,53 @@ export class SubscriptionService {
 
   async checkExpiredSubscriptions(): Promise<void> {
     const now = new Date();
+    this.appendRenewalLog(`===== BẮT ĐẦU KIỂM TRA SUBSCRIPTION =====`);
+    this.appendRenewalLog(`Thời điểm kiểm tra (now): ${now.toISOString()}`);
 
-    const expiredSubscriptions = await this.subscriptionRepository.find({
-      where: {
-        status: 'active',
-      },
-      relations: ['cloudPackage'],
-    });
+    let allActive: Subscription[];
+    try {
+      allActive = await this.subscriptionRepository.find({
+        where: { status: 'active' },
+        relations: ['cloudPackage'],
+      });
+    } catch (dbErr: any) {
+      this.appendRenewalLog(`LỖI truy vấn DB: ${dbErr?.message ?? dbErr}`);
+      return;
+    }
 
-    for (const subscription of expiredSubscriptions) {
-      // end_date is stored as 23:59:59.999 of the last valid day, so the
-      // subscription is expired only after that moment passes.
-      // Wrap in new Date() to ensure proper comparison regardless of how TypeORM returns the value.
-      if (new Date(subscription.end_date) < now) {
+    this.appendRenewalLog(`Tổng số subscription đang active: ${allActive.length}`);
+
+    let countChecked = 0;
+    let countExpiredNoRenew = 0;
+    let countAutoRenew = 0;
+    let countNotYetExpired = 0;
+
+    for (const subscription of allActive) {
+      const endDateRaw = subscription.end_date;
+      const endDate = new Date(endDateRaw);
+      const isExpired = endDate < now;
+
+      countChecked++;
+      this.appendRenewalLog(
+        `  [${countChecked}] id=${subscription.id} | user_id=${subscription.user_id}` +
+        ` | pkg=${subscription.cloudPackage?.name ?? subscription.cloud_package_id}` +
+        ` | end_date_raw=${endDateRaw} (type=${typeof endDateRaw})` +
+        ` | end_date_parsed=${endDate.toISOString()}` +
+        ` | is_expired=${isExpired}` +
+        ` | auto_renew=${subscription.auto_renew}`,
+      );
+
+      if (isExpired) {
         if (subscription.auto_renew) {
+          countAutoRenew++;
+          this.appendRenewalLog(`    → Gọi attemptAutoRenewal cho subscription ${subscription.id}`);
           await this.attemptAutoRenewal(subscription);
         } else {
+          countExpiredNoRenew++;
+          this.appendRenewalLog(`    → Đánh dấu EXPIRED (không có auto_renew)`);
           subscription.status = 'expired';
           await this.subscriptionRepository.save(subscription);
 
-          // Notify user: subscription expired
           const pkgName = subscription.cloudPackage?.name ?? `#${subscription.cloud_package_id}`;
           await this.notificationService.notify(
             subscription.user_id,
@@ -645,65 +687,77 @@ export class SubscriptionService {
             `Your "${pkgName}" plan has expired. Subscribe again to continue using the service.`,
           );
         }
+      } else {
+        countNotYetExpired++;
       }
     }
+
+    this.appendRenewalLog(
+      `===== KẾT THÚC KIỂM TRA =====` +
+      ` | Tổng=${countChecked}` +
+      ` | Chưa hết hạn=${countNotYetExpired}` +
+      ` | Hết hạn không gia hạn=${countExpiredNoRenew}` +
+      ` | Đã gọi auto_renew=${countAutoRenew}`,
+    );
   }
 
   private async attemptAutoRenewal(subscription: Subscription): Promise<void> {
-    try {
-      // Get user wallet (sử dụng UserWalletService để auto-create nếu cần)
-      const userWallet = await this.userWalletService.findByUserId(subscription.user_id);
+    const subId = subscription.id;
+    const pkgName = subscription.cloudPackage?.name ?? `#${subscription.cloud_package_id}`;
+    this.appendRenewalLog(`    [AutoRenew START] sub=${subId} | pkg=${pkgName} | user=${subscription.user_id}`);
 
-      // Convert to number for accurate comparison
+    try {
+      const userWallet = await this.userWalletService.findByUserId(subscription.user_id);
       const currentBalance = parseFloat(userWallet.balance.toString());
       const packageCost = parseFloat(subscription.cloudPackage.cost_vnd.toString());
 
+      this.appendRenewalLog(
+        `    [AutoRenew] wallet_id=${userWallet.id} | balance=${currentBalance} | cost=${packageCost} | sufficient=${currentBalance >= packageCost}`,
+      );
+
       if (currentBalance < packageCost) {
-        // Insufficient balance, expire subscription
         subscription.status = 'expired';
         await this.subscriptionRepository.save(subscription);
+        this.appendRenewalLog(`    [AutoRenew FAIL] Số dư không đủ → đánh dấu EXPIRED | sub=${subId}`);
 
-        // Notify user: auto-renewal failed → subscription expired
         await this.notificationService.notify(
           subscription.user_id,
           NotificationType.SUBSCRIPTION_EXPIRED,
           '⚠️ Gói dịch vụ đã hết hạn',
-          `Gói "${subscription.cloudPackage?.name ?? `#${subscription.cloud_package_id}`}" đã hết hạn do số dư ví không đủ để gia hạn tự động.`,
-          { subscription_id: subscription.id },
+          `Gói "${pkgName}" đã hết hạn do số dư ví không đủ để gia hạn tự động.`,
+          { subscription_id: subId },
           '⚠️ Subscription expired',
-          `Your "${subscription.cloudPackage?.name ?? `#${subscription.cloud_package_id}`}" plan expired due to insufficient wallet balance for automatic renewal.`,
+          `Your "${pkgName}" plan expired due to insufficient wallet balance for automatic renewal.`,
         );
         return;
       }
 
-      // Deduct balance using UserWalletService
       const balanceBefore = currentBalance;
       const balanceAfter = balanceBefore - packageCost;
       await this.userWalletService.deductBalance(subscription.user_id, packageCost);
+      this.appendRenewalLog(`    [AutoRenew] Đã trừ ví: ${balanceBefore} → ${balanceAfter}`);
 
-      // Create wallet transaction với cấu trúc mới
       const renewalPaymentId = crypto.randomUUID();
       const walletTransaction = this.walletTransactionRepository.create({
         wallet_id: userWallet.id,
         payment_id: renewalPaymentId,
-        change_amount: -packageCost, // Negative for debit
+        change_amount: -packageCost,
         balance_after: balanceAfter,
         type: 'auto_renewal',
       });
-
       await this.walletTransactionRepository.save(walletTransaction);
+      this.appendRenewalLog(`    [AutoRenew] Đã tạo wallet_transaction id=${walletTransaction.id ?? renewalPaymentId}`);
 
-      // Extend end date by exactly 1 month from the previous end_date,
-      // then normalize to end-of-day to preserve full-day billing cycles.
-      const prevEndDate = new Date(subscription.end_date); // ensure it's a Date object
+      const prevEndDate = new Date(subscription.end_date);
       const newEndDate = new Date(prevEndDate);
       newEndDate.setMonth(newEndDate.getMonth() + 1);
       subscription.end_date = this.toEndOfDay(newEndDate);
-
       await this.subscriptionRepository.save(subscription);
 
-      // Notify user: renewed + wallet debit
-      const pkgName = subscription.cloudPackage?.name ?? `#${subscription.cloud_package_id}`;
+      this.appendRenewalLog(
+        `    [AutoRenew SUCCESS] sub=${subId} | end_date cũ=${prevEndDate.toISOString()} | end_date mới=${subscription.end_date.toISOString()}`,
+      );
+
       const fmtCost = new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(packageCost);
       const fmtEnd = subscription.end_date.toLocaleDateString('vi-VN');
       const fmtEndEn = subscription.end_date.toLocaleDateString('en-US');
@@ -712,7 +766,7 @@ export class SubscriptionService {
         NotificationType.SUBSCRIPTION_RENEWED,
         '✅ Gói dịch vụ đã được gia hạn',
         `Gói "${pkgName}" đã được tự động gia hạn đến ${fmtEnd}. Đã trừ ${fmtCost} từ ví của bạn.`,
-        { subscription_id: subscription.id, package_name: pkgName, amount: packageCost, new_end_date: subscription.end_date },
+        { subscription_id: subId, package_name: pkgName, amount: packageCost, new_end_date: subscription.end_date },
         '✅ Subscription renewed',
         `"${pkgName}" was automatically renewed until ${fmtEndEn}. ${fmtCost} was deducted from your wallet.`,
       );
@@ -721,12 +775,15 @@ export class SubscriptionService {
         NotificationType.WALLET_DEBIT,
         '💸 Ví bị trừ tiền',
         `Đã trừ ${fmtCost} để gia hạn gói "${pkgName}". Số dư còn lại: ${new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(balanceAfter)}.`,
-        { amount: packageCost, balance_after: balanceAfter, subscription_id: subscription.id },
+        { amount: packageCost, balance_after: balanceAfter, subscription_id: subId },
         '💸 Wallet debited',
         `${fmtCost} was deducted to renew "${pkgName}". Remaining balance: ${new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(balanceAfter)}.`,
       );
-    } catch (error) {
-      // If renewal fails, expire subscription
+    } catch (error: any) {
+      this.appendRenewalLog(
+        `    [AutoRenew ERROR] sub=${subId} | ${error?.message ?? error}\n    Stack: ${error?.stack ?? ''}`,
+      );
+      // Nếu gia hạn thất bại vì lý do không mong muốn, đánh dấu expired
       subscription.status = 'expired';
       await this.subscriptionRepository.save(subscription);
     }
