@@ -625,7 +625,8 @@ export class SubscriptionService {
     for (const subscription of expiredSubscriptions) {
       // end_date is stored as 23:59:59.999 of the last valid day, so the
       // subscription is expired only after that moment passes.
-      if (subscription.end_date < now) {
+      // Wrap in new Date() to ensure proper comparison regardless of how TypeORM returns the value.
+      if (new Date(subscription.end_date) < now) {
         if (subscription.auto_renew) {
           await this.attemptAutoRenewal(subscription);
         } else {
@@ -694,7 +695,8 @@ export class SubscriptionService {
 
       // Extend end date by exactly 1 month from the previous end_date,
       // then normalize to end-of-day to preserve full-day billing cycles.
-      const newEndDate = new Date(subscription.end_date);
+      const prevEndDate = new Date(subscription.end_date); // ensure it's a Date object
+      const newEndDate = new Date(prevEndDate);
       newEndDate.setMonth(newEndDate.getMonth() + 1);
       subscription.end_date = this.toEndOfDay(newEndDate);
 

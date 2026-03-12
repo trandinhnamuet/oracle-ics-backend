@@ -14,10 +14,10 @@ export class Subscription {
   @Column({ type: 'integer' })
   cloud_package_id: number;
 
-  @Column({ type: 'date' })
+  @Column({ type: 'timestamp' })
   start_date: Date;
 
-  @Column({ type: 'date' })
+  @Column({ type: 'timestamp' })
   end_date: Date;
 
   @Column({ type: 'varchar', length: 20, default: 'active' })
