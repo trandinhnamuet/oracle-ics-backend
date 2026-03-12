@@ -129,13 +129,15 @@ export class SepayService {
           //   debit  (-amount, 'qr_subscription_payment') → tính vào Tổng chi
           // Ví của người dùng không thay đổi (tiền đến thẳng ngân hàng).
           const userWallet = await this.userWalletService.findByUserId(payment.user_id);
+          const currentWalletBalance = Number(userWallet.balance);
+          const balanceAfterCredit = currentWalletBalance + Number(payment.amount);
 
           // Credit — Tổng nạp
           await this.userWalletService.createTransaction({
             wallet_id: userWallet.id,
             payment_id: payment.id,
             change_amount: payment.amount,
-            balance_after: userWallet.balance,
+            balance_after: balanceAfterCredit,
             type: 'qr_payment_received',
           });
 
@@ -144,7 +146,7 @@ export class SepayService {
             wallet_id: userWallet.id,
             payment_id: payment.id,
             change_amount: -payment.amount,
-            balance_after: userWallet.balance,
+            balance_after: currentWalletBalance,
             type: 'qr_subscription_payment',
           });
 
