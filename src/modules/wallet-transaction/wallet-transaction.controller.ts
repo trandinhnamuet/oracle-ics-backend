@@ -42,6 +42,7 @@ export class WalletTransactionController {
     @Query('limit') limit?: string,
     @Query('userId') userId?: string,
     @Query('month') month?: string, // format: YYYY-MM
+    @Query('amountFilter') amountFilter?: string,
   ) {
     if (req.user.role !== 'admin') throw new ForbiddenException();
     return await this.walletTransactionService.adminFindAll({
@@ -49,6 +50,7 @@ export class WalletTransactionController {
       limit: limit ? parseInt(limit) : 20,
       userId: userId ? parseInt(userId) : undefined,
       month,
+      amountFilter: (amountFilter === 'positive' || amountFilter === 'negative') ? amountFilter : undefined,
     });
   }
 
