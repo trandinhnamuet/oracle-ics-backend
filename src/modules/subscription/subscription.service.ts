@@ -23,6 +23,8 @@ import { NotificationType } from '../../entities/notification.entity';
 export class SubscriptionService {
   private readonly logger = new Logger(SubscriptionService.name);
   private readonly pendingDeletionTimers = new Map<string, NodeJS.Timeout>();
+  /** Guard chống cron chạy đè nhau: nếu lần trước chưa xong thì bỏ qua run mới */
+  private isRenewalRunning = false;
 
   /** Ghi log chi tiết vào file logs/subscription-renewal.log để dễ debug */
   private appendRenewalLog(message: string): void {
@@ -164,6 +166,9 @@ export class SubscriptionService {
     });
 
     const savedSubscription = await this.subscriptionRepository.save(subscription);
+
+    // Save wallet transaction (không cần update reference_id vì đã tạo payment_id)
+    await this.walletTransactionRepository.save(walletTransaction);
 
     // Không tạo Payment record cho phương thức account_balance vì tiền đã có sẵn trong hệ thống.
     // Payment chỉ ghi nhận các giao dịch tiền đi vào hệ thống (nạp tiền, QR, chuyển khoản).
@@ -506,7 +511,7 @@ export class SubscriptionService {
 
     const walletTransaction = this.walletTransactionRepository.create({
       wallet_id: userWallet.id,
-      payment_id: null,
+      payment_id: crypto.randomUUID(),
       change_amount: -packageCost,
       balance_after: balanceAfter,
       type: 'manual_renewal',
@@ -625,6 +630,13 @@ export class SubscriptionService {
   }
 
   async checkExpiredSubscriptions(): Promise<void> {
+    // Ngăn chạy đồng thời: nếu lần trước chưa xong thì bỏ qua
+    if (this.isRenewalRunning) {
+      this.appendRenewalLog(`[SKIP] checkExpiredSubscriptions đang bận từ lần chạy trước, bỏ qua run này.`);
+      return;
+    }
+    this.isRenewalRunning = true;
+    try {
     const now = new Date();
     this.appendRenewalLog(`===== BẮT ĐẦU KIỂM TRA SUBSCRIPTION =====`);
     this.appendRenewalLog(`Thời điểm kiểm tra (now): ${now.toISOString()}`);
@@ -704,6 +716,9 @@ export class SubscriptionService {
       ` | Hết hạn không gia hạn=${countExpiredNoRenew}` +
       ` | Đã gọi auto_renew=${countAutoRenew}`,
     );
+    } finally {
+      this.isRenewalRunning = false;
+    }
   }
 
   private async attemptAutoRenewal(subscription: Subscription): Promise<void> {
@@ -744,7 +759,7 @@ export class SubscriptionService {
 
       const walletTransaction = this.walletTransactionRepository.create({
         wallet_id: userWallet.id,
-        payment_id: null,
+        payment_id: null, // auto-renewal không liên quan đến Payment record
         change_amount: -packageCost,
         balance_after: balanceAfter,
         type: 'auto_renewal',
