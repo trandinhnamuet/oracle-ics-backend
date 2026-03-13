@@ -101,6 +101,7 @@ export class SubscriptionService {
   async createWithAccountBalance(
     userId: number, 
     cloudPackageId: number, 
+    monthsCount: number = 1,
     autoRenew: boolean = false
   ): Promise<Subscription> {
     // Get cloud package
@@ -115,13 +116,18 @@ export class SubscriptionService {
     // Get user wallet (sử dụng UserWalletService để auto-create nếu cần)
     const userWallet = await this.userWalletService.findByUserId(userId);
 
+    if (!Number.isFinite(monthsCount) || monthsCount < 1 || monthsCount > 24) {
+      throw new BadRequestException('monthsCount must be between 1 and 24');
+    }
+
     // Check balance - Convert to number for accurate comparison
     const currentBalance = parseFloat(userWallet.balance.toString());
-    const packageCost = parseFloat(cloudPackage.cost_vnd.toString());
+    const packageCost = parseFloat(cloudPackage.cost_vnd.toString()) * monthsCount;
     
     console.log('[SubscriptionService][createWithAccountBalance] Balance check:', {
       userId,
       cloudPackageId,
+      monthsCount,
       currentBalance,
       packageCost,
       sufficient: currentBalance >= packageCost
@@ -152,7 +158,7 @@ export class SubscriptionService {
     // Create subscription — end_date is always the end of the last day of the billing cycle
     const startDate = new Date();
     const endDate = new Date();
-    endDate.setMonth(endDate.getMonth() + 1);
+    endDate.setMonth(endDate.getMonth() + monthsCount);
 
     const subscription = this.subscriptionRepository.create({
       user_id: userId,
@@ -162,7 +168,7 @@ export class SubscriptionService {
       status: 'active',
       auto_renew: autoRenew,
       amount_paid: packageCost,
-      months_paid: 1,
+      months_paid: monthsCount,
     });
 
     const savedSubscription = await this.subscriptionRepository.save(subscription);
@@ -181,10 +187,10 @@ export class SubscriptionService {
       userId,
       NotificationType.SUBSCRIPTION_CREATED,
       '🚀 Đăng ký gói dịch vụ thành công',
-      `Gói "${cloudPackage.name}" đã được kích hoạt đến ${fmtEnd}. Đã trừ ${fmtCost} từ ví của bạn.`,
-      { subscription_id: savedSubscription.id, package_name: cloudPackage.name, amount: packageCost, end_date: savedSubscription.end_date },
+      `Gói "${cloudPackage.name}" đã được kích hoạt đến ${fmtEnd} (${monthsCount} tháng). Đã trừ ${fmtCost} từ ví của bạn.`,
+      { subscription_id: savedSubscription.id, package_name: cloudPackage.name, amount: packageCost, months_paid: monthsCount, end_date: savedSubscription.end_date },
       '🚀 Subscription activated',
-      `"${cloudPackage.name}" is now active until ${fmtEndEn}. ${fmtCost} was deducted from your wallet.`,
+      `"${cloudPackage.name}" is now active until ${fmtEndEn} (${monthsCount} month(s)). ${fmtCost} was deducted from your wallet.`,
     );
 
     return savedSubscription;
