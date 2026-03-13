@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Payment } from '../../entities/payment.entity';
@@ -13,6 +13,8 @@ import { v4 as uuidv4 } from 'uuid';
 
 @Injectable()
 export class PaymentService {
+  private static readonly PAYMENT_EXPIRE_MS = 15 * 60 * 1000;
+
   constructor(
     @InjectRepository(Payment)
     private paymentRepository: Repository<Payment>,
@@ -111,6 +113,17 @@ export class PaymentService {
     // Check if already completed
     if (payment.status === 'success') {
       return payment;
+    }
+
+    if (payment.status === 'pending') {
+      const createdAtMs = new Date(payment.created_at).getTime();
+      const isExpired = Date.now() - createdAtMs >= PaymentService.PAYMENT_EXPIRE_MS;
+
+      if (isExpired) {
+        payment.status = 'expired';
+        await this.paymentRepository.save(payment);
+        throw new BadRequestException('Payment has expired (over 15 minutes).');
+      }
     }
 
     // Update payment status
