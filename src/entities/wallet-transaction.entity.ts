@@ -12,6 +12,9 @@ export class WalletTransaction {
   @Column({ type: 'uuid', nullable: true })
   payment_id: string | null;
 
+  @Column({ type: 'uuid', nullable: true })
+  subscription_id: string | null;
+
   @Column({ type: 'numeric', precision: 18, scale: 6 })
   change_amount: number;
 

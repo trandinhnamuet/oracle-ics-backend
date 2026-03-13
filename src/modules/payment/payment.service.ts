@@ -173,6 +173,7 @@ export class PaymentService {
       this.walletTransactionRepository.create({
         wallet_id: userWallet.id,
         payment_id: payment.id,
+        subscription_id: payment.subscription_id ?? null,
         change_amount: amount,
         balance_after: balanceAfterCredit,
         type: 'qr_payment_received',
@@ -184,6 +185,7 @@ export class PaymentService {
       this.walletTransactionRepository.create({
         wallet_id: userWallet.id,
         payment_id: payment.id,
+        subscription_id: payment.subscription_id ?? null,
         change_amount: -amount,
         balance_after: currentBalance,
         type: 'qr_subscription_payment',
