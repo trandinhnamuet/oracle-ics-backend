@@ -1,6 +1,7 @@
 import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn } from 'typeorm';
 import { User } from './user.entity';
 import { Subscription } from './subscription.entity';
+import { CloudPackage } from './cloud-package.entity';
 
 @Entity('payments', { schema: 'oracle' })
 export class Payment {
@@ -50,4 +51,8 @@ export class Payment {
   @ManyToOne(() => Subscription)
   @JoinColumn({ name: 'subscription_id' })
   subscription?: Subscription;
+
+  @ManyToOne(() => CloudPackage)
+  @JoinColumn({ name: 'cloud_package_id' })
+  cloudPackage?: CloudPackage;
 }
