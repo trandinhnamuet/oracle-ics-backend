@@ -77,11 +77,11 @@ export class SepayService {
           await this.notificationService.notify(
             payment.user_id,
             NotificationType.WALLET_CREDIT,
-            '💰 Tiền đã được nạp vào tài khoản',
-            `Tài khoản của bạn vừa được cộng ${formatted}. Số dư mới: ${new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(updatedWallet.balance)}.`,
+            '💰 Nạp tiền thành công',
+            `Bạn đã nạp thành công ${formatted} vào tài khoản. Số dư mới: ${new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(updatedWallet.balance)}.`,
             { amount: payment.amount, balance_after: updatedWallet.balance, payment_id: payment.id },
-            '💰 Balance topped up',
-            `${formatted} was added to your account. New balance: ${new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(updatedWallet.balance)}.`,
+            '💰 Deposit successful',
+            `You have successfully deposited ${formatted} to your account. New balance: ${new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(updatedWallet.balance)}.`,
           );
         } else if (payment.payment_type === 'subscription') {
           // Kích hoạt subscription

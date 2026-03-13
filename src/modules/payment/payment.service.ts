@@ -269,6 +269,23 @@ export class PaymentService {
 
     const savedTx = await this.walletTransactionRepository.save(walletTransaction);
     console.log(`[PaymentService][updateUserWallet] walletTransaction saved id=${savedTx.id} wallet_id=${savedTx.wallet_id} change_amount=${savedTx.change_amount}`);
+
+    const formattedAmount = new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(paymentAmountNum);
+    const formattedBalance = new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(balanceAfter);
+
+    await this.notificationService.notify(
+      payment.user_id,
+      NotificationType.WALLET_CREDIT,
+      '💰 Nạp tiền thành công',
+      `Bạn đã nạp thành công ${formattedAmount} vào tài khoản. Số dư mới: ${formattedBalance}.`,
+      {
+        amount: paymentAmountNum,
+        balance_after: balanceAfter,
+        payment_id: payment.id,
+      },
+      '💰 Deposit successful',
+      `You have successfully deposited ${formattedAmount} to your account. New balance: ${formattedBalance}.`,
+    );
   }
 
   async handleSepayCallback(data: any): Promise<any> {
