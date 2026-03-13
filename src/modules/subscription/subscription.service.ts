@@ -142,19 +142,7 @@ export class SubscriptionService {
     const balanceAfter = balanceBefore - packageCost;
     await this.userWalletService.deductBalance(userId, packageCost);
 
-    // Create wallet transaction — payment_id is null because no Payment record exists
-    // for account_balance payments (money was already in the wallet)
-    const walletTransaction = this.walletTransactionRepository.create({
-      wallet_id: userWallet.id,
-      payment_id: null,
-      change_amount: -packageCost, // Negative for debit
-      balance_after: balanceAfter,
-      type: 'subscription_payment',
-    });
-
-    await this.walletTransactionRepository.save(walletTransaction);
-
-    // Create subscription — end_date is always the end of the last day of the billing cycle
+    // Create subscription first so we have its ID for the wallet transaction
     const startDate = new Date();
     const endDate = new Date();
     endDate.setMonth(endDate.getMonth() + monthsCount);
@@ -171,6 +159,19 @@ export class SubscriptionService {
     });
 
     const savedSubscription = await this.subscriptionRepository.save(subscription);
+
+    // Create wallet transaction — payment_id is null (no Payment record for account_balance),
+    // subscription_id links this debit to the subscription it paid for
+    const walletTransaction = this.walletTransactionRepository.create({
+      wallet_id: userWallet.id,
+      payment_id: null,
+      subscription_id: savedSubscription.id,
+      change_amount: -packageCost, // Negative for debit
+      balance_after: balanceAfter,
+      type: 'subscription_payment',
+    });
+
+    await this.walletTransactionRepository.save(walletTransaction);
 
     // Không tạo Payment record cho phương thức account_balance vì tiền đã có sẵn trong hệ thống.
     // Payment chỉ ghi nhận các giao dịch tiền đi vào hệ thống (nạp tiền, QR, chuyển khoản).
@@ -515,6 +516,7 @@ export class SubscriptionService {
     const walletTransaction = this.walletTransactionRepository.create({
       wallet_id: userWallet.id,
       payment_id: null,
+      subscription_id: subscription.id,
       change_amount: -packageCost,
       balance_after: balanceAfter,
       type: 'manual_renewal',
@@ -763,6 +765,7 @@ export class SubscriptionService {
       const walletTransaction = this.walletTransactionRepository.create({
         wallet_id: userWallet.id,
         payment_id: null, // auto-renewal không liên quan đến Payment record
+        subscription_id: subscription.id,
         change_amount: -packageCost,
         balance_after: balanceAfter,
         type: 'auto_renewal',
