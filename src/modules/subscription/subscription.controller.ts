@@ -33,12 +33,13 @@ export class SubscriptionController {
   @Post('subscribe-with-balance')
   @UseGuards(JwtAuthGuard)
   async subscribeWithBalance(
-    @Body() body: { cloudPackageId: number; autoRenew?: boolean },
+    @Body() body: { cloudPackageId: number; monthsCount?: number; autoRenew?: boolean },
     @Request() req,
   ) {
     return await this.subscriptionService.createWithAccountBalance(
       req.user.id,
       body.cloudPackageId,
+      body.monthsCount,
       body.autoRenew,
     );
   }
