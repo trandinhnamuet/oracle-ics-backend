@@ -66,7 +66,7 @@ export class PaymentService {
   async findOne(id: string): Promise<Payment> {
     const payment = await this.paymentRepository.findOne({
       where: { id },
-      relations: ['user'],
+      relations: ['user', 'cloudPackage'],
     });
 
     if (!payment) {
