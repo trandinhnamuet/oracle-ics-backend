@@ -406,27 +406,21 @@ export class VmSubscriptionService {
   /**
    * Get VM details for a subscription
    */
-  async getSubscriptionVm(subscriptionId: string, userId: number) {
+  async getSubscriptionVm(subscriptionId: string, userId: number, role?: string) {
     console.log('\n========== GET SUBSCRIPTION VM ==========');
     console.log('🔑 Subscription ID:', subscriptionId);
     console.log('👤 User ID:', userId);
-    
+    console.log('🛡️  Role:', role);
+
+    const isAdmin = role === 'admin';
+
     const subscription = await this.subscriptionRepo.findOne({
-      where: { id: subscriptionId, user_id: userId },
+      where: isAdmin ? { id: subscriptionId } : { id: subscriptionId, user_id: userId },
       relations: ['cloudPackage', 'user'],
     });
 
     if (!subscription) {
       console.log('❌ Subscription NOT FOUND');
-      // Log all subscriptions for this user to help debug
-      const allUserSubscriptions = await this.subscriptionRepo.find({
-        where: { user_id: userId },
-      });
-      console.log('📊 Total subscriptions for user:', allUserSubscriptions.length);
-      console.log('📋 All subscription IDs:');
-      allUserSubscriptions.forEach((sub, index) => {
-        console.log(`  [${index}] ${sub.id}`);
-      });
       console.log('========================================\n');
       throw new NotFoundException('Subscription not found');
     }
@@ -476,8 +470,8 @@ export class VmSubscriptionService {
 
     console.log('✅ VM found in database');
 
-    // Get fresh data from OCI
-    const vmDetail = await this.vmProvisioningService.getVmById(userId, vm.id);
+    // Get fresh data from OCI (use subscription owner's userId to pass vm-provisioning ownership check)
+    const vmDetail = await this.vmProvisioningService.getVmById(subscription.user_id, vm.id);
     console.log('✅ VM details retrieved from OCI');
     console.log('========================================\n');
 

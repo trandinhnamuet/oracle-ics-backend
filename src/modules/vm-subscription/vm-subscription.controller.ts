@@ -30,7 +30,8 @@ export class VmSubscriptionController {
     @Param('subscriptionId') subscriptionId: string,
   ) {
     const userId = req.user.id;
-    return this.vmSubscriptionService.getSubscriptionVm(subscriptionId, userId);
+    const role = req.user.role;
+    return this.vmSubscriptionService.getSubscriptionVm(subscriptionId, userId, role);
   }
 
   /**
