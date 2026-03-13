@@ -11,6 +11,7 @@ import { NotificationType } from '../../entities/notification.entity';
 @Injectable()
 export class SepayService {
   private readonly logger = new Logger(SepayService.name);
+  private static readonly PAYMENT_EXPIRE_MS = 15 * 60 * 1000;
 
   constructor(
     @InjectRepository(Payment)
@@ -42,10 +43,13 @@ export class SepayService {
       });
 
       // Tìm payment theo amount và thời gian gần đây (trong vòng 1 giờ)
+      const validFrom = new Date(Date.now() - SepayService.PAYMENT_EXPIRE_MS);
+
       const payment = await this.paymentRepository
         .createQueryBuilder('payment')
         .where('payment.amount = :amount', { amount: webhookData.transferAmount })
         .andWhere('payment.status = :status', { status: 'pending' })
+        .andWhere('payment.created_at >= :validFrom', { validFrom })
         .orderBy('payment.id', 'DESC')
         .getOne();
 
@@ -62,6 +66,13 @@ export class SepayService {
       });
       
       if (payment) {
+        const paymentAgeMs = Date.now() - new Date(payment.created_at).getTime();
+        if (paymentAgeMs >= SepayService.PAYMENT_EXPIRE_MS) {
+          await this.paymentRepository.update(payment.id, { status: 'expired' });
+          this.logger.warn(`Payment ${payment.id} expired before webhook confirmation`);
+          return { success: false, message: 'Payment expired (over 15 minutes)' };
+        }
+
         this.logger.log(`Found payment: ${payment.id}, type: ${payment.payment_type}, subscription_id: ${payment.subscription_id}`);
         // Cập nhật payment status
         await this.paymentRepository.update(payment.id, { status: 'success' });
