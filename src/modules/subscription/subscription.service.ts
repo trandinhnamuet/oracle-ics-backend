@@ -142,12 +142,11 @@ export class SubscriptionService {
     const balanceAfter = balanceBefore - packageCost;
     await this.userWalletService.deductBalance(userId, packageCost);
 
-    // Create wallet transaction với cấu trúc mới
-    const paymentId = crypto.randomUUID();
-
+    // Create wallet transaction — payment_id is null because no Payment record exists
+    // for account_balance payments (money was already in the wallet)
     const walletTransaction = this.walletTransactionRepository.create({
       wallet_id: userWallet.id,
-      payment_id: paymentId,
+      payment_id: null,
       change_amount: -packageCost, // Negative for debit
       balance_after: balanceAfter,
       type: 'subscription_payment',
@@ -172,9 +171,6 @@ export class SubscriptionService {
     });
 
     const savedSubscription = await this.subscriptionRepository.save(subscription);
-
-    // Save wallet transaction (không cần update reference_id vì đã tạo payment_id)
-    await this.walletTransactionRepository.save(walletTransaction);
 
     // Không tạo Payment record cho phương thức account_balance vì tiền đã có sẵn trong hệ thống.
     // Payment chỉ ghi nhận các giao dịch tiền đi vào hệ thống (nạp tiền, QR, chuyển khoản).
@@ -515,9 +511,10 @@ export class SubscriptionService {
     const balanceAfter = balanceBefore - packageCost;
     await this.userWalletService.deductBalance(userId, packageCost);
 
+    // payment_id is null — manual renewal debits from wallet, no Payment record exists
     const walletTransaction = this.walletTransactionRepository.create({
       wallet_id: userWallet.id,
-      payment_id: crypto.randomUUID(),
+      payment_id: null,
       change_amount: -packageCost,
       balance_after: balanceAfter,
       type: 'manual_renewal',
