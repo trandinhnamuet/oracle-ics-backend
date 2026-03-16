@@ -192,7 +192,7 @@ export class BandwidthService {
           u.email      AS user_email,
           u.first_name,
           u.last_name,
-          u.company_name,
+          u.company AS company_name,
           s.status     AS subscription_status,
           cp.name      AS package_name
        FROM oracle.vm_instances vi
