@@ -1,13 +1,13 @@
-import { Injectable, Logger } from '@nestjs/common';
+﻿import { Injectable, Logger } from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { OciService } from '../oci/oci.service';
-import { BandwidthLog } from '../../entities/bandwidth-log.entity';
+import { BandwidthSnapshot } from '../../entities/bandwidth-log.entity';
 import { VmInstance } from '../../entities/vm-instance.entity';
 
-// 10TB limit in bytes
-const BANDWIDTH_LIMIT_BYTES = 10 * 1024 * 1024 * 1024 * 1024; // 10TB
 const BANDWIDTH_LIMIT_TB = 10;
+// OCI Monitoring retains raw metrics for 90 days
+const OCI_RETENTION_DAYS = 90;
 
 @Injectable()
 export class BandwidthService {
@@ -15,478 +15,387 @@ export class BandwidthService {
 
   constructor(
     @InjectDataSource() private dataSource: DataSource,
-    @InjectRepository(BandwidthLog) private bandwidthLogRepository: Repository<BandwidthLog>,
-    @InjectRepository(VmInstance) private vmInstanceRepository: Repository<VmInstance>,
+    @InjectRepository(BandwidthSnapshot)
+    private snapshotRepository: Repository<BandwidthSnapshot>,
+    @InjectRepository(VmInstance)
+    private vmInstanceRepository: Repository<VmInstance>,
     private readonly ociService: OciService,
   ) {}
 
-  /**
-   * Get bandwidth usage for all VMs including deleted/past machines
-   * Logic: 
-   * - Get all VMs that ever existed (created_at <= endTime)
-   * - For active VMs: Get current metrics from OCI + historical logs
-   * - For deleted/terminated VMs: Get bandwidth from historical logs
-   * - Combine both sources for comprehensive bandwidth report
-   */
-  async getAllVmsBandwidthUsage(timeRange: string = '30d') {
-    try {
-      // Calculate time range first to filter VMs that existed during this period
-      const { startTime, endTime } = this.getTimeRange(timeRange);
+  // ────────────────────────────────────────
+  // Utility helpers
+  // ────────────────────────────────────────
 
-      // Get all VMs that were created during or before the time range (including deleted ones)
-      const vms = await this.dataSource.query(`
-        SELECT 
+  /**
+   * Parse "YYYY-MM" to start/end Date objects.
+   * endTime is capped to now() for the current (incomplete) month.
+   */
+  private getMonthRange(yearMonth: string): { startTime: Date; endTime: Date } {
+    const [year, month] = yearMonth.split('-').map(Number);
+    const startTime = new Date(year, month - 1, 1, 0, 0, 0, 0);
+    const lastDay = new Date(year, month, 0).getDate();
+    const endTime = new Date(year, month - 1, lastDay, 23, 59, 59, 999);
+    const now = new Date();
+    return { startTime, endTime: endTime > now ? now : endTime };
+  }
+
+  /** Returns the current month as "YYYY-MM" */
+  currentYearMonth(): string {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  }
+
+  /**
+   * Check whether a time window falls within OCI Monitoring’s 90-day retention.
+   * If endTime is within the last 90 days we can still query OCI directly.
+   */
+  private isWithinOciRetention(endTime: Date): boolean {
+    const cutoff = new Date(
+      Date.now() - OCI_RETENTION_DAYS * 24 * 60 * 60 * 1000,
+    );
+    return endTime > cutoff;
+  }
+
+  // ────────────────────────────────────────
+  // VNIC caching
+  // ────────────────────────────────────────
+
+  /**
+   * Ensure the VM has its OCI VNIC ID cached in vm_instances.vnic_id.
+   * Lazy-fetches from OCI and persists to DB on first call.
+   * Returns the vnic_id or null if unavailable.
+   */
+  async ensureVnicIdCached(
+    vm: { id: number; instance_id: string; compartment_id: string; vnic_id?: string | null },
+  ): Promise<string | null> {
+    if (vm.vnic_id) return vm.vnic_id;
+
+    try {
+      const vnicId = await this.ociService.getVnicIdForInstance(
+        vm.instance_id,
+        vm.compartment_id,
+      );
+      if (vnicId) {
+        await this.dataSource.query(
+          `UPDATE oracle.vm_instances SET vnic_id = $1 WHERE id = $2`,
+          [vnicId, vm.id],
+        );
+        vm.vnic_id = vnicId;
+        this.logger.log(`Cached vnic_id for VM ${vm.instance_id}`);
+      }
+      return vnicId;
+    } catch (error) {
+      this.logger.warn(
+        `Could not fetch vnic_id for VM ${vm.instance_id}: ${error.message}`,
+      );
+      return null;
+    }
+  }
+
+  // ────────────────────────────────────────
+  // Core bandwidth query
+  // ────────────────────────────────────────
+
+  /**
+   * Get egress + ingress bytes for a single VM for a given month.
+   *
+   * Priority:
+   *   1. OCI oci_vcn.VnicBytesOut/In with .sum()  ← single source of truth
+   *      (used when month is within 90-day OCI retention AND vnic_id is known)
+   *   2. DB monthly snapshot  ← fallback for older months or missing VNIC
+   *
+   * There is NO mixing/adding of OCI + DB data for the same period.
+   */
+  async getVmMonthlyBandwidth(
+    vm: any,
+    yearMonth: string,
+  ): Promise<{ bytesOut: number; bytesIn: number; dataSource: 'oci' | 'archived' | 'none' }> {
+    const { startTime, endTime } = this.getMonthRange(yearMonth);
+
+    // Lazily cache VNIC ID for active VMs
+    const isTerminated = ['TERMINATED', 'TERMINATING'].includes(
+      vm.lifecycle_state || '',
+    );
+    if (!isTerminated && !vm.vnic_id) {
+      vm.vnic_id = await this.ensureVnicIdCached(vm);
+    }
+
+    const canQueryOci =
+      this.isWithinOciRetention(endTime) && !!vm.vnic_id;
+
+    if (canQueryOci) {
+      try {
+        const [bytesOut, bytesIn] = await Promise.all([
+          this.ociService.getVnicEgressBytes(
+            vm.vnic_id,
+            vm.compartment_id,
+            startTime,
+            endTime,
+          ),
+          this.ociService.getVnicIngressBytes(
+            vm.vnic_id,
+            vm.compartment_id,
+            startTime,
+            endTime,
+          ),
+        ]);
+        this.logger.debug(
+          `VM ${vm.instance_id} | ${yearMonth}: egress=${bytesOut} B, ingress=${bytesIn} B`,
+        );
+        return { bytesOut, bytesIn, dataSource: 'oci' };
+      } catch (error) {
+        this.logger.warn(
+          `OCI query failed for VM ${vm.instance_id}: ${error.message} — checking DB`,
+        );
+      }
+    }
+
+    // Fallback: DB monthly snapshot
+    const snapshot = await this.snapshotRepository.findOne({
+      where: { instance_id: vm.instance_id, year_month: yearMonth },
+    });
+    if (snapshot) {
+      return {
+        bytesOut: Number(snapshot.bytes_out_total),
+        bytesIn: Number(snapshot.bytes_in_total),
+        dataSource: 'archived',
+      };
+    }
+
+    return { bytesOut: 0, bytesIn: 0, dataSource: 'none' };
+  }
+
+  // ────────────────────────────────────────
+  // Public API methods
+  // ────────────────────────────────────────
+
+  /**
+   * Get bandwidth usage for ALL VMs for a given calendar month.
+   * yearMonth format: "YYYY-MM" (e.g. "2026-03").
+   */
+  async getAllVmsBandwidthUsage(yearMonth: string) {
+    const { endTime } = this.getMonthRange(yearMonth);
+
+    // All VMs created in or before the queried month
+    const vms = await this.dataSource.query(
+      `SELECT
           vi.id,
           vi.instance_id,
           vi.instance_name,
           vi.public_ip,
           vi.lifecycle_state,
+          vi.compartment_id,
+          vi.vnic_id,
           vi.user_id,
           vi.subscription_id,
-          vi.created_at as vm_created_at,
-          u.email as user_email,
+          vi.created_at AS vm_created_at,
+          u.email      AS user_email,
           u.first_name,
           u.last_name,
-          s.status as subscription_status,
-          cp.name as package_name
-        FROM oracle.vm_instances vi
-        LEFT JOIN oracle.users u ON vi.user_id = u.id
-        LEFT JOIN oracle.subscriptions s ON vi.subscription_id = s.id
-        LEFT JOIN oracle.cloud_packages cp ON s.cloud_package_id = cp.id
-        WHERE vi.instance_id IS NOT NULL
-          AND vi.created_at <= $1
-        ORDER BY vi.created_at DESC
-      `, [endTime]);
+          u.company_name,
+          s.status     AS subscription_status,
+          cp.name      AS package_name
+       FROM oracle.vm_instances vi
+       LEFT JOIN oracle.users u          ON vi.user_id          = u.id
+       LEFT JOIN oracle.subscriptions s  ON vi.subscription_id  = s.id
+       LEFT JOIN oracle.cloud_packages cp ON s.cloud_package_id = cp.id
+       WHERE vi.instance_id IS NOT NULL
+         AND vi.created_at <= $1
+       ORDER BY vi.created_at DESC`,
+      [endTime],
+    );
 
-      this.logger.log(`Found ${vms.length} VMs created by ${endTime.toISOString()} for bandwidth check`);
+    this.logger.log(
+      `Bandwidth query — month: ${yearMonth}, VMs found: ${vms.length}`,
+    );
 
-      if (vms.length === 0) {
-        this.logger.warn('No VMs found in database for the given time range. Returning empty result.');
-        return {
-          summary: {
-            totalVMs: 0,
-            overLimitVMs: 0,
-            nearLimitVMs: 0,
-            totalBandwidthUsedTB: 0,
-            averageUsagePercentage: 0,
-          },
-          vms: [],
-        };
-      }
-
-      // Get bandwidth usage for each VM from both current OCI metrics and historical logs
-      const vmsBandwidthData = await Promise.all(
-        vms.map(async (vm) => {
-          try {
-            // Get combined bandwidth data from OCI (if active) and historical logs (if deleted or always)
-            const bandwidthData = await this.calculateVmBandwidthWithHistory(
-              vm,
-              startTime,
-              endTime,
-            );
-
-            const totalBandwidthTB = bandwidthData.totalBytes / (1024 * 1024 * 1024 * 1024);
-            const usagePercentage = (totalBandwidthTB / BANDWIDTH_LIMIT_TB) * 100;
-            const remainingTB = BANDWIDTH_LIMIT_TB - totalBandwidthTB;
-            const exceededTB = totalBandwidthTB > BANDWIDTH_LIMIT_TB ? totalBandwidthTB - BANDWIDTH_LIMIT_TB : 0;
-
-            return {
-              vmId: vm.id,
-              instanceId: vm.instance_id,
-              instanceName: vm.instance_name,
-              publicIp: vm.public_ip,
-              lifecycleState: vm.lifecycle_state,
-              userId: vm.user_id,
-              userEmail: vm.user_email,
-              userName: vm.first_name && vm.last_name ? `${vm.first_name} ${vm.last_name}` : vm.user_email,
-              companyName: vm.company_name,
-              subscriptionId: vm.subscription_id,
-              subscriptionStatus: vm.subscription_status,
-              packageName: vm.package_name,
-              vmCreatedAt: vm.vm_created_at,
-              isDeleted: vm.lifecycle_state === 'TERMINATED' || vm.lifecycle_state === 'TERMINATING',
-              bandwidth: {
-                bytesIn: bandwidthData.bytesIn,
-                bytesOut: bandwidthData.bytesOut,
-                totalBytes: bandwidthData.totalBytes,
-                totalTB: parseFloat(totalBandwidthTB.toFixed(4)),
-                usagePercentage: parseFloat(usagePercentage.toFixed(2)),
-                remainingTB: parseFloat(remainingTB.toFixed(4)),
-                exceededTB: parseFloat(exceededTB.toFixed(4)),
-                limitTB: BANDWIDTH_LIMIT_TB,
-                isOverLimit: totalBandwidthTB > BANDWIDTH_LIMIT_TB,
-                isNearLimit: usagePercentage >= 80 && usagePercentage < 100, // Warning at 80%
-                dataSource: bandwidthData.dataSource, // 'oci', 'history', or 'combined'
-              },
-              timeRange: {
-                startTime: startTime.toISOString(),
-                endTime: endTime.toISOString(),
-                range: timeRange,
-              },
-            };
-          } catch (error) {
-            this.logger.error(`Error getting bandwidth for VM ${vm.instance_id}:`, error.message);
-            return {
-              vmId: vm.id,
-              instanceId: vm.instance_id,
-              instanceName: vm.instance_name,
-              publicIp: vm.public_ip,
-              lifecycleState: vm.lifecycle_state,
-              userId: vm.user_id,
-              userEmail: vm.user_email,
-              userName: vm.first_name && vm.last_name ? `${vm.first_name} ${vm.last_name}` : vm.user_email,
-              companyName: vm.company_name,
-              subscriptionId: vm.subscription_id,
-              subscriptionStatus: vm.subscription_status,
-              packageName: vm.package_name,
-              vmCreatedAt: vm.vm_created_at,
-              isDeleted: vm.lifecycle_state === 'TERMINATED' || vm.lifecycle_state === 'TERMINATING',
-              bandwidth: {
-                error: error.message,
-                totalTB: 0,
-                usagePercentage: 0,
-                isOverLimit: false,
-                isNearLimit: false,
-                dataSource: 'error',
-              },
-              timeRange: {
-                startTime: startTime.toISOString(),
-                endTime: endTime.toISOString(),
-                range: timeRange,
-              },
-            };
-          }
-        }),
-      );
-
-      // Sort by usage percentage (highest first)
-      vmsBandwidthData.sort((a, b) => {
-        const aPercentage = a.bandwidth.usagePercentage || 0;
-        const bPercentage = b.bandwidth.usagePercentage || 0;
-        return bPercentage - aPercentage;
-      });
-
-      // Calculate summary statistics
-      const summary = {
-        totalVMs: vmsBandwidthData.length,
-        overLimitVMs: vmsBandwidthData.filter(vm => vm.bandwidth.isOverLimit).length,
-        nearLimitVMs: vmsBandwidthData.filter(vm => vm.bandwidth.isNearLimit).length,
-        totalBandwidthUsedTB: parseFloat(
-          vmsBandwidthData.reduce((sum, vm) => sum + (vm.bandwidth.totalTB || 0), 0).toFixed(4)
-        ),
-        averageUsagePercentage: parseFloat(
-          (vmsBandwidthData.reduce((sum, vm) => sum + (vm.bandwidth.usagePercentage || 0), 0) / vmsBandwidthData.length || 0).toFixed(2)
-        ),
-        deletedVMCount: vmsBandwidthData.filter(vm => vm.isDeleted).length,
-      };
-
+    if (vms.length === 0) {
       return {
-        summary,
-        vms: vmsBandwidthData,
-      };
-    } catch (error) {
-      this.logger.error('Error in getAllVmsBandwidthUsage:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Get bandwidth usage for a specific VM
-   */
-  async getVmBandwidthUsage(instanceId: string, timeRange: string = '7d') {
-    try {
-      const { startTime, endTime } = this.getTimeRange(timeRange);
-      const bandwidthData = await this.calculateVmBandwidth(instanceId, startTime, endTime);
-
-      const totalBandwidthTB = bandwidthData.totalBytes / (1024 * 1024 * 1024 * 1024);
-      const usagePercentage = (totalBandwidthTB / BANDWIDTH_LIMIT_TB) * 100;
-      const remainingTB = BANDWIDTH_LIMIT_TB - totalBandwidthTB;
-      const exceededTB = totalBandwidthTB > BANDWIDTH_LIMIT_TB ? totalBandwidthTB - BANDWIDTH_LIMIT_TB : 0;
-
-      return {
-        instanceId,
-        bandwidth: {
-          bytesIn: bandwidthData.bytesIn,
-          bytesOut: bandwidthData.bytesOut,
-          totalBytes: bandwidthData.totalBytes,
-          totalTB: parseFloat(totalBandwidthTB.toFixed(4)),
-          usagePercentage: parseFloat(usagePercentage.toFixed(2)),
-          remainingTB: parseFloat(remainingTB.toFixed(4)),
-          exceededTB: parseFloat(exceededTB.toFixed(4)),
-          limitTB: BANDWIDTH_LIMIT_TB,
-          isOverLimit: totalBandwidthTB > BANDWIDTH_LIMIT_TB,
-          isNearLimit: usagePercentage >= 80 && usagePercentage < 100,
+        summary: {
+          totalVMs: 0,
+          overLimitVMs: 0,
+          nearLimitVMs: 0,
+          totalEgressTB: 0,
+          averageUsagePercentage: 0,
         },
-        timeRange: {
-          startTime: startTime.toISOString(),
-          endTime: endTime.toISOString(),
-          range: timeRange,
-        },
+        vms: [],
+        month: yearMonth,
       };
-    } catch (error) {
-      this.logger.error(`Error in getVmBandwidthUsage for ${instanceId}:`, error);
-      throw error;
     }
-  }
 
-  /**
-   * Calculate bandwidth for a VM from both OCI metrics and historical logs
-   * For active VMs: combines current OCI metrics with historical logs
-   * For deleted/terminated VMs: retrieves from historical logs only
-   */
-  private async calculateVmBandwidthWithHistory(
-    vm: any,
-    startTime: Date,
-    endTime: Date,
-  ): Promise<{ 
-    bytesIn: number; 
-    bytesOut: number; 
-    totalBytes: number;
-    dataSource: 'oci' | 'history' | 'combined' | 'none';
-  }> {
-    try {
-      const isDeleted = vm.lifecycle_state === 'TERMINATED' || vm.lifecycle_state === 'TERMINATING';
-      
-      let ociData = { bytesIn: 0, bytesOut: 0, totalBytes: 0 };
-      let historyData = { bytesIn: 0, bytesOut: 0, totalBytes: 0 };
-      let dataSource: 'oci' | 'history' | 'combined' | 'none' = 'none';
-
-      // Try to get OCI metrics for active VMs
-      if (!isDeleted) {
+    const vmData = await Promise.all(
+      vms.map(async (vm: any) => {
         try {
-          ociData = await this.calculateVmBandwidth(vm.instance_id, startTime, endTime);
-          dataSource = 'oci';
-          this.logger.log(`Fetched OCI metrics for active VM ${vm.instance_id}`);
+          const { bytesOut, bytesIn, dataSource } =
+            await this.getVmMonthlyBandwidth(vm, yearMonth);
+
+          const egressTB = bytesOut / 1024 ** 4;
+          const usagePercentage = (egressTB / BANDWIDTH_LIMIT_TB) * 100;
+          const remainingTB = Math.max(0, BANDWIDTH_LIMIT_TB - egressTB);
+          const exceededTB =
+            egressTB > BANDWIDTH_LIMIT_TB ? egressTB - BANDWIDTH_LIMIT_TB : 0;
+
+          return {
+            vmId: vm.id,
+            instanceId: vm.instance_id,
+            instanceName: vm.instance_name,
+            publicIp: vm.public_ip,
+            lifecycleState: vm.lifecycle_state,
+            userId: vm.user_id,
+            userEmail: vm.user_email,
+            userName:
+              vm.first_name && vm.last_name
+                ? `${vm.first_name} ${vm.last_name}`
+                : vm.user_email,
+            companyName: vm.company_name,
+            subscriptionId: vm.subscription_id,
+            subscriptionStatus: vm.subscription_status,
+            packageName: vm.package_name,
+            vmCreatedAt: vm.vm_created_at,
+            bandwidth: {
+              bytesOut,
+              bytesIn,
+              egressTB: parseFloat(egressTB.toFixed(4)),
+              ingressTB: parseFloat((bytesIn / 1024 ** 4).toFixed(4)),
+              usagePercentage: parseFloat(usagePercentage.toFixed(2)),
+              remainingTB: parseFloat(remainingTB.toFixed(4)),
+              exceededTB: parseFloat(exceededTB.toFixed(4)),
+              limitTB: BANDWIDTH_LIMIT_TB,
+              isOverLimit: egressTB > BANDWIDTH_LIMIT_TB,
+              isNearLimit:
+                usagePercentage >= 80 && usagePercentage < 100,
+              dataSource,
+            },
+            month: yearMonth,
+          };
         } catch (error) {
-          this.logger.warn(`Could not fetch OCI metrics for VM ${vm.instance_id}: ${error.message}`);
+          this.logger.error(
+            `Error getting bandwidth for VM ${vm.instance_id}: ${error.message}`,
+          );
+          return {
+            vmId: vm.id,
+            instanceId: vm.instance_id,
+            instanceName: vm.instance_name,
+            publicIp: vm.public_ip,
+            lifecycleState: vm.lifecycle_state,
+            userId: vm.user_id,
+            userEmail: vm.user_email,
+            userName:
+              vm.first_name && vm.last_name
+                ? `${vm.first_name} ${vm.last_name}`
+                : vm.user_email,
+            companyName: vm.company_name,
+            subscriptionId: vm.subscription_id,
+            subscriptionStatus: vm.subscription_status,
+            packageName: vm.package_name,
+            vmCreatedAt: vm.vm_created_at,
+            bandwidth: {
+              error: error.message,
+              bytesOut: 0,
+              bytesIn: 0,
+              egressTB: 0,
+              usagePercentage: 0,
+              isOverLimit: false,
+              isNearLimit: false,
+              dataSource: 'error',
+            },
+            month: yearMonth,
+          };
         }
-      }
+      }),
+    );
 
-      // Get historical data from database
-      try {
-        historyData = await this.getVmBandwidthHistory(vm.id, startTime, endTime);
-        if (historyData.totalBytes > 0) {
-          if (dataSource === 'oci') {
-            // Combine OCI and history data
-            dataSource = 'combined';
-            // Add history to OCI data (for comprehensive tracking)
-            ociData.bytesIn += historyData.bytesIn;
-            ociData.bytesOut += historyData.bytesOut;
-            ociData.totalBytes += historyData.totalBytes;
-          } else {
-            // Use history data only
-            dataSource = 'history';
-            ociData = historyData;
-          }
-          this.logger.log(`Fetched historical bandwidth for VM ${vm.instance_id}`);
-        }
-      } catch (error) {
-        this.logger.warn(`Could not fetch historical data for VM ${vm.instance_id}: ${error.message}`);
-      }
+    // Sort: highest egress first
+    vmData.sort(
+      (a, b) =>
+        (b.bandwidth.usagePercentage || 0) - (a.bandwidth.usagePercentage || 0),
+    );
 
-      return {
-        bytesIn: ociData.bytesIn,
-        bytesOut: ociData.bytesOut,
-        totalBytes: ociData.totalBytes,
-        dataSource,
-      };
-    } catch (error) {
-      this.logger.error(`Error in calculateVmBandwidthWithHistory for VM ${vm.instance_id}:`, error);
-      return {
-        bytesIn: 0,
-        bytesOut: 0,
-        totalBytes: 0,
-        dataSource: 'none',
-      };
-    }
+    const validVms = vmData.filter((v) => !(v.bandwidth as any).error);
+    const summary = {
+      totalVMs: vmData.length,
+      overLimitVMs: vmData.filter((v) => v.bandwidth.isOverLimit).length,
+      nearLimitVMs: vmData.filter((v) => v.bandwidth.isNearLimit).length,
+      totalEgressTB: parseFloat(
+        validVms
+          .reduce((s, v) => s + (v.bandwidth.egressTB || 0), 0)
+          .toFixed(4),
+      ),
+      averageUsagePercentage:
+        validVms.length > 0
+          ? parseFloat(
+              (
+                validVms.reduce(
+                  (s, v) => s + (v.bandwidth.usagePercentage || 0),
+                  0,
+                ) / validVms.length
+              ).toFixed(2),
+            )
+          : 0,
+    };
+
+    return { summary, vms: vmData, month: yearMonth };
   }
 
-  /**
-   * Get historical bandwidth data from database for a VM
-   */
-  private async getVmBandwidthHistory(
-    vmId: number,
-    startTime: Date,
-    endTime: Date,
-  ): Promise<{ bytesIn: number; bytesOut: number; totalBytes: number }> {
-    try {
-      const historicalLogs = await this.dataSource.query(`
-        SELECT 
-          SUM(CAST(bytes_in AS BIGINT)) as total_bytes_in,
-          SUM(CAST(bytes_out AS BIGINT)) as total_bytes_out,
-          SUM(CAST(total_bytes AS BIGINT)) as total_bytes
-        FROM oracle.bandwidth_logs
-        WHERE vm_instance_id = $1
-          AND recorded_at >= $2
-          AND recorded_at <= $3
-      `, [vmId, startTime, endTime]);
-
-      if (historicalLogs && historicalLogs.length > 0 && historicalLogs[0].total_bytes_in) {
-        return {
-          bytesIn: parseInt(historicalLogs[0].total_bytes_in) || 0,
-          bytesOut: parseInt(historicalLogs[0].total_bytes_out) || 0,
-          totalBytes: parseInt(historicalLogs[0].total_bytes) || 0,
-        };
-      }
-
-      return { bytesIn: 0, bytesOut: 0, totalBytes: 0 };
-    } catch (error) {
-      this.logger.error(`Error fetching bandwidth history for VM ${vmId}:`, error);
-      return { bytesIn: 0, bytesOut: 0, totalBytes: 0 };
-    }
-  }
+  // ────────────────────────────────────────
+  // Monthly archiving (called by cron task)
+  // ────────────────────────────────────────
 
   /**
-   * Record bandwidth data to history log
-   * Called periodically to track bandwidth usage over time
-   * Includes deduplication check to prevent duplicate entries
+   * Archive one VM’s bandwidth for a completed calendar month.
+   * Inserts a single row into bandwidth_monthly_snapshots.
+   * Skips if a snapshot already exists for that VM + month.
    */
-  async recordVmBandwidth(
-    vmId: number,
-    vm: any,
-    bandwidthData: { bytesIn: number; bytesOut: number; totalBytes: number },
-  ): Promise<void> {
-    try {
-      // Check for recent duplicate entries (within last 5 minutes)
-      // This prevents duplicate logging from multiple cron jobs
-      const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
-      
-      const recentLog = await this.bandwidthLogRepository
-        .createQueryBuilder('log')
-        .where('log.vm_instance_id = :vmId', { vmId })
-        .andWhere('log.recorded_at >= :fiveMinutesAgo', { fiveMinutesAgo })
-        .andWhere('log.total_bytes = :totalBytes', { totalBytes: bandwidthData.totalBytes })
-        .getOne();
-
-      if (recentLog) {
-        this.logger.warn(
-          `Skipping duplicate bandwidth log for VM ${vm.instance_id} ` +
-          `(recent log exists at ${recentLog.recorded_at.toISOString()})`
-        );
-        return;
-      }
-
-      // Create new bandwidth log entry
-      const bandwidthLog = this.bandwidthLogRepository.create({
-        vm_instance_id: vmId,
-        user_id: vm.user_id,
-        subscription_id: vm.subscription_id,
-        instance_id: vm.instance_id,
-        instance_name: vm.instance_name,
-        lifecycle_state: vm.lifecycle_state,
-        bytes_in: bandwidthData.bytesIn,
-        bytes_out: bandwidthData.bytesOut,
-        total_bytes: bandwidthData.totalBytes,
-        recorded_at: new Date(),
-      });
-
-      await this.bandwidthLogRepository.save(bandwidthLog);
-      this.logger.log(`Recorded bandwidth for VM ${vm.instance_id}: ${bandwidthData.totalBytes} bytes`);
-    } catch (error) {
-      this.logger.error(`Error recording bandwidth for VM ${vmId}:`, error);
-    }
-  }
-
-  /**
-   * Calculate bandwidth for a VM instance based on OCI metrics only
-   * If VM is deleted/no longer exists in OCI, returns 0 bytes gracefully
-   */
-  private async calculateVmBandwidth(
-    instanceId: string,
-    startTime: Date,
-    endTime: Date,
-  ): Promise<{ bytesIn: number; bytesOut: number; totalBytes: number }> {
-    try {
-      // Get network metrics from OCI for the specified time range
-      const [networkIn, networkOut] = await Promise.all([
-        this.ociService.getNetworkBytesIn(instanceId, startTime, endTime),
-        this.ociService.getNetworkBytesOut(instanceId, startTime, endTime),
-      ]);
-
-      // Sum up all data points from OCI metrics
-
-      let totalBytesIn = 0;
-      let totalBytesOut = 0;
-
-      // Process network in metrics
-      if (networkIn && networkIn.length > 0) {
-        for (const metric of networkIn) {
-          if (metric.aggregatedDatapoints) {
-            for (const datapoint of metric.aggregatedDatapoints) {
-              totalBytesIn += datapoint.value || 0;
-            }
-          }
-        }
-      }
-
-      // Process network out metrics
-      if (networkOut && networkOut.length > 0) {
-        for (const metric of networkOut) {
-          if (metric.aggregatedDatapoints) {
-            for (const datapoint of metric.aggregatedDatapoints) {
-              totalBytesOut += datapoint.value || 0;
-            }
-          }
-        }
-      }
-
-      const totalBytes = totalBytesIn + totalBytesOut;
-
-      this.logger.log(`Bandwidth for VM ${instanceId}: In=${totalBytesIn}, Out=${totalBytesOut}, Total=${totalBytes}`);
-
-      return {
-        bytesIn: totalBytesIn,
-        bytesOut: totalBytesOut,
-        totalBytes,
-      };
-    } catch (error) {
-      // Gracefully handle errors (e.g., deleted VMs, authorization issues)
-      // Return 0 bytes instead of crashing to allow other VMs to be processed
-      // This could indicate: VM deleted, no metrics data, or OCI authorization issue
-      if (error.statusCode === 404 || error.message?.includes('NotFound')) {
-        this.logger.warn(`VM ${instanceId} not found or deleted - returning 0 bandwidth`);
-      } else {
-        this.logger.warn(`Could not fetch OCI metrics for VM ${instanceId}: ${error.message} - returning 0 bandwidth`);
-      }
-      
-      return {
-        bytesIn: 0,
-        bytesOut: 0,
-        totalBytes: 0,
-      };
-    }
-  }
-
-  /**
-   * Get time range based on string input
-   */
-  private getTimeRange(timeRange: string): { startTime: Date; endTime: Date } {
-    const endTime = new Date();
-    const startTime = new Date();
-
-    switch (timeRange) {
-      case '1h':
-        startTime.setHours(startTime.getHours() - 1);
-        break;
-      case '6h':
-        startTime.setHours(startTime.getHours() - 6);
-        break;
-      case '24h':
-        startTime.setHours(startTime.getHours() - 24);
-        break;
-      case '7d':
-        startTime.setDate(startTime.getDate() - 7);
-        break;
-      case '30d':
-        startTime.setDate(startTime.getDate() - 30);
-        break;
-      case '90d':
-        startTime.setDate(startTime.getDate() - 90);
-        break;
-      default:
-        startTime.setDate(startTime.getDate() - 30);
+  async archiveMonthlyBandwidth(vm: any, yearMonth: string): Promise<void> {
+    const existing = await this.snapshotRepository.findOne({
+      where: { instance_id: vm.instance_id, year_month: yearMonth },
+    });
+    if (existing) {
+      this.logger.debug(
+        `Snapshot already exists: VM ${vm.instance_id} / ${yearMonth}`,
+      );
+      return;
     }
 
-    return { startTime, endTime };
+    const vnicId = await this.ensureVnicIdCached(vm);
+    if (!vnicId) {
+      this.logger.warn(
+        `No vnic_id for VM ${vm.instance_id} — skipping archive for ${yearMonth}`,
+      );
+      return;
+    }
+
+    const { startTime, endTime } = this.getMonthRange(yearMonth);
+    const [bytesOut, bytesIn] = await Promise.all([
+      this.ociService.getVnicEgressBytes(
+        vnicId,
+        vm.compartment_id,
+        startTime,
+        endTime,
+      ),
+      this.ociService.getVnicIngressBytes(
+        vnicId,
+        vm.compartment_id,
+        startTime,
+        endTime,
+      ),
+    ]);
+
+    const snapshot = this.snapshotRepository.create({
+      vm_instance_id: vm.id,
+      instance_id: vm.instance_id,
+      instance_name: vm.instance_name,
+      user_id: vm.user_id,
+      subscription_id: vm.subscription_id,
+      year_month: yearMonth,
+      bytes_out_total: bytesOut,
+      bytes_in_total: bytesIn,
+      data_source: 'oci',
+    });
+
+    await this.snapshotRepository.save(snapshot);
+    this.logger.log(
+      `Archived: VM ${vm.instance_id} / ${yearMonth} | egress=${bytesOut} B, ingress=${bytesIn} B`,
+    );
   }
 }

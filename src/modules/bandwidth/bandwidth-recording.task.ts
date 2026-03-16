@@ -1,91 +1,73 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { Cron, CronExpression } from '@nestjs/schedule';
+﻿import { Injectable, Logger } from '@nestjs/common';
+import { Cron } from '@nestjs/schedule';
 import { BandwidthService } from './bandwidth.service';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { VmInstance } from '../../entities/vm-instance.entity';
+import { InjectDataSource } from '@nestjs/typeorm';
+import { DataSource } from 'typeorm';
 
 /**
- * Bandwidth Recording Task
- * Periodically records bandwidth usage for all VMs to maintain historical data
- * This allows accurate bandwidth tracking even for deleted/terminated VMs
- * 
- * NOTE: Only ONE cron job should record bandwidth to avoid duplicates
+ * BandwidthSnapshotTask
+ *
+ * Archives the PREVIOUS month’s bandwidth data into bandwidth_monthly_snapshots
+ * at 2:00 AM on the 1st of every month.
+ *
+ * This acts as a long-term archive so that bandwidth data is available even
+ * after OCI Monitoring’s 90-day metric retention window expires.
+ *
+ * Design:
+ *  - ONE cron job, runs ONCE per month
+ *  - Queries OCI oci_vcn.VnicBytesOut for the completed previous month
+ *  - INSERTs one row per VM into bandwidth_monthly_snapshots (skips if exists)
+ *  - No incremental writes, no mixing of data sources
  */
 @Injectable()
-export class BandwidthRecordingTask {
-  private readonly logger = new Logger(BandwidthRecordingTask.name);
+export class BandwidthSnapshotTask {
+  private readonly logger = new Logger(BandwidthSnapshotTask.name);
 
   constructor(
-    @InjectRepository(VmInstance) private vmInstanceRepository: Repository<VmInstance>,
+    @InjectDataSource() private dataSource: DataSource,
     private readonly bandwidthService: BandwidthService,
   ) {}
 
-  /**
-   * Record bandwidth every 6 hours
-   * This stores bandwidth metrics to the database for historical tracking
-   * Runs at: 00:00, 06:00, 12:00, 18:00 daily
-   */
-  @Cron('0 0 */6 * * *') // Every 6 hours at :00 minutes :00 seconds
-  async recordBandwidth() {
+  /** Runs at 02:00 on the 1st day of every month */
+  @Cron('0 0 2 1 * *')
+  async archivePreviousMonth() {
+    const now = new Date();
+    const prevMonthDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const yearMonth = `${prevMonthDate.getFullYear()}-${String(prevMonthDate.getMonth() + 1).padStart(2, '0')}`;
+
+    this.logger.log(`📅 Starting monthly bandwidth archive for ${yearMonth}...`);
+
     try {
-      this.logger.log('Starting 6-hour bandwidth recording task...');
-      
-      // Get all VMs (including active and deleted ones)
-      const vms = await this.vmInstanceRepository.find();
-      
-      if (!vms || vms.length === 0) {
-        this.logger.log('No VMs found for bandwidth recording');
-        return;
-      }
+      const vms = await this.dataSource.query(`
+        SELECT id, instance_id, instance_name, compartment_id, vnic_id,
+               user_id, subscription_id
+        FROM oracle.vm_instances
+        WHERE instance_id IS NOT NULL
+      `);
 
-      this.logger.log(`Recording bandwidth for ${vms.length} VMs`);
+      this.logger.log(`Archiving ${vms.length} VMs for month ${yearMonth}`);
 
-      // Get last 6 hours of data
-      const endTime = new Date();
-      const startTime = new Date(endTime.getTime() - 6 * 60 * 60 * 1000); // 6 hours ago
+      let success = 0;
+      let skipped = 0;
+      let failed = 0;
 
-      let successCount = 0;
-      let errorCount = 0;
-
-      // Record bandwidth for each VM
       for (const vm of vms) {
         try {
-          const bandwidthData = await this.bandwidthService['calculateVmBandwidth'](
-            vm.instance_id,
-            startTime,
-            endTime,
-          );
-
-          // Only record if there's actual bandwidth usage OR it's a new VM
-          if (bandwidthData.totalBytes > 0) {
-            await this.bandwidthService['recordVmBandwidth'](vm.id, vm, bandwidthData);
-            successCount++;
-          } else {
-            // Record zero bandwidth for new/inactive VMs for tracking purposes
-            await this.bandwidthService['recordVmBandwidth'](vm.id, vm, bandwidthData);
-            successCount++;
-          }
+          await this.bandwidthService.archiveMonthlyBandwidth(vm, yearMonth);
+          success++;
         } catch (error) {
-          this.logger.warn(`Failed to record bandwidth for VM ${vm.instance_id}: ${error.message}`);
-          errorCount++;
+          this.logger.warn(
+            `Failed to archive VM ${vm.instance_id}: ${error.message}`,
+          );
+          failed++;
         }
       }
 
-      this.logger.log(`Completed 6-hour bandwidth recording: ${successCount} success, ${errorCount} errors`);
+      this.logger.log(
+        `✅ Monthly archive complete for ${yearMonth}: ${success} saved, ${skipped} skipped, ${failed} failed`,
+      );
     } catch (error) {
-      this.logger.error('Error in recordBandwidth:', error);
+      this.logger.error('Monthly bandwidth archive task failed:', error);
     }
   }
-
-  /**
-   * DISABLED: Hourly recording (replaced by 6-hour recording to avoid duplicates)
-   * Previously caused duplicate logs when both hourly and 6-hour jobs ran at same time
-   * 
-   * If you need hourly recording, REMOVE the 6-hour cron job above
-   */
-  // @Cron(CronExpression.EVERY_HOUR)
-  // async recordBandwidthHourly() {
-  //   // ... hourly logic ...
-  // }
 }

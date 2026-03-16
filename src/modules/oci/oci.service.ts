@@ -1791,15 +1791,15 @@ chmod 600 ~/.ssh/authorized_keys`;
 
       // === STEP 1: Delete child records (logs and related data) ===
       
-      // Delete bandwidth_logs for VMs in this compartment
+      // Delete bandwidth_monthly_snapshots for VMs in this compartment
       const deletedBandwidthLogs = await queryRunner.query(
-        `DELETE FROM oracle.bandwidth_logs 
+        `DELETE FROM oracle.bandwidth_monthly_snapshots
          WHERE vm_instance_id IN (
            SELECT id FROM oracle.vm_instances WHERE compartment_id = $1
          ) RETURNING id`,
         [compartmentId]
       );
-      this.logger.log(`✅ Deleted ${deletedBandwidthLogs.length} bandwidth log records`);
+      this.logger.log(`✅ Deleted ${deletedBandwidthLogs.length} bandwidth snapshot records`);
 
       // Delete vm_actions_log for VMs in this compartment
       const deletedActionLogs = await queryRunner.query(
@@ -1892,6 +1892,118 @@ chmod 600 ~/.ssh/authorized_keys`;
    */
   private sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // VNIC Bandwidth methods (oci_vcn namespace, accurate .sum() totals)
+  // ─────────────────────────────────────────────────────────────────
+
+  /**
+   * Get the primary VNIC OCID for a compute instance.
+   * Uses the compartment_id already stored in the DB to avoid extra OCI calls.
+   */
+  async getVnicIdForInstance(
+    instanceId: string,
+    compartmentId: string,
+  ): Promise<string | null> {
+    try {
+      const attachments = await this.getVnicAttachments(compartmentId, instanceId);
+      if (!attachments || attachments.length === 0) return null;
+      return attachments[0].vnicId || null;
+    } catch (error) {
+      this.logger.warn(
+        `Could not get VNIC for instance ${instanceId}: ${error.message}`,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Get total EGRESS bytes (VnicBytesOut) for a VNIC over a time range.
+   *
+   * Uses namespace  : oci_vcn
+   * Uses metric     : VnicBytesOut
+   * Uses aggregation: .sum()   ← each 1h datapoint = total bytes in that hour
+   *
+   * Summing all hourly datapoints gives correct total bytes for the period.
+   * This is the outbound-traffic metric closest to what OCI uses for billing.
+   *
+   * Note: includes all outbound traffic (not only Internet egress), which is
+   * still the best approximation available via OCI Monitoring SDK.
+   */
+  async getVnicEgressBytes(
+    vnicId: string,
+    compartmentId: string,
+    startTime: Date,
+    endTime: Date,
+  ): Promise<number> {
+    try {
+      const monitoring = this.getMonitoringClient();
+      const request: oci.monitoring.requests.SummarizeMetricsDataRequest = {
+        compartmentId,
+        summarizeMetricsDataDetails: {
+          namespace: 'oci_vcn',
+          query: `VnicBytesOut[1h]{resourceId = "${vnicId}"}.sum()`,
+          startTime,
+          endTime,
+          resolution: '1h',
+        },
+      };
+
+      const response = await monitoring.summarizeMetricsData(request);
+      let totalBytes = 0;
+      for (const metric of (response.items || [])) {
+        for (const dp of (metric.aggregatedDatapoints || [])) {
+          totalBytes += dp.value || 0;
+        }
+      }
+      this.logger.debug(`VnicBytesOut for VNIC ${vnicId}: ${totalBytes} bytes`);
+      return totalBytes;
+    } catch (error) {
+      this.logger.warn(
+        `getVnicEgressBytes failed for VNIC ${vnicId}: ${error.message}`,
+      );
+      return 0;
+    }
+  }
+
+  /**
+   * Get total INGRESS bytes (VnicBytesIn) for a VNIC over a time range.
+   * OCI does not charge for ingress — shown for informational purposes only.
+   */
+  async getVnicIngressBytes(
+    vnicId: string,
+    compartmentId: string,
+    startTime: Date,
+    endTime: Date,
+  ): Promise<number> {
+    try {
+      const monitoring = this.getMonitoringClient();
+      const request: oci.monitoring.requests.SummarizeMetricsDataRequest = {
+        compartmentId,
+        summarizeMetricsDataDetails: {
+          namespace: 'oci_vcn',
+          query: `VnicBytesIn[1h]{resourceId = "${vnicId}"}.sum()`,
+          startTime,
+          endTime,
+          resolution: '1h',
+        },
+      };
+
+      const response = await monitoring.summarizeMetricsData(request);
+      let totalBytes = 0;
+      for (const metric of (response.items || [])) {
+        for (const dp of (metric.aggregatedDatapoints || [])) {
+          totalBytes += dp.value || 0;
+        }
+      }
+      return totalBytes;
+    } catch (error) {
+      this.logger.warn(
+        `getVnicIngressBytes failed for VNIC ${vnicId}: ${error.message}`,
+      );
+      return 0;
+    }
   }
 
   /**

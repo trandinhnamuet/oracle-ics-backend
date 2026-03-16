@@ -6,44 +6,51 @@ import {
   Index,
 } from 'typeorm';
 
-@Entity({ name: 'bandwidth_logs', schema: 'oracle' })
-@Index(['vm_instance_id', 'recorded_at'])
-@Index(['user_id', 'recorded_at'])
-@Index(['recorded_at'])
-export class BandwidthLog {
+/**
+ * BandwidthSnapshot — stores monthly bandwidth totals per VM.
+ * One record per VM per month.
+ * Acts as an archive once OCI Monitoring metrics expire after 90 days.
+ */
+@Entity({ name: 'bandwidth_monthly_snapshots', schema: 'oracle' })
+@Index(['instance_id', 'year_month'], { unique: true })
+@Index(['user_id', 'year_month'])
+export class BandwidthSnapshot {
   @PrimaryGeneratedColumn('increment')
   id: number;
 
-  @Column({ type: 'integer' })
-  vm_instance_id: number;
+  /** Nullable — may be null if VM record was removed from DB */
+  @Column({ type: 'integer', nullable: true })
+  vm_instance_id: number | null;
 
-  @Column({ type: 'integer' })
-  user_id: number;
-
-  @Column({ type: 'uuid', nullable: true })
-  subscription_id: string;
-
-  @Column({ type: 'varchar', length: 255 })
+  /** OCI Instance OCID */
+  @Column({ type: 'varchar', length: 500 })
   instance_id: string;
 
   @Column({ type: 'varchar', length: 255 })
   instance_name: string;
 
-  @Column({ type: 'varchar', length: 50, nullable: true })
-  lifecycle_state: string;
+  @Column({ type: 'integer' })
+  user_id: number;
 
+  @Column({ type: 'uuid', nullable: true })
+  subscription_id: string | null;
+
+  /** Format: "YYYY-MM" e.g. "2026-03" */
+  @Column({ type: 'char', length: 7 })
+  year_month: string;
+
+  /** Total egress bytes (VnicBytesOut) — what OCI charges for */
   @Column({ type: 'numeric', precision: 20, scale: 0, default: 0 })
-  bytes_in: number;
+  bytes_out_total: number;
 
+  /** Total ingress bytes (VnicBytesIn) — informational, not billed */
   @Column({ type: 'numeric', precision: 20, scale: 0, default: 0 })
-  bytes_out: number;
+  bytes_in_total: number;
 
-  @Column({ type: 'numeric', precision: 20, scale: 0, default: 0 })
-  total_bytes: number;
-
-  @Column({ type: 'timestamp' })
-  recorded_at: Date;
+  /** 'oci' = queried from OCI Monitoring API */
+  @Column({ type: 'varchar', length: 20, default: 'oci' })
+  data_source: string;
 
   @CreateDateColumn()
-  created_at: Date;
+  recorded_at: Date;
 }
