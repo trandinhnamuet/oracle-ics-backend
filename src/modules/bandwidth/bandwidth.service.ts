@@ -5,7 +5,6 @@ import { OciService } from '../oci/oci.service';
 import { BandwidthSnapshot } from '../../entities/bandwidth-log.entity';
 import { VmInstance } from '../../entities/vm-instance.entity';
 
-const BANDWIDTH_LIMIT_TB = 10;
 // OCI Monitoring retains raw metrics for 90 days
 const OCI_RETENTION_DAYS = 90;
 
@@ -234,10 +233,7 @@ export class BandwidthService {
             await this.getVmMonthlyBandwidth(vm, yearMonth);
 
           const egressTB = bytesOut / 1024 ** 4;
-          const usagePercentage = (egressTB / BANDWIDTH_LIMIT_TB) * 100;
-          const remainingTB = Math.max(0, BANDWIDTH_LIMIT_TB - egressTB);
-          const exceededTB =
-            egressTB > BANDWIDTH_LIMIT_TB ? egressTB - BANDWIDTH_LIMIT_TB : 0;
+          const ingressTB = bytesIn / 1024 ** 4;
 
           return {
             vmId: vm.id,
@@ -259,15 +255,8 @@ export class BandwidthService {
             bandwidth: {
               bytesOut,
               bytesIn,
-              egressTB: parseFloat(egressTB.toFixed(4)),
-              ingressTB: parseFloat((bytesIn / 1024 ** 4).toFixed(4)),
-              usagePercentage: parseFloat(usagePercentage.toFixed(2)),
-              remainingTB: parseFloat(remainingTB.toFixed(4)),
-              exceededTB: parseFloat(exceededTB.toFixed(4)),
-              limitTB: BANDWIDTH_LIMIT_TB,
-              isOverLimit: egressTB > BANDWIDTH_LIMIT_TB,
-              isNearLimit:
-                usagePercentage >= 80 && usagePercentage < 100,
+              egressTB: parseFloat(egressTB.toFixed(6)),
+              ingressTB: parseFloat(ingressTB.toFixed(6)),
               dataSource,
             },
             month: yearMonth,
@@ -298,9 +287,7 @@ export class BandwidthService {
               bytesOut: 0,
               bytesIn: 0,
               egressTB: 0,
-              usagePercentage: 0,
-              isOverLimit: false,
-              isNearLimit: false,
+              ingressTB: 0,
               dataSource: 'error',
             },
             month: yearMonth,
@@ -311,31 +298,19 @@ export class BandwidthService {
 
     // Sort: highest egress first
     vmData.sort(
-      (a, b) =>
-        (b.bandwidth.usagePercentage || 0) - (a.bandwidth.usagePercentage || 0),
+      (a, b) => (b.bandwidth.egressTB || 0) - (a.bandwidth.egressTB || 0),
     );
 
     const validVms = vmData.filter((v) => !(v.bandwidth as any).error);
     const summary = {
       totalVMs: vmData.length,
-      overLimitVMs: vmData.filter((v) => v.bandwidth.isOverLimit).length,
-      nearLimitVMs: vmData.filter((v) => v.bandwidth.isNearLimit).length,
+      vmsWithData: validVms.filter((v) => v.bandwidth.dataSource !== 'none').length,
       totalEgressTB: parseFloat(
-        validVms
-          .reduce((s, v) => s + (v.bandwidth.egressTB || 0), 0)
-          .toFixed(4),
+        validVms.reduce((s, v) => s + (v.bandwidth.egressTB || 0), 0).toFixed(6),
       ),
-      averageUsagePercentage:
-        validVms.length > 0
-          ? parseFloat(
-              (
-                validVms.reduce(
-                  (s, v) => s + (v.bandwidth.usagePercentage || 0),
-                  0,
-                ) / validVms.length
-              ).toFixed(2),
-            )
-          : 0,
+      totalIngressTB: parseFloat(
+        validVms.reduce((s, v) => s + (v.bandwidth.ingressTB || 0), 0).toFixed(6),
+      ),
     };
 
     return { summary, vms: vmData, month: yearMonth };
