@@ -12,6 +12,7 @@ export class OciService {
   private computeClient: oci.core.ComputeClient;
   private identityClient: oci.identity.IdentityClient;
   private virtualNetworkClient: oci.core.VirtualNetworkClient;
+  private monitoringClient: any;
   private provider: oci.common.ConfigFileAuthenticationDetailsProvider;
 
   constructor(
@@ -50,6 +51,19 @@ export class OciService {
       this.virtualNetworkClient = new oci.core.VirtualNetworkClient({
         authenticationDetailsProvider: this.provider,
       });
+
+      // Initialize Monitoring Client
+      try {
+        // monitoring client may be under oci.monitoring.MonitoringClient
+        // cast to any to avoid strict typing issues with older SDK typings
+        this.monitoringClient = new (oci as any).monitoring.MonitoringClient({
+          authenticationDetailsProvider: this.provider,
+        });
+      } catch (err) {
+        // If monitoring client is not available, log and keep undefined
+        this.logger.warn('OCI Monitoring client not available: ' + err?.message);
+        this.monitoringClient = undefined;
+      }
 
       this.logger.log('OCI SDK clients initialized successfully');
     } catch (error) {
@@ -739,6 +753,121 @@ export class OciService {
     } catch (error) {
       this.logger.error('Error getting VCN:', error);
       throw error;
+    }
+  }
+
+  // ────────────────────────────────────────
+  // VNIC + Monitoring helpers
+  // ────────────────────────────────────────
+
+  /**
+   * Try to discover the VNIC OCID for an instance by listing VNIC attachments.
+   * Returns the first VNIC OCID found, or null.
+   */
+  async getVnicIdForInstance(instanceId: string, compartmentId: string): Promise<string | null> {
+    try {
+      // Some SDK versions expose listVnicAttachments on compute client, others on virtualNetworkClient
+      const listFn = (this.computeClient as any).listVnicAttachments || (this.virtualNetworkClient as any).listVnicAttachments;
+      if (!listFn) {
+        this.logger.warn('listVnicAttachments not available in OCI SDK client');
+        return null;
+      }
+
+      const request: any = {
+        instanceId: instanceId,
+        compartmentId: compartmentId,
+        limit: 50,
+      };
+
+      const resp = await listFn.call((this.computeClient as any).listVnicAttachments ? this.computeClient : this.virtualNetworkClient, request);
+      const items: any[] = resp.items || [];
+      if (items.length === 0) return null;
+
+      // The vnic OCID is typically in the 'vnicId' field
+      const first = items[0];
+      const vnicId = first.vnicId || first.vnic_id || first.id || null;
+      return vnicId;
+    } catch (error) {
+      this.logger.warn(`getVnicIdForInstance failed for ${instanceId}: ${error?.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Query OCI Monitoring for VnicBytesOut (egress) and return total bytes in the window.
+   */
+  async getVnicEgressBytes(vnicId: string, compartmentId: string, startTime: Date, endTime: Date): Promise<number> {
+    if (!this.monitoringClient) {
+      this.logger.warn('Monitoring client not initialized');
+      return 0;
+    }
+    try {
+      const request: any = {
+        compartmentId,
+        namespace: 'oci_vcn',
+        query: `VnicBytesOut[1h].sum() {resourceId = "${vnicId}"}`,
+        startTime: startTime,
+        endTime: endTime,
+      };
+
+      const resp: any = await this.monitoringClient.summarizeMetricsData(request);
+      let total = 0;
+      const items: any[] = resp.items || resp.metricData || [];
+      for (const item of items) {
+        // aggregatedDatapoints or aggregatedDatapoints may exist depending on SDK
+        const dps = item.aggregatedDatapoints || item.datapoints || item.values || [];
+        for (const dp of dps) {
+          // dp may be {timestamp, value} or [timestamp, value]
+          if (dp && typeof dp === 'object') {
+            if ('value' in dp) total += Number(dp.value || 0);
+            else if (Array.isArray(dp) && dp.length >= 2) total += Number(dp[1] || 0);
+          }
+        }
+      }
+
+      this.logger.debug(`Monitoring egress for vnic ${vnicId}: ${total} bytes`);
+      return total;
+    } catch (error) {
+      this.logger.warn(`Monitoring egress query failed for vnic ${vnicId}: ${error?.message}`);
+      return 0;
+    }
+  }
+
+  /**
+   * Query OCI Monitoring for VnicBytesIn (ingress) and return total bytes in the window.
+   */
+  async getVnicIngressBytes(vnicId: string, compartmentId: string, startTime: Date, endTime: Date): Promise<number> {
+    if (!this.monitoringClient) {
+      this.logger.warn('Monitoring client not initialized');
+      return 0;
+    }
+    try {
+      const request: any = {
+        compartmentId,
+        namespace: 'oci_vcn',
+        query: `VnicBytesIn[1h].sum() {resourceId = "${vnicId}"}`,
+        startTime: startTime,
+        endTime: endTime,
+      };
+
+      const resp: any = await this.monitoringClient.summarizeMetricsData(request);
+      let total = 0;
+      const items: any[] = resp.items || resp.metricData || [];
+      for (const item of items) {
+        const dps = item.aggregatedDatapoints || item.datapoints || item.values || [];
+        for (const dp of dps) {
+          if (dp && typeof dp === 'object') {
+            if ('value' in dp) total += Number(dp.value || 0);
+            else if (Array.isArray(dp) && dp.length >= 2) total += Number(dp[1] || 0);
+          }
+        }
+      }
+
+      this.logger.debug(`Monitoring ingress for vnic ${vnicId}: ${total} bytes`);
+      return total;
+    } catch (error) {
+      this.logger.warn(`Monitoring ingress query failed for vnic ${vnicId}: ${error?.message}`);
+      return 0;
     }
   }
 
