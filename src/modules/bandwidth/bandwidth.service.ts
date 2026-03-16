@@ -223,8 +223,12 @@ export class BandwidthService {
       };
     }
 
-    const vmData = await Promise.all(
-      vms.map(async (vm: any) => {
+    // Xử lý tuần tự (không song song) để tránh OCI rate limit
+    // 13 VM × 2 OCI calls = 26 concurrent calls → gây lỗi "Maximum rate exceeded"
+    const vmData: any[] = [];
+    for (const vm of vms) {
+      await new Promise(r => setTimeout(r, 200)); // delay nhỏ giữa mỗi VM
+      vmData.push(await (async (vm: any) => {
         try {
           const { bytesOut, bytesIn, dataSource } =
             await this.getVmMonthlyBandwidth(vm, yearMonth);
@@ -302,8 +306,8 @@ export class BandwidthService {
             month: yearMonth,
           };
         }
-      }),
-    );
+      })(vm));
+    }
 
     // Sort: highest egress first
     vmData.sort(
