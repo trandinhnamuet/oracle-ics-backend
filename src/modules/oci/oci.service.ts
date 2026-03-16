@@ -1951,47 +1951,47 @@ chmod 600 ~/.ssh/authorized_keys`;
     startTime: Date,
     endTime: Date,
   ): Promise<number> {
-    const mqlQuery = `VnicBytesOut[1h]{resourceId = "${vnicId}"}.sum()`;
-    this.logger.log(
-      `[BW-DEBUG] getVnicEgressBytes REQUEST:\n` +
-      `  vnicId       = ${vnicId}\n` +
-      `  compartmentId= ${compartmentId}\n` +
-      `  startTime    = ${startTime.toISOString()}\n` +
-      `  endTime      = ${endTime.toISOString()}\n` +
-      `  query        = ${mqlQuery}`,
-    );
-    try {
-      const monitoring = this.getMonitoringClient();
-      const request: oci.monitoring.requests.SummarizeMetricsDataRequest = {
-        compartmentId,
-        summarizeMetricsDataDetails: {
-          namespace: 'oci_vcn',
-          query: mqlQuery,
-          startTime,
-          endTime,
-          resolution: '1h',
-        },
-      };
+    const mqlWithFilter  = `VnicBytesOut[1h]{resourceId = "${vnicId}"}.sum()`;
+    const mqlNoFilter    = `VnicBytesOut[1h].sum()`;
+    const monitoring = this.getMonitoringClient();
 
-      const response = await monitoring.summarizeMetricsData(request);
-      // Log toàn bộ raw response để debug
-      this.logger.log(
-        `[BW-DEBUG] getVnicEgressBytes RAW RESPONSE (vnic=${vnicId}):\n` +
-        JSON.stringify(response, null, 2),
-      );
-
-      let totalBytes = 0;
-      for (const metric of (response.items || [])) {
-        for (const dp of (metric.aggregatedDatapoints || [])) {
-          totalBytes += dp.value || 0;
-        }
+    const runQuery = async (cid: string, query: string, label: string): Promise<number | null> => {
+      try {
+        this.logger.log(`[BW-DEBUG] EGRESS TRY [${label}] compartment=${cid} query=${query}`);
+        const resp = await monitoring.summarizeMetricsData({
+          compartmentId: cid,
+          summarizeMetricsDataDetails: { namespace: 'oci_vcn', query, startTime, endTime, resolution: '1h' },
+        });
+        const items: any[] = resp.items || [];
+        this.logger.log(`[BW-DEBUG] EGRESS RESP [${label}] items.length=${items.length}` +
+          (items.length > 0 ? ' datapoints=' + (items[0].aggregatedDatapoints?.length ?? 0) : ''));
+        if (items.length === 0) return null;
+        let total = 0;
+        for (const m of items) for (const dp of (m.aggregatedDatapoints || [])) total += dp.value || 0;
+        return total;
+      } catch (err) {
+        this.logger.warn(`[BW-DEBUG] EGRESS ERROR [${label}]: ${err.message}`);
+        return null;
       }
-      this.logger.log(`[BW-DEBUG] getVnicEgressBytes TOTAL: ${totalBytes} bytes (vnic=${vnicId})`);
-      return totalBytes;
+    };
+
+    try {
+      // 1. Thử với compartment của VM + filter theo vnicId
+      let result = await runQuery(compartmentId, mqlWithFilter, 'vm-compartment+filter');
+      if (result !== null) return result;
+
+      // 2. Thử với tenancy root compartment + filter (OCI thường publish oci_vcn metrics ở tenancy level)
+      const tenancyId = await this.getTenancyId();
+      result = await runQuery(tenancyId, mqlWithFilter, 'tenancy+filter');
+      if (result !== null) return result;
+
+      // 3. Diagnostic: tenancy + không filter (xem có data oci_vcn nào không)
+      await runQuery(tenancyId, mqlNoFilter, 'tenancy+no-filter-DIAGNOSTIC');
+
+      this.logger.warn(`[BW-DEBUG] Không có data oci_vcn nào cho vnic=${vnicId} — kiểm tra OCI Console > Metrics Explorer`);
+      return 0;
     } catch (error) {
-      this.logger.warn(
-        `getVnicEgressBytes failed for VNIC ${vnicId}: ${error.message}\nStack: ${error.stack}`,
-      );
+      this.logger.warn(`getVnicEgressBytes failed for VNIC ${vnicId}: ${error.message}`);
       return 0;
     }
   }
@@ -2006,37 +2006,36 @@ chmod 600 ~/.ssh/authorized_keys`;
     startTime: Date,
     endTime: Date,
   ): Promise<number> {
-    const mqlQuery = `VnicBytesIn[1h]{resourceId = "${vnicId}"}.sum()`;
-    try {
-      const monitoring = this.getMonitoringClient();
-      const request: oci.monitoring.requests.SummarizeMetricsDataRequest = {
-        compartmentId,
-        summarizeMetricsDataDetails: {
-          namespace: 'oci_vcn',
-          query: mqlQuery,
-          startTime,
-          endTime,
-          resolution: '1h',
-        },
-      };
+    const mqlWithFilter = `VnicBytesIn[1h]{resourceId = "${vnicId}"}.sum()`;
+    const monitoring = this.getMonitoringClient();
 
-      const response = await monitoring.summarizeMetricsData(request);
-      this.logger.log(
-        `[BW-DEBUG] getVnicIngressBytes RAW RESPONSE (vnic=${vnicId}):\n` +
-        JSON.stringify(response, null, 2),
-      );
-
-      let totalBytes = 0;
-      for (const metric of (response.items || [])) {
-        for (const dp of (metric.aggregatedDatapoints || [])) {
-          totalBytes += dp.value || 0;
-        }
+    const runQuery = async (cid: string, query: string, label: string): Promise<number | null> => {
+      try {
+        const resp = await monitoring.summarizeMetricsData({
+          compartmentId: cid,
+          summarizeMetricsDataDetails: { namespace: 'oci_vcn', query, startTime, endTime, resolution: '1h' },
+        });
+        const items: any[] = resp.items || [];
+        this.logger.log(`[BW-DEBUG] INGRESS RESP [${label}] items.length=${items.length}`);
+        if (items.length === 0) return null;
+        let total = 0;
+        for (const m of items) for (const dp of (m.aggregatedDatapoints || [])) total += dp.value || 0;
+        return total;
+      } catch (err) {
+        this.logger.warn(`[BW-DEBUG] INGRESS ERROR [${label}]: ${err.message}`);
+        return null;
       }
-      return totalBytes;
+    };
+
+    try {
+      let result = await runQuery(compartmentId, mqlWithFilter, 'vm-compartment+filter');
+      if (result !== null) return result;
+
+      const tenancyId = await this.getTenancyId();
+      result = await runQuery(tenancyId, mqlWithFilter, 'tenancy+filter');
+      return result ?? 0;
     } catch (error) {
-      this.logger.warn(
-        `getVnicIngressBytes failed for VNIC ${vnicId}: ${error.message}\nStack: ${error.stack}`,
-      );
+      this.logger.warn(`getVnicIngressBytes failed for VNIC ${vnicId}: ${error.message}`);
       return 0;
     }
   }
