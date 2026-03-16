@@ -1951,23 +1951,27 @@ chmod 600 ~/.ssh/authorized_keys`;
     startTime: Date,
     endTime: Date,
   ): Promise<number> {
-    const mqlWithFilter  = `VnicBytesOut[1h]{resourceId = "${vnicId}"}.sum()`;
-    const mqlNoFilter    = `VnicBytesOut[1h].sum()`;
-    const monitoring = this.getMonitoringClient();
+    // Trích region từ VNIC OCID để set đúng endpoint (vd: ap-tokyo-1)
+    const regionId = this.extractRegionFromOcid(vnicId);
+    this.logger.log(`[BW-DEBUG] getVnicEgressBytes vnic=${vnicId} region=${regionId}`);
+    const monitoring = this.getMonitoringClient(regionId);
+
+    const queryWithFilter = `VnicBytesOut[1h]{resourceId = "${vnicId}"}.sum()`;
 
     const runQuery = async (cid: string, query: string, label: string): Promise<number | null> => {
       try {
-        this.logger.log(`[BW-DEBUG] EGRESS TRY [${label}] compartment=${cid} query=${query}`);
+        this.logger.log(`[BW-DEBUG] EGRESS TRY [${label}] compartment=${cid}`);
         const resp = await monitoring.summarizeMetricsData({
           compartmentId: cid,
           summarizeMetricsDataDetails: { namespace: 'oci_vcn', query, startTime, endTime, resolution: '1h' },
         });
         const items: any[] = resp.items || [];
-        this.logger.log(`[BW-DEBUG] EGRESS RESP [${label}] items.length=${items.length}` +
-          (items.length > 0 ? ' datapoints=' + (items[0].aggregatedDatapoints?.length ?? 0) : ''));
+        this.logger.log(`[BW-DEBUG] EGRESS RESP [${label}] items=${items.length}` +
+          (items.length > 0 ? ` dps=${items[0].aggregatedDatapoints?.length ?? 0}` : ''));
         if (items.length === 0) return null;
         let total = 0;
         for (const m of items) for (const dp of (m.aggregatedDatapoints || [])) total += dp.value || 0;
+        this.logger.log(`[BW-DEBUG] EGRESS TOTAL [${label}]: ${total} bytes`);
         return total;
       } catch (err) {
         this.logger.warn(`[BW-DEBUG] EGRESS ERROR [${label}]: ${err.message}`);
@@ -1976,19 +1980,16 @@ chmod 600 ~/.ssh/authorized_keys`;
     };
 
     try {
-      // 1. Thử với compartment của VM + filter theo vnicId
-      let result = await runQuery(compartmentId, mqlWithFilter, 'vm-compartment+filter');
+      // 1. Query với compartmentId của VM
+      let result = await runQuery(compartmentId, queryWithFilter, 'vm-compartment');
       if (result !== null) return result;
 
-      // 2. Thử với tenancy root compartment + filter (OCI thường publish oci_vcn metrics ở tenancy level)
+      // 2. Fallback: tenancy root level
       const tenancyId = await this.getTenancyId();
-      result = await runQuery(tenancyId, mqlWithFilter, 'tenancy+filter');
+      result = await runQuery(tenancyId, queryWithFilter, 'tenancy');
       if (result !== null) return result;
 
-      // 3. Diagnostic: tenancy + không filter (xem có data oci_vcn nào không)
-      await runQuery(tenancyId, mqlNoFilter, 'tenancy+no-filter-DIAGNOSTIC');
-
-      this.logger.warn(`[BW-DEBUG] Không có data oci_vcn nào cho vnic=${vnicId} — kiểm tra OCI Console > Metrics Explorer`);
+      this.logger.warn(`[BW-DEBUG] Không có data oci_vcn cho vnic=${vnicId} region=${regionId}`);
       return 0;
     } catch (error) {
       this.logger.warn(`getVnicEgressBytes failed for VNIC ${vnicId}: ${error.message}`);
@@ -2006,33 +2007,33 @@ chmod 600 ~/.ssh/authorized_keys`;
     startTime: Date,
     endTime: Date,
   ): Promise<number> {
-    const mqlWithFilter = `VnicBytesIn[1h]{resourceId = "${vnicId}"}.sum()`;
-    const monitoring = this.getMonitoringClient();
+    const regionId = this.extractRegionFromOcid(vnicId);
+    const monitoring = this.getMonitoringClient(regionId);
+    const queryWithFilter = `VnicBytesIn[1h]{resourceId = "${vnicId}"}.sum()`;
 
-    const runQuery = async (cid: string, query: string, label: string): Promise<number | null> => {
+    const runQuery = async (cid: string, query: string): Promise<number | null> => {
       try {
         const resp = await monitoring.summarizeMetricsData({
           compartmentId: cid,
           summarizeMetricsDataDetails: { namespace: 'oci_vcn', query, startTime, endTime, resolution: '1h' },
         });
         const items: any[] = resp.items || [];
-        this.logger.log(`[BW-DEBUG] INGRESS RESP [${label}] items.length=${items.length}`);
         if (items.length === 0) return null;
         let total = 0;
         for (const m of items) for (const dp of (m.aggregatedDatapoints || [])) total += dp.value || 0;
         return total;
       } catch (err) {
-        this.logger.warn(`[BW-DEBUG] INGRESS ERROR [${label}]: ${err.message}`);
+        this.logger.warn(`[BW-DEBUG] INGRESS ERROR: ${err.message}`);
         return null;
       }
     };
 
     try {
-      let result = await runQuery(compartmentId, mqlWithFilter, 'vm-compartment+filter');
+      let result = await runQuery(compartmentId, queryWithFilter);
       if (result !== null) return result;
 
       const tenancyId = await this.getTenancyId();
-      result = await runQuery(tenancyId, mqlWithFilter, 'tenancy+filter');
+      result = await runQuery(tenancyId, queryWithFilter);
       return result ?? 0;
     } catch (error) {
       this.logger.warn(`getVnicIngressBytes failed for VNIC ${vnicId}: ${error.message}`);
@@ -2041,12 +2042,31 @@ chmod 600 ~/.ssh/authorized_keys`;
   }
 
   /**
-   * Get monitoring client
+   * Tạo MonitoringClient với đúng region.
+   * OCI Monitoring metrics là regional — nếu không set đúng region,
+   * client sẽ query sai endpoint và trả về items: [] dù data tồn tại.
+   * regionId ví dụ: 'ap-tokyo-1', 'ap-singapore-1', ...
    */
-  private getMonitoringClient() {
-    return new oci.monitoring.MonitoringClient({
+  private getMonitoringClient(regionId?: string) {
+    const client = new oci.monitoring.MonitoringClient({
       authenticationDetailsProvider: this.provider,
     });
+    if (regionId) {
+      // set đúng regional endpoint (vd: telemetry.ap-tokyo-1.oraclecloud.com)
+      (client as any).regionId = regionId;
+    }
+    return client;
+  }
+
+  /**
+   * Trích xuất region từ OCID.
+   * OCID format: ocid1.<resourceType>.oc1.<regionId>.<uniqueId>
+   * Ví dụ: ocid1.vnic.oc1.ap-tokyo-1.abxhiljr...
+   */
+  private extractRegionFromOcid(ocid: string): string | undefined {
+    // Match: ocid1.xxx.oc1.<region>.
+    const match = ocid.match(/ocid1\.[^.]+\.oc1\.([^.]+)\./i);
+    return match ? match[1] : undefined;
   }
 
   /**
@@ -2076,7 +2096,8 @@ chmod 600 ~/.ssh/authorized_keys`;
     endTime: Date,
   ): Promise<any[]> {
     try {
-      const monitoring = this.getMonitoringClient();
+      const regionId = this.extractRegionFromOcid(instanceId);
+      const monitoring = this.getMonitoringClient(regionId);
       const compartmentId = await this.getCompartmentIdFromInstanceId(instanceId);
 
       // Calculate time range in hours
