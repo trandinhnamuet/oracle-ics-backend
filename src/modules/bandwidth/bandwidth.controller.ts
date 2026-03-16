@@ -1,4 +1,4 @@
-import {
+﻿import {
   Controller,
   Get,
   UseGuards,
@@ -18,30 +18,28 @@ export class BandwidthController {
   constructor(private readonly bandwidthService: BandwidthService) {}
 
   /**
-   * GET /bandwidth/all-vms
-   * Get bandwidth usage for all VMs including deleted/terminated machines
-   * 
-   * Data includes:
-   * - Current active VMs: OCI metrics + historical logs
-   * - Deleted/Terminated VMs: Historical logs only
-   * - Combines both sources for comprehensive bandwidth report
+   * GET /bandwidth/all-vms?month=2026-03
+   *
+   * Returns bandwidth usage for ALL VMs for a given calendar month.
+   * month format: "YYYY-MM"  (defaults to current month)
+   *
+   * Data source per VM:
+   *  - "oci"      : queried live from OCI oci_vcn.VnicBytesOut (within 90-day retention)
+   *  - "archived" : read from bandwidth_monthly_snapshots DB table (older than 90 days)
+   *  - "none"     : no data available
    */
   @Get('all-vms')
   @HttpCode(HttpStatus.OK)
-  async getAllVmsBandwidth(
-    @Query('timeRange') timeRange: string = '30d',
-  ) {
+  async getAllVmsBandwidth(@Query('month') month?: string) {
+    const yearMonth = month || this.bandwidthService.currentYearMonth();
     try {
-      this.logger.log(`Fetching bandwidth data for all VMs with timeRange: ${timeRange}`);
-      const data = await this.bandwidthService.getAllVmsBandwidthUsage(timeRange);
-      this.logger.log(`Successfully fetched bandwidth data. VMs: ${data.vms.length}`);
-      
-      return {
-        success: true,
-        data,
-      };
+      this.logger.log(`Fetching bandwidth — month: ${yearMonth}`);
+      const data =
+        await this.bandwidthService.getAllVmsBandwidthUsage(yearMonth);
+      this.logger.log(`Done. VMs: ${data.vms.length}`);
+      return { success: true, data };
     } catch (error) {
-      this.logger.error('Error fetching all VMs bandwidth:', error);
+      this.logger.error('Error fetching bandwidth:', error);
       return {
         success: false,
         error: error.message,
@@ -50,39 +48,12 @@ export class BandwidthController {
             totalVMs: 0,
             overLimitVMs: 0,
             nearLimitVMs: 0,
-            totalBandwidthUsedTB: 0,
+            totalEgressTB: 0,
             averageUsagePercentage: 0,
           },
           vms: [],
+          month: yearMonth,
         },
-      };
-    }
-  }
-
-  /**
-   * GET /bandwidth/vm/:instanceId
-   * Get bandwidth usage for a specific VM
-   */
-  @Get('vm/:instanceId')
-  @HttpCode(HttpStatus.OK)
-  async getVmBandwidth(
-    @Query('instanceId') instanceId: string,
-    @Query('timeRange') timeRange: string = '7d',
-  ) {
-    try {
-      this.logger.log(`Fetching bandwidth data for VM ${instanceId} with timeRange: ${timeRange}`);
-      const data = await this.bandwidthService.getVmBandwidthUsage(instanceId, timeRange);
-      
-      return {
-        success: true,
-        data,
-      };
-    } catch (error) {
-      this.logger.error(`Error fetching bandwidth for VM ${instanceId}:`, error);
-      return {
-        success: false,
-        error: error.message,
-        data: null,
       };
     }
   }

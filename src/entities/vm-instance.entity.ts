@@ -59,6 +59,10 @@ export class VmInstance {
   @Column({ type: 'varchar', length: 255, nullable: true })
   subnet_id: string;
 
+  /** Primary VNIC OCID — cached for OCI Monitoring (oci_vcn) bandwidth queries */
+  @Column({ type: 'varchar', length: 500, nullable: true })
+  vnic_id: string | null;
+
   @Column({ type: 'varchar', length: 50, nullable: true })
   lifecycle_state: string;
 
