@@ -1956,14 +1956,27 @@ chmod 600 ~/.ssh/authorized_keys`;
     this.logger.log(`[BW-DEBUG] getVnicEgressBytes vnic=${vnicId} region=${regionId}`);
     const monitoring = this.getMonitoringClient(regionId);
 
-    const queryWithFilter = `VnicBytesOut[1h]{resourceId = "${vnicId}"}.sum()`;
+    // One-time metric discovery
+    const tenancyId = await this.getTenancyId();
+    await this.discoverOciMetrics(monitoring, tenancyId);
 
-    const runQuery = async (cid: string, query: string, label: string): Promise<number | null> => {
+    // OCI VNIC egress metric — try multiple known name variants
+    // (official name may differ between tenancy configs)
+    const candidateMetrics = [
+      'VnicBytesOut',
+      'VnicBytesTransmitted',
+      'VnicToNetworkBytes',
+      'VnicEgressBytes',
+    ];
+
+    const runQuery = async (cid: string, metricName: string, label: string, inSubtree = false): Promise<number | null> => {
+      const query = `${metricName}[1h]{resourceId = "${vnicId}"}.sum()`;
       try {
-        this.logger.log(`[BW-DEBUG] EGRESS TRY [${label}] compartment=${cid}`);
+        this.logger.log(`[BW-DEBUG] EGRESS TRY [${label}] metric=${metricName} cid=${cid} subtree=${inSubtree}`);
         const resp = await monitoring.summarizeMetricsData({
           compartmentId: cid,
           summarizeMetricsDataDetails: { namespace: 'oci_vcn', query, startTime, endTime, resolution: '1h' },
+          compartmentIdInSubtree: inSubtree,
         });
         const items: any[] = resp.items || [];
         this.logger.log(`[BW-DEBUG] EGRESS RESP [${label}] items=${items.length}` +
@@ -1973,25 +1986,26 @@ chmod 600 ~/.ssh/authorized_keys`;
         for (const m of items) for (const dp of (m.aggregatedDatapoints || [])) total += dp.value || 0;
         this.logger.log(`[BW-DEBUG] EGRESS TOTAL [${label}]: ${total} bytes`);
         return total;
-      } catch (err) {
-        this.logger.warn(`[BW-DEBUG] EGRESS ERROR [${label}]: ${err.message}`);
+      } catch (err: any) {
+        this.logger.warn(`[BW-DEBUG] EGRESS ERROR [${label}] metric=${metricName}: ${err.message}`);
         return null;
       }
     };
 
     try {
-      // 1. Query với compartmentId của VM
-      let result = await runQuery(compartmentId, queryWithFilter, 'vm-compartment');
-      if (result !== null) return result;
+      for (const metric of candidateMetrics) {
+        // Try vm compartment first (exact match, no subtree needed)
+        let result = await runQuery(compartmentId, metric, 'vm-compartment', false);
+        if (result !== null) return result;
 
-      // 2. Fallback: tenancy root level
-      const tenancyId = await this.getTenancyId();
-      result = await runQuery(tenancyId, queryWithFilter, 'tenancy');
-      if (result !== null) return result;
+        // Try tenancy root with subtree=true (picks up all sub-compartments)
+        result = await runQuery(tenancyId, metric, 'tenancy+subtree', true);
+        if (result !== null) return result;
+      }
 
-      this.logger.warn(`[BW-DEBUG] Không có data oci_vcn cho vnic=${vnicId} region=${regionId}`);
+      this.logger.warn(`[BW-DEBUG] No oci_vcn egress data for vnic=${vnicId} region=${regionId} — check OCI Console Metrics Explorer`);
       return 0;
-    } catch (error) {
+    } catch (error: any) {
       this.logger.warn(`getVnicEgressBytes failed for VNIC ${vnicId}: ${error.message}`);
       return 0;
     }
@@ -2009,35 +2023,80 @@ chmod 600 ~/.ssh/authorized_keys`;
   ): Promise<number> {
     const regionId = this.extractRegionFromOcid(vnicId);
     const monitoring = this.getMonitoringClient(regionId);
-    const queryWithFilter = `VnicBytesIn[1h]{resourceId = "${vnicId}"}.sum()`;
 
-    const runQuery = async (cid: string, query: string): Promise<number | null> => {
+    const candidateMetrics = [
+      'VnicBytesIn',
+      'VnicBytesReceived',
+      'VnicFromNetworkBytes',
+      'VnicIngressBytes',
+    ];
+
+    const runQuery = async (cid: string, metricName: string, inSubtree = false): Promise<number | null> => {
+      const query = `${metricName}[1h]{resourceId = "${vnicId}"}.sum()`;
       try {
         const resp = await monitoring.summarizeMetricsData({
           compartmentId: cid,
           summarizeMetricsDataDetails: { namespace: 'oci_vcn', query, startTime, endTime, resolution: '1h' },
+          compartmentIdInSubtree: inSubtree,
         });
         const items: any[] = resp.items || [];
         if (items.length === 0) return null;
         let total = 0;
         for (const m of items) for (const dp of (m.aggregatedDatapoints || [])) total += dp.value || 0;
         return total;
-      } catch (err) {
-        this.logger.warn(`[BW-DEBUG] INGRESS ERROR: ${err.message}`);
+      } catch (err: any) {
+        this.logger.warn(`[BW-DEBUG] INGRESS ERROR metric=${metricName}: ${err.message}`);
         return null;
       }
     };
 
     try {
-      let result = await runQuery(compartmentId, queryWithFilter);
-      if (result !== null) return result;
-
       const tenancyId = await this.getTenancyId();
-      result = await runQuery(tenancyId, queryWithFilter);
-      return result ?? 0;
-    } catch (error) {
+      for (const metric of candidateMetrics) {
+        let result = await runQuery(compartmentId, metric, false);
+        if (result !== null) return result;
+        result = await runQuery(tenancyId, metric, true);
+        if (result !== null) return result;
+      }
+      return 0;
+    } catch (error: any) {
       this.logger.warn(`getVnicIngressBytes failed for VNIC ${vnicId}: ${error.message}`);
       return 0;
+    }
+  }
+
+  // One-time flag: discover available metrics on first call
+  private _ociMetricsDiscoveredRegion: string | null = null;
+
+  /**
+   * Chạy một lần duy nhất — gọi listMetrics để tìm metric name thật sự
+   * đang được OCI publish, tránh hardcode sai tên.
+   */
+  private async discoverOciMetrics(monitoring: any, tenancyId: string): Promise<void> {
+    if (this._ociMetricsDiscoveredRegion) return;
+    this._ociMetricsDiscoveredRegion = 'in-progress';
+    try {
+      // List all metrics in oci_vcn namespace across whole tenancy
+      const vcnResp = await (monitoring as any).listMetrics({
+        compartmentId: tenancyId,
+        listMetricsDetails: { namespace: 'oci_vcn' },
+        compartmentIdInSubtree: true,
+      });
+      const vcnMetricNames = [...new Set<string>((vcnResp.items || []).map((m: any) => m.name as string))];
+      this.logger.log(`[BW-DISCOVER] oci_vcn metric names (${vcnMetricNames.length}): ${vcnMetricNames.join(', ') || '(none)'}`);
+
+      // Also discover all available namespaces
+      const allResp = await (monitoring as any).listMetrics({
+        compartmentId: tenancyId,
+        listMetricsDetails: {},
+        compartmentIdInSubtree: true,
+      });
+      const allNs = [...new Set<string>((allResp.items || []).map((m: any) => m.namespace as string))];
+      this.logger.log(`[BW-DISCOVER] All namespaces (${allNs.length}): ${allNs.join(', ') || '(none)'}`);
+      this._ociMetricsDiscoveredRegion = 'done';
+    } catch (err: any) {
+      this.logger.warn(`[BW-DISCOVER] listMetrics failed: ${err?.message}`);
+      this._ociMetricsDiscoveredRegion = 'error';
     }
   }
 
