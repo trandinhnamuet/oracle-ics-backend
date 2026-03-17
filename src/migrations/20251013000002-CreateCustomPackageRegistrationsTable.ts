@@ -1,6 +1,6 @@
 import { MigrationInterface, QueryRunner } from "typeorm";
 
-export class CreateCustomPackageRegistrationsTable1694339600000 implements MigrationInterface {
+export class CreateCustomPackageRegistrationsTable20251013000002 implements MigrationInterface {
 
     public async up(queryRunner: QueryRunner): Promise<void> {
         await queryRunner.query(`
