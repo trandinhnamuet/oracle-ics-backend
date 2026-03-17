@@ -1385,13 +1385,16 @@ export class VmProvisioningService {
               </div>
 
               <div class="credentials-box">
-                <h3>⚠️ Important Security Information</h3>
-                <p><strong>Keep your password secure!</strong> Never share it with anyone.</p>
+                <h3>⚠️ Thông tin bảo mật quan trọng</h3>
+                <p><strong>🔐 Vì lý do bảo mật, mật khẩu sẽ không hiển thị tại đây.</strong></p>
+                <p style="margin-top: 10px;">Mật khẩu máy chủ đã được hiển thị <strong>1 lần duy nhất</strong> trên nền tảng khi tạo máy ảo. Vui lòng kiểm tra trang quản lý VM để xem mật khẩu.</p>
               </div>
 
-              <h3>🔑 Your Windows Credentials:</h3>
-              <div class="code-block">Username: ${windowsCredentials.username}
-Password: ${windowsCredentials.password}</div>
+              <h3>🔑 Windows Credentials:</h3>
+              <p><strong>Username:</strong> <code>${windowsCredentials.username}</code></p>
+              <div class="info-box">
+                <p>Mật khẩu không được gửi qua email vì lý do bảo mật. Vui lòng đăng nhập vào nền tảng để xem mật khẩu trong trang quản lý VM.</p>
+              </div>
 
               <h3>📝 How to Connect:</h3>
               

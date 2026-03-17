@@ -329,12 +329,12 @@ export class VmSubscriptionService {
         },
         sshKey: userSshKeyPair ? {
           publicKey: userSshKeyPair.publicKey,
-          // Don't send private key in response, only via email
+          privateKey: userSshKeyPair.privateKey,
           fingerprint: userSshKeyPair.fingerprint,
         } : undefined,
         message: isWindowsPending 
-          ? 'Máy ảo đã tạo thành công. Mật khẩu ban đầu đang được lấy và sẽ được gửi về email của bạn trong vòng 5-10 phút.'
-          : 'Máy ảo đã tạo thành công. Thông tin truy cập VM đã được gửi về email của bạn.',
+          ? 'Máy ảo đã tạo thành công. Mật khẩu ban đầu đang được lấy (5-10 phút), sẽ hiển thị trong trang quản lý VM.'
+          : 'Máy ảo đã tạo thành công. Vui lòng lưu lại thông tin truy cập đang hiển thị trên màn hình.',
       };
     } catch (error) {
       this.logger.error(`Error configuring VM for subscription ${subscriptionId}:`, error);
@@ -636,6 +636,7 @@ export class VmSubscriptionService {
         }`,
         sshKey: {
           publicKey: newKeyPair.publicKey,
+          privateKey: newKeyPair.privateKey,
           fingerprint: newKeyPair.fingerprint,
         },
         keysInfo: {
@@ -824,14 +825,16 @@ export class VmSubscriptionService {
               </div>
 
               <div class="warning">
-                <h3>⚠️ Important Security Information</h3>
-                <p><strong>Keep your private key secure!</strong> Never share it with anyone.</p>
-                <p style="margin-top: 10px;"><strong>⚡ This is the ONLY time you'll receive this private key.</strong></p>
-                ${isNewKey ? '<p style="margin-top: 10px;">💡 Save this key in a secure location immediately. Old keys automatically removed when limit exceeded.</p>' : ''}
+                <h3>⚠️ Thông tin bảo mật quan trọng</h3>
+                <p><strong>🔐 Vì lý do bảo mật, SSH private key không được gửi qua email.</strong></p>
+                <p style="margin-top: 10px;">SSH private key đã được hiển thị <strong>1 lần duy nhất</strong> trên nền tảng ngay khi máy ảo được tạo thành công.</p>
+                ${isNewKey ? '<p style="margin-top: 10px;">Nếu bạn cần SSH key mới, vui lòng sử dụng chức năng "Tạo SSH Key mới" trên trang quản lý VM.</p>' : ''}
               </div>
 
-              <h3>🔑 Your SSH Private Key:</h3>
-              <pre class="code-block">${sshKeyPair.privateKey}</pre>
+              <h3>🔑 SSH Private Key:</h3>
+              <div class="info-box">
+                <p>Vì lý do bảo mật, khóa SSH không được hiển thị tại đây. Vui lòng kiểm tra lại nền tảng để xem khóa đã được hiển thị khi tạo máy ảo.</p>
+              </div>
 
               <h3>📝 How to Connect:</h3>
               
@@ -1099,13 +1102,16 @@ sudo su -
               </div>
 
               <div class="credentials-box">
-                <h3>⚠️ Important Security Information</h3>
-                <p><strong>Keep your password secure!</strong> Never share it with anyone. This is the only time you'll receive the initial password.</p>
+                <h3>⚠️ Thông tin bảo mật quan trọng</h3>
+                <p><strong>🔐 Vì lý do bảo mật, mật khẩu sẽ không hiển thị tại đây.</strong></p>
+                <p style="margin-top: 10px;">Mật khẩu máy chủ đã được hiển thị <strong>1 lần duy nhất</strong> trên nền tảng khi tạo máy ảo. Vui lòng kiểm tra trang quản lý VM để xem mật khẩu.</p>
               </div>
 
-              <h3>🔑 Your Windows Credentials:</h3>
-              <div class="code-block">Username: ${windowsCredentials.username}
-Password: ${windowsCredentials.password}</div>
+              <h3>🔑 Windows Credentials:</h3>
+              <p><strong>Username:</strong> <code>${windowsCredentials.username}</code></p>
+              <div class="info-box">
+                <p>Mật khẩu không được gửi qua email vì lý do bảo mật. Vui lòng đăng nhập vào nền tảng để xem mật khẩu trong trang quản lý VM.</p>
+              </div>
 
               <h3>📝 How to Connect:</h3>
               
@@ -1115,10 +1121,7 @@ Password: ${windowsCredentials.password}</div>
                 <li>Press <code>Win + R</code> and type <code>mstsc</code></li>
                 <li>Enter your VM's IP address: <code>${vmInfo.publicIp || 'YOUR_VM_IP'}</code></li>
                 <li>Click "Connect"</li>
-                <li>When prompted, enter:
-                  <div class="code-block">Username: ${windowsCredentials.username}
-Password: ${windowsCredentials.password}</div>
-                </li>
+                <li>When prompted, enter your username: <code>${windowsCredentials.username}</code> and your password (available in the VM management dashboard)</li>
               </ol>
 
               <h4>Option 2: Using RDP File</h4>
