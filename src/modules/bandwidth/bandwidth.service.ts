@@ -241,6 +241,7 @@ export class BandwidthService {
             instanceName: vm.instance_name,
             publicIp: vm.public_ip,
             lifecycleState: vm.lifecycle_state,
+            compartmentId: vm.compartment_id,
             userId: vm.user_id,
             userEmail: vm.user_email,
             userName:
@@ -271,6 +272,7 @@ export class BandwidthService {
             instanceName: vm.instance_name,
             publicIp: vm.public_ip,
             lifecycleState: vm.lifecycle_state,
+            compartmentId: vm.compartment_id,
             userId: vm.user_id,
             userEmail: vm.user_email,
             userName:
@@ -313,7 +315,49 @@ export class BandwidthService {
       ),
     };
 
-    return { summary, vms: vmData, month: yearMonth };
+    // Fetch compartment names from OCI (best-effort)
+    const compartmentNameMap = new Map<string, string>();
+    try {
+      const ociCompartments = await this.ociService.listCompartments();
+      ociCompartments.forEach((c) => compartmentNameMap.set(c.id, c.name));
+    } catch (err) {
+      this.logger.warn(`Could not fetch compartment names: ${err.message}`);
+    }
+
+    // Group VMs by compartment
+    const compartmentMap = new Map<string, any>();
+    for (const vm of vmData) {
+      const cid = vm.compartmentId;
+      if (!compartmentMap.has(cid)) {
+        compartmentMap.set(cid, {
+          compartmentId: cid,
+          compartmentName: compartmentNameMap.get(cid) || cid,
+          vmCount: 0,
+          vmsWithData: 0,
+          egressTB: 0,
+          ingressTB: 0,
+          vms: [],
+        });
+      }
+      const group = compartmentMap.get(cid)!;
+      group.vmCount++;
+      const ds = vm.bandwidth?.dataSource;
+      if (ds !== 'none' && ds !== 'error') group.vmsWithData++;
+      group.egressTB = parseFloat(
+        (group.egressTB + (vm.bandwidth?.egressTB || 0)).toFixed(6),
+      );
+      group.ingressTB = parseFloat(
+        (group.ingressTB + (vm.bandwidth?.ingressTB || 0)).toFixed(6),
+      );
+      group.vms.push(vm);
+    }
+
+    // Sort compartments by egress descending
+    const compartments = Array.from(compartmentMap.values()).sort(
+      (a, b) => b.egressTB - a.egressTB,
+    );
+
+    return { summary, compartments, vms: vmData, month: yearMonth };
   }
 
   // ────────────────────────────────────────
