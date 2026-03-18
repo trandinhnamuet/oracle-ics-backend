@@ -2,6 +2,13 @@ import { MigrationInterface, QueryRunner } from "typeorm";
 
 export class CreateUsersTable20251013000001 implements MigrationInterface {
     public async up(queryRunner: QueryRunner): Promise<void> {
+        // Check if table already exists to prevent re-creation errors in production
+        const tableExists = await queryRunner.hasTable('oracle.users');
+        if (tableExists) {
+            console.log('⏭️ Table oracle.users already exists, skipping creation');
+            return;
+        }
+
         await queryRunner.query(`
             CREATE TABLE oracle.users (
                 id SERIAL PRIMARY KEY,
@@ -18,13 +25,11 @@ export class CreateUsersTable20251013000001 implements MigrationInterface {
                 updated_at TIMESTAMP DEFAULT NOW()
             );
         `);
-        console.log('Đã tạo bảng oracle.users với các cột bổ sung');
+        console.log('✅ Đã tạo bảng oracle.users với các cột bổ sung');
     }
 
     public async down(queryRunner: QueryRunner): Promise<void> {
-        await queryRunner.query(`
-            DROP TABLE oracle.users;
-        `);
-        console.log('Đã xóa bảng oracle.users');
+        await queryRunner.dropTable('oracle.users', true);
+        console.log('✅ Đã xóa bảng oracle.users');
     }
 }
