@@ -2,6 +2,13 @@ import { MigrationInterface, QueryRunner } from 'typeorm'
 
 export class CreateUserWalletsTable20251013100003 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
+    // Check if table already exists to prevent re-creation errors
+    const tableExists = await queryRunner.hasTable('oracle.user_wallets');
+    if (tableExists) {
+      console.log('⏭️ Table oracle.user_wallets already exists, skipping');
+      return;
+    }
+
     await queryRunner.query(`
       CREATE TABLE oracle.user_wallets (
         id SERIAL PRIMARY KEY,
@@ -33,9 +40,7 @@ export class CreateUserWalletsTable20251013100003 implements MigrationInterface 
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(`
-      DROP TABLE oracle.user_wallets;
-    `)
+    await queryRunner.dropTable('oracle.user_wallets', true);
     console.log('Đã xóa bảng oracle.user_wallets')
   }
 }

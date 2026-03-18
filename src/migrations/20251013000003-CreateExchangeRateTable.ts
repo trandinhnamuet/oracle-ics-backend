@@ -2,6 +2,13 @@ import { MigrationInterface, QueryRunner, Table } from "typeorm";
 
 export class CreateExchangeRateTable20251013000003 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
+    // Check if table already exists to prevent re-creation errors
+    const tableExists = await queryRunner.hasTable('oracle.exchange_rate');
+    if (tableExists) {
+        console.log('⏭️ Table oracle.exchange_rate already exists, skipping');
+        return;
+    }
+
     await queryRunner.createTable(
       new Table({
         name: "exchange_rate",

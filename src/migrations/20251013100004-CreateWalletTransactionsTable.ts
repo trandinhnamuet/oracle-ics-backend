@@ -2,6 +2,13 @@ import { MigrationInterface, QueryRunner } from 'typeorm'
 
 export class CreateWalletTransactionsTable20251013100004 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
+    // Check if table already exists to prevent re-creation errors
+    const tableExists = await queryRunner.hasTable('oracle.wallet_transactions');
+    if (tableExists) {
+      console.log('⏭️ Table oracle.wallet_transactions already exists, skipping');
+      return;
+    }
+
     await queryRunner.query(`
       CREATE TABLE oracle.wallet_transactions (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -35,9 +42,7 @@ export class CreateWalletTransactionsTable20251013100004 implements MigrationInt
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(`
-      DROP TABLE oracle.wallet_transactions;
-    `)
+    await queryRunner.dropTable('oracle.wallet_transactions', true);
     console.log('Đã xóa bảng oracle.wallet_transactions')
   }
 }

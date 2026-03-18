@@ -3,6 +3,13 @@ import { MigrationInterface, QueryRunner } from "typeorm";
 export class CreateCustomPackageRegistrationsTable20251013000002 implements MigrationInterface {
 
     public async up(queryRunner: QueryRunner): Promise<void> {
+        // Check if table already exists to prevent re-creation errors
+        const tableExists = await queryRunner.hasTable('oracle.custom_package_registrations');
+        if (tableExists) {
+            console.log('⏭️ Table oracle.custom_package_registrations already exists, skipping');
+            return;
+        }
+
         await queryRunner.query(`
             CREATE TABLE oracle.custom_package_registrations (
                 id SERIAL PRIMARY KEY,
@@ -19,7 +26,7 @@ export class CreateCustomPackageRegistrationsTable20251013000002 implements Migr
     }
 
     public async down(queryRunner: QueryRunner): Promise<void> {
-        await queryRunner.query(`DROP TABLE oracle.custom_package_registrations`);
+        await queryRunner.dropTable('oracle.custom_package_registrations', true);
     }
 
 }

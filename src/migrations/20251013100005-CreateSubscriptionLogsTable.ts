@@ -2,6 +2,13 @@ import { MigrationInterface, QueryRunner } from 'typeorm'
 
 export class CreateSubscriptionLogsTable20251013100005 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
+    // Check if table already exists to prevent re-creation errors
+    const tableExists = await queryRunner.hasTable('oracle.subscription_logs');
+    if (tableExists) {
+      console.log('⏭️ Table oracle.subscription_logs already exists, skipping');
+      return;
+    }
+
     await queryRunner.query(`
       CREATE TABLE oracle.subscription_logs (
         id SERIAL PRIMARY KEY,
@@ -35,9 +42,7 @@ export class CreateSubscriptionLogsTable20251013100005 implements MigrationInter
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(`
-      DROP TABLE oracle.subscription_logs;
-    `)
+    await queryRunner.dropTable('oracle.subscription_logs', true);
     console.log('Đã xóa bảng oracle.subscription_logs')
   }
 }
