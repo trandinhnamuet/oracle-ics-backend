@@ -251,8 +251,22 @@ export class AuthController {
       // Set refresh token cookie
       response.cookie('refreshToken', result.refreshToken, this.getCookieOptions());
 
-      // Get frontend URL from env
-      const frontendUrl = this.configService.get<string>('FRONTEND_URL') || 'http://localhost:3000';
+      // Get frontend URL from env - for admin users, use FRONTEND_URL_ADMIN if available
+      let frontendUrl = 'http://localhost:3000';
+      
+      // Check if user is admin - if so, try to use FRONTEND_URL_ADMIN
+      if (user.role === 'admin') {
+        const adminUrl = this.configService.get<string>('FRONTEND_URL_ADMIN');
+        if (adminUrl) {
+          frontendUrl = adminUrl;
+        } else {
+          // Fallback: Try to use FRONTEND_URL with /admin path if it's a base URL
+          const baseUrl = this.configService.get<string>('FRONTEND_URL') || 'http://localhost:3000';
+          frontendUrl = baseUrl;
+        }
+      } else {
+        frontendUrl = this.configService.get<string>('FRONTEND_URL') || 'http://localhost:3000';
+      }
 
       // Redirect to frontend with access token
       response.redirect(`${frontendUrl}/auth/callback?token=${result.accessToken}`);
