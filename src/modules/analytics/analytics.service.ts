@@ -143,7 +143,7 @@ export class AnalyticsService {
         `
         SELECT COUNT(*) as count FROM (
           SELECT session_id, COUNT(*) as page_count
-          FROM page_analytics
+          FROM oracle.page_analytics
           WHERE event_type = 'page_view'
           AND created_at BETWEEN $1 AND $2
           AND session_id IS NOT NULL

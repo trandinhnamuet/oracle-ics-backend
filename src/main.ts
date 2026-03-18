@@ -1,4 +1,5 @@
 import { NestFactory } from '@nestjs/core';
+import * as dotenv from 'dotenv';
 import { AppModule } from './app.module';
 import { AppDataSource } from './data-source';
 import { CorsOptions } from '@nestjs/common/interfaces/external/cors-options.interface';
@@ -9,9 +10,31 @@ import { NestExpressApplication } from '@nestjs/platform-express';
 import { json, urlencoded } from 'express';
 import { join } from 'path';
 
+// Load env vars BEFORE bootstrap
+dotenv.config();
+
+// Debug: Check env vars loaded
+console.log('📝 Environment check:');
+console.log(`DB_HOST: ${process.env.DB_HOST}`);
+console.log(`DB_PORT: ${process.env.DB_PORT}`);
+console.log(`DB_USERNAME: ${process.env.DB_USERNAME}`);
+console.log(`DB_NAME: ${process.env.DB_NAME}`);
+console.log(`DB_PASSWORD: ${process.env.DB_PASSWORD ? '***' : 'NOT SET'}`);
+console.log('');
+
 async function bootstrap() {
-  await AppDataSource.initialize();
-  await AppDataSource.runMigrations();
+  try {
+    console.log('🔄 Initializing database...');
+    await AppDataSource.initialize();
+    console.log('✅ Database initialized');
+    
+    console.log('🔄 Running migrations...');
+    await AppDataSource.runMigrations();
+    console.log('✅ Migrations completed');
+  } catch (error) {
+    console.error('❌ Database initialization failed:', error.message);
+    throw error;
+  }
 
   // Disable built-in body parser so we can set higher limits.
   // json() and urlencoded() only process their own content-types and

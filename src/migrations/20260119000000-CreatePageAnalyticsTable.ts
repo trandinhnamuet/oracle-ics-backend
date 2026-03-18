@@ -2,9 +2,17 @@ import { MigrationInterface, QueryRunner, Table, TableIndex } from 'typeorm'
 
 export class CreatePageAnalyticsTable1705619200000 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
+    // Check if table already exists to avoid recreation
+    const tableExists = await queryRunner.hasTable('oracle.page_analytics');
+    if (tableExists) {
+      console.log('⏭️ Table oracle.page_analytics already exists, skipping creation');
+      return;
+    }
+
     await queryRunner.createTable(
       new Table({
         name: 'page_analytics',
+        schema: 'oracle',
         columns: [
           {
             name: 'id',
@@ -105,7 +113,7 @@ export class CreatePageAnalyticsTable1705619200000 implements MigrationInterface
 
     // Create indexes for better query performance
     await queryRunner.createIndex(
-      'page_analytics',
+      'oracle.page_analytics',
       new TableIndex({
         name: 'IDX_analytics_event_type_created_at',
         columnNames: ['event_type', 'created_at'],
@@ -113,7 +121,7 @@ export class CreatePageAnalyticsTable1705619200000 implements MigrationInterface
     )
 
     await queryRunner.createIndex(
-      'page_analytics',
+      'oracle.page_analytics',
       new TableIndex({
         name: 'IDX_analytics_page_path_created_at',
         columnNames: ['page_path', 'created_at'],
@@ -121,7 +129,7 @@ export class CreatePageAnalyticsTable1705619200000 implements MigrationInterface
     )
 
     await queryRunner.createIndex(
-      'page_analytics',
+      'oracle.page_analytics',
       new TableIndex({
         name: 'IDX_analytics_user_id_created_at',
         columnNames: ['user_id', 'created_at'],
@@ -129,7 +137,7 @@ export class CreatePageAnalyticsTable1705619200000 implements MigrationInterface
     )
 
     await queryRunner.createIndex(
-      'page_analytics',
+      'oracle.page_analytics',
       new TableIndex({
         name: 'IDX_analytics_created_at',
         columnNames: ['created_at'],
@@ -138,6 +146,6 @@ export class CreatePageAnalyticsTable1705619200000 implements MigrationInterface
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.dropTable('page_analytics')
+    await queryRunner.dropTable('oracle.page_analytics', true)
   }
 }
