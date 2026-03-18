@@ -2,6 +2,13 @@ import { MigrationInterface, QueryRunner, Table, TableIndex, TableForeignKey } f
 
 export class CreateAdminLoginHistoryTable20260119000000 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
+    // Check if table already exists to prevent re-creation errors
+    const tableExists = await queryRunner.hasTable('oracle.admin_login_history');
+    if (tableExists) {
+      console.log('⏭️ Table oracle.admin_login_history already exists, skipping');
+      return;
+    }
+
     // Create admin_login_history table
     await queryRunner.createTable(
       new Table({

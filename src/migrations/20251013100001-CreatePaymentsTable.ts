@@ -2,6 +2,13 @@ import { MigrationInterface, QueryRunner } from 'typeorm'
 
 export class CreatePaymentsTable20251013100001 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
+    // Check if table already exists to prevent re-creation errors
+    const tableExists = await queryRunner.hasTable('oracle.payments');
+    if (tableExists) {
+      console.log('⏭️ Table oracle.payments already exists, skipping');
+      return;
+    }
+
     await queryRunner.query(`
       CREATE TABLE oracle.payments (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

@@ -2,6 +2,13 @@ import { MigrationInterface, QueryRunner, Table } from 'typeorm';
 
 export class CreateImagesTable20251013000004 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
+    // Check if table already exists to prevent re-creation errors
+    const tableExists = await queryRunner.hasTable('oracle.images');
+    if (tableExists) {
+        console.log('⏭️ Table oracle.images already exists, skipping');
+        return;
+    }
+
     await queryRunner.createTable(
       new Table({
         name: 'images',

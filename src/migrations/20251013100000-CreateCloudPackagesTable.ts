@@ -2,6 +2,13 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
 
 export class CreateCloudPackagesTable20251013100000 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
+    // Check if table already exists to prevent re-creation errors
+    const tableExists = await queryRunner.hasTable('oracle.cloud_packages');
+    if (tableExists) {
+        console.log('⏭️ Table oracle.cloud_packages already exists, skipping');
+        return;
+    }
+
     await queryRunner.query(`
       CREATE TABLE oracle.cloud_packages (
         id SERIAL PRIMARY KEY,
@@ -29,9 +36,7 @@ export class CreateCloudPackagesTable20251013100000 implements MigrationInterfac
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(`
-      DROP TABLE oracle.cloud_packages;
-    `);
+    await queryRunner.dropTable('oracle.cloud_packages', true);
     console.log('Đã xóa bảng oracle.cloud_packages');
   }
 }
