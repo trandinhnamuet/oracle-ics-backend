@@ -2,10 +2,18 @@ import { MigrationInterface, QueryRunner, Table, TableIndex } from 'typeorm';
 
 export class CreateUserSessions20260115125556 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
-    // Create user_sessions table
+    // Check if table already exists to avoid recreation
+    const tableExists = await queryRunner.hasTable('oracle.user_sessions');
+    if (tableExists) {
+      console.log('⏭️ Table oracle.user_sessions already exists, skipping creation');
+      return;
+    }
+
+    // Create user_sessions table in oracle schema
     await queryRunner.createTable(
       new Table({
         name: 'user_sessions',
+        schema: 'oracle',
         columns: [
           {
             name: 'id',
@@ -53,7 +61,7 @@ export class CreateUserSessions20260115125556 implements MigrationInterface {
 
     // Create index on userId for faster lookups
     await queryRunner.createIndex(
-      'user_sessions',
+      'oracle.user_sessions',
       new TableIndex({
         name: 'IDX_user_sessions_userId',
         columnNames: ['userId'],
@@ -62,7 +70,7 @@ export class CreateUserSessions20260115125556 implements MigrationInterface {
 
     // Create index on expiresAt for cleanup queries
     await queryRunner.createIndex(
-      'user_sessions',
+      'oracle.user_sessions',
       new TableIndex({
         name: 'IDX_user_sessions_expiresAt',
         columnNames: ['expiresAt'],
@@ -71,6 +79,6 @@ export class CreateUserSessions20260115125556 implements MigrationInterface {
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.dropTable('user_sessions');
+    await queryRunner.dropTable('oracle.user_sessions', true);
   }
 }

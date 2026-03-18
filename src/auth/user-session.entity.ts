@@ -6,7 +6,7 @@ import {
   Index,
 } from 'typeorm';
 
-@Entity('user_sessions')
+@Entity({ name: 'user_sessions', schema: 'oracle' })
 @Index(['userId'])
 export class UserSession {
   @PrimaryGeneratedColumn('uuid')

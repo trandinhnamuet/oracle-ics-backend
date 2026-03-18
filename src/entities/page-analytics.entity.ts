@@ -6,7 +6,7 @@ import {
   Index,
 } from 'typeorm'
 
-@Entity('page_analytics')
+@Entity({ name: 'page_analytics', schema: 'oracle' })
 @Index(['event_type', 'created_at'])
 @Index(['page_path', 'created_at'])
 @Index(['user_id', 'created_at'])
