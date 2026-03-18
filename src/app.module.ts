@@ -26,6 +26,7 @@ import { BandwidthModule } from './modules/bandwidth/bandwidth.module';
 import { TerminalModule } from './modules/terminal/terminal.module';
 import { SupportTicketModule } from './modules/support-ticket/support-ticket.module';
 import { NotificationModule } from './modules/notification/notification.module';
+import { TermsModule } from './modules/terms/terms.module';
 
 dotenv.config();
 
@@ -64,6 +65,7 @@ dotenv.config();
     TerminalModule,
     SupportTicketModule,
     NotificationModule,
+    TermsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
