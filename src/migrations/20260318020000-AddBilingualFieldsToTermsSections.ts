@@ -11,17 +11,40 @@ export class AddBilingualFieldsToTermsSections20260318020000 implements Migratio
     `);
 
     await queryRunner.query(`
-      UPDATE oracle.terms_sections
-      SET
-        title_vi = COALESCE(title_vi, title),
-        title_en = COALESCE(title_en, title),
-        articles_vi = COALESCE(articles_vi, articles),
-        articles_en = COALESCE(articles_en, articles)
-      WHERE
-        title_vi IS NULL
-        OR title_en IS NULL
-        OR articles_vi IS NULL
-        OR articles_en IS NULL;
+      DO $$
+      BEGIN
+        IF EXISTS (
+          SELECT 1
+          FROM information_schema.columns
+          WHERE table_schema = 'oracle'
+            AND table_name = 'terms_sections'
+            AND column_name = 'title'
+        ) THEN
+          UPDATE oracle.terms_sections
+          SET
+            title_vi = COALESCE(title_vi, title, ''),
+            title_en = COALESCE(title_en, title, ''),
+            articles_vi = COALESCE(articles_vi, articles, '[]'::jsonb),
+            articles_en = COALESCE(articles_en, articles, '[]'::jsonb)
+          WHERE
+            title_vi IS NULL
+            OR title_en IS NULL
+            OR articles_vi IS NULL
+            OR articles_en IS NULL;
+        ELSE
+          UPDATE oracle.terms_sections
+          SET
+            title_vi = COALESCE(title_vi, ''),
+            title_en = COALESCE(title_en, ''),
+            articles_vi = COALESCE(articles_vi, '[]'::jsonb),
+            articles_en = COALESCE(articles_en, '[]'::jsonb)
+          WHERE
+            title_vi IS NULL
+            OR title_en IS NULL
+            OR articles_vi IS NULL
+            OR articles_en IS NULL;
+        END IF;
+      END $$;
     `);
 
     await queryRunner.query(`
