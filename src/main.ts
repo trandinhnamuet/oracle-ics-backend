@@ -1,3 +1,7 @@
+// ⚠️ PHẢI đặt TRƯỚC TẤT CẢ import khác để đảm bảo Node.js dùng giờ Việt Nam
+// khi serialize Date sang chuỗi (TypeORM dùng local-time methods cho cột TIMESTAMP)
+process.env.TZ = 'Asia/Ho_Chi_Minh';
+
 import { NestFactory } from '@nestjs/core';
 import * as dotenv from 'dotenv';
 import { AppModule } from './app.module';
