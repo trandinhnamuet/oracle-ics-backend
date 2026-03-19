@@ -13,4 +13,6 @@ export const AppDataSource = new DataSource({
   entities: ['dist/**/*.entity.js'],
   migrations: ['dist/src/migrations/*.js'],
   synchronize: false,
+  // Đặt session timezone PostgreSQL = Việt Nam để CURRENT_TIMESTAMP, NOW() trả về giờ VN
+  extra: { options: "-c TimeZone=Asia/Ho_Chi_Minh" },
 });

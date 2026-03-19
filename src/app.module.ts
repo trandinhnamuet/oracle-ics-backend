@@ -41,6 +41,8 @@ dotenv.config();
       database: process.env.DB_NAME,
       synchronize: false,
       autoLoadEntities: true,
+      // Đặt session timezone PostgreSQL = Việt Nam để CURRENT_TIMESTAMP, NOW() trả về giờ VN
+      extra: { options: "-c TimeZone=Asia/Ho_Chi_Minh" },
     }),
     AuthModule,
     CustomPackageRegistrationModule,
