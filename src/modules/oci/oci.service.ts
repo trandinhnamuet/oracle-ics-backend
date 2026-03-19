@@ -308,7 +308,32 @@ export class OciService {
         lifecycleState: response.compartment.lifecycleState,
         timeCreated: response.compartment.timeCreated,
       };
-    } catch (error) {
+    } catch (error: any) {
+      // If compartment already exists (409), find and reuse the existing one
+      if (error?.statusCode === 409 || error?.serviceCode === 'CompartmentAlreadyExists') {
+        this.logger.warn(`Compartment '${name}' already exists in OCI. Fetching existing compartment...`);
+        try {
+          const tenancyId = await this.getTenancyId();
+          const listRequest: oci.identity.requests.ListCompartmentsRequest = {
+            compartmentId: tenancyId,
+            name: name,
+          };
+          const listResponse = await this.identityClient.listCompartments(listRequest);
+          const existing = listResponse.items.find(c => c.name === name);
+          if (existing) {
+            this.logger.log(`Reusing existing compartment: ${existing.id}`);
+            return {
+              id: existing.id,
+              name: existing.name,
+              description: existing.description,
+              lifecycleState: existing.lifecycleState,
+              timeCreated: existing.timeCreated,
+            };
+          }
+        } catch (listError) {
+          this.logger.error('Error listing compartments to find existing one:', listError);
+        }
+      }
       this.logger.error('Error creating compartment:', error);
       throw error;
     }
