@@ -16,6 +16,10 @@ export class ImageService {
     file: any,
     uploadedBy?: number,
   ): Promise<Image> {
+    // Re-decode originalname: multer/busboy parses multipart headers as latin-1
+    // but browsers send UTF-8 bytes, causing garbled non-ASCII filenames.
+    const originalName = Buffer.from(file.originalname, 'latin1').toString('utf8');
+
     // Create uploads directory if it doesn't exist
     const uploadsDir = path.join(process.cwd(), 'uploads');
     if (!fs.existsSync(uploadsDir)) {
@@ -24,7 +28,7 @@ export class ImageService {
 
     // Generate unique filename
     const timestamp = Date.now();
-    const extension = path.extname(file.originalname);
+    const extension = path.extname(originalName);
     const filename = `${timestamp}-${Math.random().toString(36).substring(2)}${extension}`;
     const filePath = path.join(uploadsDir, filename);
 
@@ -34,7 +38,7 @@ export class ImageService {
     // Create database record
     const image = this.imageRepository.create({
       filename,
-      originalName: file.originalname,
+      originalName,
       mimeType: file.mimetype,
       size: file.size,
       path: filePath,

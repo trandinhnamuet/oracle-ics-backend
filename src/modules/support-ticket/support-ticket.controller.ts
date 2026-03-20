@@ -41,7 +41,8 @@ export class SupportTicketController {
         throw new BadRequestException(`File type '${file.mimetype}' is not allowed`);
       }
       const saved = await this.imageService.saveImage(file, userId);
-      results.push({ url: saved.url, name: file.originalname, mimeType: file.mimetype, size: file.size });
+      // Use the decoded originalName from the saved record (already fixed in saveImage)
+      results.push({ url: saved.url, name: saved.originalName, mimeType: file.mimetype, size: file.size });
     }
     return results;
   }
