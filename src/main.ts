@@ -1,5 +1,6 @@
 import { NestFactory } from '@nestjs/core';
 import * as dotenv from 'dotenv';
+import { types as pgTypes } from 'pg';
 import { AppModule } from './app.module';
 import { AppDataSource } from './data-source';
 import { CorsOptions } from '@nestjs/common/interfaces/external/cors-options.interface';
@@ -12,6 +13,16 @@ import { join } from 'path';
 
 // Load env vars BEFORE bootstrap
 dotenv.config();
+
+// ── Timezone fix ──────────────────────────────────────────────────────────────
+// pg (node-postgres) mặc định diễn giải cột TIMESTAMP (không có timezone info)
+// theo local timezone của Node.js process. Nếu server đặt TZ=Asia/Ho_Chi_Minh,
+// pg sẽ đọc "2026-03-20 08:18:00" (UTC thực tế) thành 08:18 giờ VN = 01:18 UTC
+// → kết quả API bị sai 7 tiếng.
+// Fix: ép pg luôn đọc TIMESTAMP columns như UTC bất kể TZ của server.
+pgTypes.setTypeParser(1114, (val: string) => new Date(val.replace(' ', 'T') + 'Z'))   // TIMESTAMP
+pgTypes.setTypeParser(1184, (val: string) => new Date(val))                             // TIMESTAMPTZ
+// ─────────────────────────────────────────────────────────────────────────────
 
 // Debug: Check env vars loaded
 console.log('📝 Environment check:');
