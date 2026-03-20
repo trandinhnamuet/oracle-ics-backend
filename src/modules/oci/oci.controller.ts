@@ -675,10 +675,8 @@ export class OciController {
       if (metric.aggregatedDatapoints) {
         for (const datapoint of metric.aggregatedDatapoints) {
           formatted.push({
-            time: new Date(datapoint.timestamp).toLocaleTimeString('vi-VN', {
-              hour: '2-digit',
-              minute: '2-digit',
-            }),
+            // Trả về ISO string UTC — frontend sẽ tự convert sang múi giờ browser
+            time: new Date(datapoint.timestamp).toISOString(),
             value: datapoint.value || 0,
           });
         }
