@@ -1069,83 +1069,101 @@ export class VmProvisioningService {
       await this.vmInstanceRepo.save(vm);
       this.logger.log(`✅ [Background] VM ${vmId} is RUNNING`);
       
-      // Wait additional time for password generation
-      this.logger.log(`⏳ [Background] Waiting 45 seconds for password generation...`);
-      await this.sleep(45000);
-      
-      // Attempt to retrieve password
-      try {
-        const credentials = await this.ociService.getWindowsInitialCredentials(instanceId);
-        
-        if (credentials) {
-          vm.windows_initial_password = credentials.password;
-          await this.vmInstanceRepo.save(vm);
-          this.logger.log(`🎉 [Background] VM ${vmId}: Windows credentials retrieved successfully`);
-          this.logger.log(`🎉 [Background] Username: ${credentials.username}`);
-          this.logger.log(`🎉 [Background] Password saved to database`);
-          
-          // Send email notification with password
-          try {
-            // Get subscription and user email
-            const subscription = await this.subscriptionRepo.findOne({
-              where: { id: subscriptionId },
-              relations: ['user'],
-            });
-            
-            if (subscription && subscription.user?.email) {
-              this.logger.log(`📧 [Background] Sending Windows credentials email to ${subscription.user.email}...`);
-              
-              // Get public IP
-              let publicIp = vm.public_ip;
-              if (!publicIp) {
-                try {
-                  const compartment = await this.userCompartmentRepo.findOne({
-                    where: { user_id: vm.user_id },
-                  });
-                  if (compartment) {
-                    const retrievedIp = await this.ociService.getInstancePublicIp(
-                      compartment.compartment_ocid,
-                      instanceId,
-                    );
-                    if (retrievedIp) {
-                      publicIp = retrievedIp;
-                      vm.public_ip = retrievedIp;
-                      await this.vmInstanceRepo.save(vm);
-                    }
-                  }
-                } catch (ipError) {
-                  this.logger.warn(`⚠️  Could not retrieve public IP: ${ipError.message}`);
-                }
-              }
-              
-              await this.sendWindowsPasswordEmail(
-                subscription.user.email,
-                {
-                  name: vm.instance_name,
-                  publicIp: publicIp || 'Check OCI Console',
-                  operatingSystem: vm.operating_system || 'Windows Server',
-                  status: vm.lifecycle_state,
-                },
-                {
-                  username: credentials.username,
-                  password: credentials.password,
-                },
-                subscription,
-              );
-              
-              this.logger.log(`✅ [Background] Windows credentials email sent successfully`);
-            } else {
-              this.logger.warn(`⚠️  [Background] Could not find user email for subscription ${subscriptionId}`);
+      // Retry fetching Windows credentials for up to 15 minutes (30s interval = 30 attempts)
+      this.logger.log(`⏳ [Background] Starting credential retrieval loop (max 15 min, every 30s)...`);
+      const maxCredAttempts = 30;
+      let credentialsSaved = false;
+
+      for (let attempt = 1; attempt <= maxCredAttempts; attempt++) {
+        // Wait 30 seconds between each attempt (first attempt also waits to give OCI time)
+        this.logger.log(`⏳ [Background] Waiting 30 seconds before credential attempt ${attempt}/${maxCredAttempts}...`);
+        await this.sleep(30000);
+
+        try {
+          const credentials = await this.ociService.getWindowsInitialCredentials(instanceId);
+
+          if (credentials) {
+            // Reload VM in case DB row changed
+            const freshVm = await this.vmInstanceRepo.findOne({ where: { id: vmId } });
+            if (!freshVm) {
+              this.logger.error(`❌ [Background] VM ${vmId} no longer in database`);
+              return;
             }
-          } catch (emailError) {
-            this.logger.error(`❌ [Background] Failed to send email:`, emailError.message);
-            // Don't throw, password is saved in DB
+            freshVm.windows_initial_password = credentials.password;
+            await this.vmInstanceRepo.save(freshVm);
+            credentialsSaved = true;
+            this.logger.log(`🎉 [Background] VM ${vmId}: Windows credentials retrieved on attempt ${attempt}`);
+            this.logger.log(`🎉 [Background] Username: ${credentials.username}`);
+            this.logger.log(`🎉 [Background] Password saved to database`);
+
+            // Send email notification with password
+            try {
+              const subscription = await this.subscriptionRepo.findOne({
+                where: { id: subscriptionId },
+                relations: ['user'],
+              });
+
+              if (subscription && subscription.user?.email) {
+                this.logger.log(`📧 [Background] Sending Windows credentials email to ${subscription.user.email}...`);
+
+                // Ensure public IP is available
+                let publicIp = freshVm.public_ip;
+                if (!publicIp) {
+                  try {
+                    const compartment = await this.userCompartmentRepo.findOne({
+                      where: { user_id: freshVm.user_id },
+                    });
+                    if (compartment) {
+                      const retrievedIp = await this.ociService.getInstancePublicIp(
+                        compartment.compartment_ocid,
+                        instanceId,
+                      );
+                      if (retrievedIp) {
+                        publicIp = retrievedIp;
+                        freshVm.public_ip = retrievedIp;
+                        await this.vmInstanceRepo.save(freshVm);
+                      }
+                    }
+                  } catch (ipError) {
+                    this.logger.warn(`⚠️  Could not retrieve public IP: ${ipError.message}`);
+                  }
+                }
+
+                await this.sendWindowsPasswordEmail(
+                  subscription.user.email,
+                  {
+                    name: freshVm.instance_name,
+                    publicIp: publicIp || 'Check OCI Console',
+                    operatingSystem: freshVm.operating_system || 'Windows Server',
+                    status: freshVm.lifecycle_state,
+                  },
+                  {
+                    username: credentials.username,
+                    password: credentials.password,
+                  },
+                  subscription,
+                );
+
+                this.logger.log(`✅ [Background] Windows credentials email sent successfully`);
+              } else {
+                this.logger.warn(`⚠️  [Background] Could not find user email for subscription ${subscriptionId}`);
+              }
+            } catch (emailError) {
+              this.logger.error(`❌ [Background] Failed to send email:`, emailError.message);
+              // Password is already saved in DB — not fatal
+            }
+
+            break; // Credentials retrieved and saved — exit retry loop
+          } else {
+            this.logger.warn(`⚠️  [Background] VM ${vmId}: Credentials not ready yet (attempt ${attempt}/${maxCredAttempts})`);
           }
-        } else {
-          this.logger.warn(`⚠️  [Background] VM ${vmId}: Windows password not available from API`);
+        } catch (credError) {
+          this.logger.error(`❌ [Background] VM ${vmId}: Error getting credentials (attempt ${attempt}):`, credError.message);
         }
-      } catch (credError) {
-        this.logger.error(`❌ [Background] VM ${vmId}: Failed to get Windows credentials:`, credError.message);
+      }
+
+      if (!credentialsSaved) {
+        this.logger.error(`❌ [Background] VM ${vmId}: Could not retrieve Windows credentials after ${maxCredAttempts} attempts (15 min)`);
       }
     } catch (error) {
       this.logger.error(`❌ [Background] VM ${vmId}: Error in password retrieval:`, error.message);
