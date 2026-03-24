@@ -1270,6 +1270,7 @@ runcmd:
     publicIp: string,
     username: string,
     adminPrivateKey: string,
+    adminPublicKey?: string,
   ): Promise<{ id: string; keysCount: number; userKeysCount: number; removedOldest: boolean }> {
     try {
       const { Client } = await import('ssh2');
@@ -1313,13 +1314,32 @@ runcmd:
                 .filter(key => key.length > 0);
               
               this.logger.log(`📋 Found ${existingKeys.length} existing keys`);
-              
-              // Admin key is the first one
-              const adminKey = existingKeys.length > 0 ? existingKeys[0] : null;
+
+              // Identify admin key: prefer explicit match by public key value (prevents
+              // misidentification after multiple rotations). Fall back to position[0] only
+              // if no adminPublicKey was provided.
+              const adminKeyNormalized = adminPublicKey?.trim();
+              let adminKey: string | null = null;
+              if (adminKeyNormalized) {
+                // Match by the key material (first two space-separated tokens: type + base64)
+                // so that differing comments don't break the match.
+                const adminKeyParts = adminKeyNormalized.split(' ').slice(0, 2).join(' ');
+                adminKey = existingKeys.find(k => k.split(' ').slice(0, 2).join(' ') === adminKeyParts) ?? null;
+                if (!adminKey) {
+                  this.logger.warn(`⚠️  Admin public key not found in authorized_keys — it will be added`);
+                  adminKey = adminKeyNormalized;
+                } else {
+                  this.logger.log(`✅ Admin key identified by explicit match (not position)`);
+                }
+              } else {
+                adminKey = existingKeys.length > 0 ? existingKeys[0] : null;
+                this.logger.warn(`⚠️  No adminPublicKey provided — using position[0] as fallback`);
+              }
               
               // Get user keys only (exclude admin key)
-              const existingUserKeys = adminKey 
-                ? existingKeys.filter(key => key !== adminKey)
+              const adminKeyParts = adminKey ? adminKey.split(' ').slice(0, 2).join(' ') : null;
+              const existingUserKeys = adminKeyParts
+                ? existingKeys.filter(k => k.split(' ').slice(0, 2).join(' ') !== adminKeyParts)
                 : existingKeys;
               
               // Add new user key to the beginning
