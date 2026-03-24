@@ -542,10 +542,17 @@ export class VmSubscriptionService {
     let updateResult: { id: string; keysCount: number; userKeysCount: number; removedOldest: boolean };
 
     try {
-      // Get admin SSH key
+      // Get admin SSH key — prefer the key tied to this specific VM (recorded at provisioning time)
       this.logger.log(`🔑 Retrieving admin SSH key...`);
-      const adminKey = await this.systemSshKeyService.getActiveKey();
-      
+      let adminKey = vm.system_ssh_key_id
+        ? await this.systemSshKeyService.getSystemKeyById(vm.system_ssh_key_id).catch(() => null)
+        : null;
+
+      if (!adminKey) {
+        this.logger.warn(`⚠️  VM-specific key not found, falling back to active key`);
+        adminKey = await this.systemSshKeyService.getActiveKey();
+      }
+
       if (!adminKey) {
         this.logger.error(`❌ No active admin SSH key found`);
         throw new InternalServerErrorException('Admin SSH key not configured');
@@ -597,6 +604,7 @@ export class VmSubscriptionService {
         vm.public_ip,
         username,
         adminPrivateKey,
+        adminKey.public_key,
       );
 
       this.logger.log(
