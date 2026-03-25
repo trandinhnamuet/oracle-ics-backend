@@ -617,10 +617,6 @@ export class OciController {
           startTime.setHours(startTime.getHours() - 1);
       }
 
-      this.logger.log(
-        `Fetching metrics for instance ${instanceId} from ${startTime.toISOString()} to ${endTime.toISOString()}`,
-      );
-
       const [cpu, memory, networkIn, networkOut, diskRead, diskWrite] =
         await Promise.all([
           this.ociService.getCpuUtilization(instanceId, startTime, endTime),
