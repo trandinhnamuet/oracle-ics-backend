@@ -742,8 +742,9 @@ export class VmSubscriptionService {
     const newPassword = this.generateWindowsPassword();
     this.logger.log(`🔐 New password generated (length: ${newPassword.length})`);
 
-    // Step 7: Reset password via OCI Run Command (with WinRM fallback)
+    // Step 7: Try to reset password on the VM (OCI Run Command → WinRM fallback)
     this.logger.log(`🚀 Sending password reset to instance ${vm.instance_id}...`);
+    let remoteChangeSuccess = false;
     try {
       await this.ociService.runWindowsPasswordReset(
         vm.instance_id,
@@ -753,13 +754,14 @@ export class VmSubscriptionService {
         vm.public_ip,
         vm.windows_initial_password,
       );
-      this.logger.log(`✅ Password changed successfully`);
+      remoteChangeSuccess = true;
+      this.logger.log(`✅ Password changed on VM successfully`);
     } catch (runCmdError) {
-      this.logger.error(`❌ Password reset failed: ${runCmdError.message}`);
-      throw new BadRequestException(`Failed to reset Windows password: ${runCmdError.message}`);
+      this.logger.warn(`⚠️ Remote password change failed: ${runCmdError.message}`);
+      this.logger.warn(`⚠️ Saving new password to database. User must change it manually via RDP.`);
     }
 
-    // Step 8: Update password in database
+    // Step 8: Always update password in database (so user has the new credential)
     this.logger.log(`💾 Saving new password to database...`);
     await this.vmInstanceRepo.update(vm.id, {
       windows_initial_password: newPassword,
@@ -767,14 +769,17 @@ export class VmSubscriptionService {
     this.logger.log(`✅ Password saved to database`);
 
     this.logger.log('========================================');
-    this.logger.log(`🎉 WINDOWS PASSWORD RESET COMPLETE`);
+    this.logger.log(`🎉 WINDOWS PASSWORD RESET COMPLETE (remote: ${remoteChangeSuccess})`);
     this.logger.log('========================================');
 
     return {
       success: true,
       username: 'opc',
       newPassword: newPassword,
-      message: 'Windows password has been reset successfully.',
+      remoteChangeApplied: remoteChangeSuccess,
+      message: remoteChangeSuccess
+        ? 'Windows password has been reset successfully.'
+        : 'A new password has been generated. Please log in via RDP with your current password and change it to the new password shown above.',
     };
   }
 
