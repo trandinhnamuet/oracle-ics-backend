@@ -13,6 +13,7 @@ export class OciService {
   private identityClient: oci.identity.IdentityClient;
   private virtualNetworkClient: oci.core.VirtualNetworkClient;
   private monitoringClient: any;
+  private computeInstanceAgentClient: oci.computeinstanceagent.ComputeInstanceAgentClient;
   private provider: oci.common.ConfigFileAuthenticationDetailsProvider;
 
   constructor(
@@ -64,6 +65,11 @@ export class OciService {
         this.logger.warn('OCI Monitoring client not available: ' + err?.message);
         this.monitoringClient = undefined;
       }
+
+      // Initialize Compute Instance Agent Client (for Run Command)
+      this.computeInstanceAgentClient = new oci.computeinstanceagent.ComputeInstanceAgentClient({
+        authenticationDetailsProvider: this.provider,
+      });
 
       this.logger.log('OCI SDK clients initialized successfully');
     } catch (error) {
@@ -2353,5 +2359,96 @@ chmod 600 ~/.ssh/authorized_keys`;
       startTime,
       endTime,
     );
+  }
+
+  /**
+   * Reset Windows VM password using OCI Run Command (Compute Instance Agent)
+   * This approach does NOT require SSH port 22 — it works through the OCI control plane
+   * The OCI agent pre-installed on all OCI instances will pick up and execute the command
+   */
+  async runWindowsPasswordReset(
+    instanceId: string,
+    compartmentId: string,
+    newPassword: string,
+  ): Promise<void> {
+    this.logger.log(`🚀 Starting OCI Run Command for Windows password reset on instance: ${instanceId}`);
+
+    // Escape the password for use in PowerShell (escape single quotes and special chars)
+    const escapedPassword = newPassword.replace(/'/g, "''");
+    const psScript = `
+$password = '${escapedPassword}'
+$securePass = ConvertTo-SecureString $password -AsPlainText -Force
+Set-LocalUser -Name opc -Password $securePass
+Write-Output "Password changed successfully"
+`.trim();
+
+    // Create the Run Command
+    const createRequest: oci.computeinstanceagent.requests.CreateInstanceAgentCommandRequest = {
+      createInstanceAgentCommandDetails: {
+        compartmentId: compartmentId,
+        executionTimeOutInSeconds: 120,
+        displayName: 'Reset Windows Password',
+        target: {
+          instanceId: instanceId,
+        },
+        content: {
+          source: {
+            sourceType: 'TEXT',
+            text: psScript,
+          } as oci.computeinstanceagent.models.InstanceAgentCommandSourceViaTextDetails,
+          output: {
+            outputType: 'TEXT',
+          } as oci.computeinstanceagent.models.InstanceAgentCommandOutputViaTextDetails,
+        },
+      },
+    };
+
+    const createResponse = await this.computeInstanceAgentClient.createInstanceAgentCommand(createRequest);
+    const commandId = createResponse.instanceAgentCommand.id;
+    this.logger.log(`✅ OCI Run Command created: ${commandId}`);
+
+    // Poll for completion (max 3 minutes, every 10 seconds)
+    const maxWaitMs = 180000;
+    const pollIntervalMs = 10000;
+    const startTime = Date.now();
+
+    while (Date.now() - startTime < maxWaitMs) {
+      await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+
+      try {
+        const execResponse = await this.computeInstanceAgentClient.getInstanceAgentCommandExecution({
+          instanceAgentCommandId: commandId,
+          instanceId: instanceId,
+        });
+
+        const execution = execResponse.instanceAgentCommandExecution;
+        const lifecycleState = execution.lifecycleState;
+        const deliveryState = execution.deliveryState;
+        this.logger.log(`📊 Run Command status — delivery: ${deliveryState}, lifecycle: ${lifecycleState}`);
+
+        if (lifecycleState === oci.computeinstanceagent.models.InstanceAgentCommandExecution.LifecycleState.Succeeded) {
+          this.logger.log(`✅ OCI Run Command succeeded`);
+          return;
+        }
+
+        if (
+          lifecycleState === oci.computeinstanceagent.models.InstanceAgentCommandExecution.LifecycleState.Failed ||
+          lifecycleState === oci.computeinstanceagent.models.InstanceAgentCommandExecution.LifecycleState.TimedOut ||
+          lifecycleState === oci.computeinstanceagent.models.InstanceAgentCommandExecution.LifecycleState.Canceled
+        ) {
+          this.logger.error(`❌ OCI Run Command failed with lifecycle state: ${lifecycleState}`);
+          throw new Error(`OCI Run Command failed with state: ${lifecycleState}`);
+        }
+      } catch (pollError: any) {
+        // 404 means the instance hasn't reported execution yet — keep polling
+        if (pollError?.statusCode === 404 || pollError?.status === 404 || String(pollError?.message).includes('404')) {
+          this.logger.log(`⏳ Command not yet picked up by agent, retrying...`);
+          continue;
+        }
+        throw pollError;
+      }
+    }
+
+    throw new Error('OCI Run Command timed out waiting for completion (3 minutes exceeded)');
   }
 }
