@@ -2466,7 +2466,7 @@ chmod 600 ~/.ssh/authorized_keys`;
   ): Promise<void> {
     this.logger.log(`🚀 Starting Windows password reset on instance: ${instanceId}`);
 
-    // ── Strategy 1: OCI Run Command (fast path, 2-min timeout) ──
+    // ── Strategy 1: OCI Run Command (primary — no credentials needed, runs as SYSTEM) ──
     try {
       await this.tryRunCommandPasswordReset(instanceId, compartmentId, newPassword);
       this.logger.log(`✅ Password changed via OCI Run Command`);
@@ -2475,29 +2475,48 @@ chmod 600 ~/.ssh/authorized_keys`;
       this.logger.warn(`⚠️ OCI Run Command failed: ${runCmdErr.message}`);
     }
 
-    // ── Strategy 2: WinRM via pywinrm (requires port 5986 + current password) ──
+    // ── Strategy 2: Soft-restart VM → reinitialise Oracle Cloud Agent → retry Run Command ──
+    // The agent may be in a stale state (RUNNING but not polling OCI service endpoint).
+    // A SOFTRESET restarts the OS, which causes the agent to reconnect cleanly.
+    this.logger.log(`🔄 Restarting VM to reinitialise Oracle Cloud Agent...`);
+    try {
+      await this.restartInstance(instanceId);
+      this.logger.log(`✅ SOFTRESET issued — waiting for VM to restart...`);
+
+      // Wait for instance to reach RUNNING and agent to initialise (max 5 min)
+      await this.waitForInstanceRunning(instanceId, 5 * 60_000);
+
+      // Extra wait for Oracle Cloud Agent to connect after OS boot
+      this.logger.log(`⏳ Waiting 60s for Oracle Cloud Agent to initialise...`);
+      await new Promise(resolve => setTimeout(resolve, 60_000));
+
+      // Retry Run Command with same 2-minute timeout
+      this.logger.log(`🔁 Retrying OCI Run Command after VM restart...`);
+      await this.tryRunCommandPasswordReset(instanceId, compartmentId, newPassword);
+      this.logger.log(`✅ Password changed via OCI Run Command (post-restart)`);
+      return;
+    } catch (retryErr: any) {
+      this.logger.warn(`⚠️ Restart + Run Command retry failed: ${retryErr.message}`);
+    }
+
+    // ── Strategy 3: WinRM via pywinrm (requires port 5986 + current password) ──
+    // Only works when the initial OCI password is still valid (user hasn't changed it yet).
     if (!subnetId || !publicIp || !currentPassword) {
-      throw new Error(
-        'OCI Run Command failed and WinRM fallback is not available (missing subnet/IP/password).',
-      );
+      throw new Error('All remote password change methods failed (no WinRM credentials).');
     }
 
     this.logger.log(`🔄 Falling back to WinRM for password reset...`);
     let securityListId: string | undefined;
     try {
-      // Open WinRM port in security list
       securityListId = await this.getSecurityListIdForSubnet(subnetId);
       await this.ensureWinrmPortOpen(securityListId);
 
-      // Wait for security list propagation
       this.logger.log(`⏳ Waiting 15s for security list propagation...`);
       await new Promise(resolve => setTimeout(resolve, 15000));
 
-      // Execute password change via WinRM
       await this.changePasswordViaWinrm(publicIp, currentPassword, newPassword);
       this.logger.log(`✅ Password changed via WinRM`);
     } finally {
-      // Always clean up: remove WinRM port from security list
       if (securityListId) {
         try {
           await this.removeWinrmPort(securityListId);
@@ -2509,12 +2528,53 @@ chmod 600 ~/.ssh/authorized_keys`;
   }
 
   /**
-   * Try to reset password via OCI Run Command with a short timeout.
+   * Wait for an instance to reach RUNNING state after a restart.
+   * Handles both cases: OCI lifecycle transitions (RUNNING→STOPPING→RUNNING)
+   * and transparent OS-level restarts (state stays RUNNING throughout).
+   */
+  private async waitForInstanceRunning(instanceId: string, maxWaitMs: number): Promise<void> {
+    const pollMs = 15_000;
+    const start = Date.now();
+    this.logger.log(`⏳ Waiting up to ${maxWaitMs / 1000}s for VM to reach RUNNING state...`);
+
+    // Give OCI 30 s to register the state change from SOFTRESET
+    await new Promise(r => setTimeout(r, 30_000));
+
+    const check = await this.computeClient.getInstance({ instanceId });
+    const stateAfter30s = check.instance.lifecycleState as string;
+    this.logger.log(`📊 Instance state after 30s: ${stateAfter30s}`);
+
+    if (stateAfter30s === 'RUNNING') {
+      // OCI still shows RUNNING — the OS is restarting internally (common for SOFTRESET)
+      // Wait a fixed 3 min for the internal reboot to complete
+      this.logger.log(`ℹ️ OCI state still RUNNING — waiting 3 min for internal OS restart...`);
+      await new Promise(r => setTimeout(r, 180_000));
+      return;
+    }
+
+    // OCI reflects a non-RUNNING state — wait for it to come back
+    while (Date.now() - start < maxWaitMs) {
+      await new Promise(r => setTimeout(r, pollMs));
+      const resp = await this.computeClient.getInstance({ instanceId });
+      const state = resp.instance.lifecycleState as string;
+      this.logger.log(`📊 Instance state: ${state}`);
+      if (state === 'RUNNING') {
+        this.logger.log(`✅ VM returned to RUNNING`);
+        return;
+      }
+    }
+    throw new Error(`VM did not return to RUNNING within ${maxWaitMs / 1000}s after restart`);
+  }
+
+  /**
+   * Try to reset password via OCI Run Command.
+   * @param maxWaitMs  Maximum poll time in ms (default 2 min)
    */
   private async tryRunCommandPasswordReset(
     instanceId: string,
     compartmentId: string,
     newPassword: string,
+    maxWaitMs: number = 120_000,
   ): Promise<void> {
     // Step 1: Enable Run Command plugin
     try {
@@ -2570,8 +2630,7 @@ chmod 600 ~/.ssh/authorized_keys`;
     const commandId = createResponse.instanceAgentCommand.id;
     this.logger.log(`✅ OCI Run Command created: ${commandId}`);
 
-    // Step 4: Poll for completion (max 2 minutes, every 10 seconds)
-    const maxWaitMs = 120000;
+    // Step 4: Poll for completion, every 10 seconds
     const pollIntervalMs = 10000;
     const startTime = Date.now();
 
