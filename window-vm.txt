@@ -1,0 +1,3 @@
+IPv4=161.33.207.245
+current_password=Hniknahcma9@
+user=opc
