@@ -2448,6 +2448,8 @@ chmod 600 ~/.ssh/authorized_keys`;
     this.logger.log(`✅ 'Compute Instance Run Command' plugin enable request sent`);
   }
 
+
+
   /**
    * Reset Windows VM password using OCI Run Command (Compute Instance Agent).
    * Automatically enables the run-command plugin if not yet active.
@@ -2460,26 +2462,25 @@ chmod 600 ~/.ssh/authorized_keys`;
   ): Promise<void> {
     this.logger.log(`🚀 Starting OCI Run Command for Windows password reset on instance: ${instanceId}`);
 
-    // Step 1: Enable the 'Compute Instance Run Command' plugin.
-    // This is idempotent — safe to call even when already enabled.
+    // Step 1: Request plugin enablement (idempotent — safe even if already enabled)
     try {
       await this.enableRunCommandPlugin(instanceId);
-      // Wait 60 seconds for the plugin to fully initialise before sending the command.
-      this.logger.log(`⏳ Waiting 60 s for 'Compute Instance Run Command' plugin to initialise...`);
-      await new Promise(resolve => setTimeout(resolve, 60000));
     } catch (enableErr: any) {
-      // Non-fatal: log and continue — the plugin may already be enabled.
-      this.logger.warn(`⚠️ Could not pre-enable run-command plugin: ${enableErr.message}. Continuing anyway...`);
+      this.logger.warn(`⚠️ Could not request plugin enablement: ${enableErr.message}. Continuing anyway...`);
     }
 
-    // Step 2: Build the PowerShell script to change the password
+    // Step 2: Wait for plugin to initialize on the VM (3 minutes is typically sufficient for agent polling + startup)
+    this.logger.log(`⏳ Waiting 180s for 'Compute Instance Run Command' plugin to initialize on the VM...`);
+    await new Promise(resolve => setTimeout(resolve, 180000));
+
+    // Step 3: Build the PowerShell script to change the password
     const escapedPassword = newPassword.replace(/'/g, "''");
     const psScript = `$password = '${escapedPassword}'
 $securePass = ConvertTo-SecureString $password -AsPlainText -Force
 Set-LocalUser -Name opc -Password $securePass
 Write-Output "Password changed successfully"`;
 
-    // Step 3: Create the Run Command
+    // Step 4: Create the Run Command
     const createRequest: oci.computeinstanceagent.requests.CreateInstanceAgentCommandRequest = {
       createInstanceAgentCommandDetails: {
         compartmentId: compartmentId,
@@ -2502,7 +2503,7 @@ Write-Output "Password changed successfully"`;
     const commandId = createResponse.instanceAgentCommand.id;
     this.logger.log(`✅ OCI Run Command created: ${commandId}`);
 
-    // Step 4: Poll for completion (max 5 minutes, every 10 seconds)
+    // Step 5: Poll for completion (max 5 minutes, every 10 seconds)
     const maxWaitMs = 300000;
     const pollIntervalMs = 10000;
     const startTime = Date.now();
