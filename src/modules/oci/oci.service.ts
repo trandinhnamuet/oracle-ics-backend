@@ -5,6 +5,7 @@ import * as oci from 'oci-sdk';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { spawnSync } from 'child_process';
 
 @Injectable()
 export class OciService {
@@ -14,7 +15,6 @@ export class OciService {
   private virtualNetworkClient: oci.core.VirtualNetworkClient;
   private monitoringClient: any;
   private computeInstanceAgentClient: oci.computeinstanceagent.ComputeInstanceAgentClient;
-  private pluginClient: oci.computeinstanceagent.PluginClient;
   private provider: oci.common.ConfigFileAuthenticationDetailsProvider;
 
   constructor(
@@ -69,11 +69,6 @@ export class OciService {
 
       // Initialize Compute Instance Agent Client (for Run Command)
       this.computeInstanceAgentClient = new oci.computeinstanceagent.ComputeInstanceAgentClient({
-        authenticationDetailsProvider: this.provider,
-      });
-
-      // Initialize Plugin Client (for checking plugin status)
-      this.pluginClient = new oci.computeinstanceagent.PluginClient({
         authenticationDetailsProvider: this.provider,
       });
 
@@ -2431,7 +2426,8 @@ chmod 600 ~/.ssh/authorized_keys`;
   }
 
   /**
-   * Enable the "Compute Instance Run Command" plugin on an OCI instance via UpdateInstance.
+   * Enable the "run-command" plugin on an OCI instance via UpdateInstance.
+   * Must also set isManagementDisabled=false so management plugins can run.
    */
   private async enableRunCommandPlugin(instanceId: string): Promise<void> {
     this.logger.log(`🔌 Enabling 'Compute Instance Run Command' plugin on instance: ${instanceId}`);
@@ -2453,115 +2449,111 @@ chmod 600 ~/.ssh/authorized_keys`;
     this.logger.log(`✅ 'Compute Instance Run Command' plugin enable request sent`);
   }
 
-  /**
-   * Use PluginClient to poll until 'Compute Instance Run Command' is RUNNING.
-   */
-  private async waitForRunCommandPluginRunning(
-    instanceId: string,
-    compartmentId: string,
-  ): Promise<void> {
-    const maxWaitMs = 10 * 60 * 1000; // 10 minutes
-    const pollIntervalMs = 15_000;
-    const startTime = Date.now();
 
-    // First, list all plugins to see what's available
-    try {
-      const allPlugins = await this.pluginClient.listInstanceAgentPlugins({
-        compartmentId,
-        instanceagentId: instanceId,
-      });
-      const names = (allPlugins.items ?? []).map((p: any) => `${p.name}(${p.status})`);
-      this.logger.log(`📋 All agent plugins on instance: ${names.join(', ') || '(none)'}`);
-    } catch (listErr: any) {
-      this.logger.warn(`⚠️ Could not list plugins: ${listErr.message}`);
-    }
-
-    this.logger.log(`⏳ Polling plugin status until 'Compute Instance Run Command' is RUNNING (max 10 min)...`);
-
-    while (Date.now() - startTime < maxWaitMs) {
-      await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
-
-      try {
-        const response = await this.pluginClient.listInstanceAgentPlugins({
-          compartmentId,
-          instanceagentId: instanceId,
-        });
-
-        const plugin = (response.items ?? []).find(
-          (p: any) => p.name === 'Compute Instance Run Command',
-        );
-
-        if (!plugin) {
-          this.logger.log(`⏳ Plugin not yet visible in agent plugin list — waiting...`);
-          continue;
-        }
-
-        const status: string = (plugin.status ?? '').toUpperCase();
-        this.logger.log(`🔌 Plugin 'Compute Instance Run Command' status: ${status}`);
-
-        if (status === 'RUNNING') {
-          this.logger.log(`✅ Plugin is RUNNING — ready to execute Run Command`);
-          return;
-        }
-
-        if (status === 'NOT_SUPPORTED' || status === 'INVALID') {
-          throw new Error(
-            `The "Compute Instance Run Command" plugin is ${status} on this VM. ` +
-            `The Oracle Cloud Agent on this VM may not support Run Command. ` +
-            `Please check OCI Console → Instances → Oracle Cloud Agent tab.`,
-          );
-        }
-
-        // STOPPED — the enableRunCommandPlugin request was sent, agent is picking it up
-      } catch (err: any) {
-        if (err.message?.includes('NOT_SUPPORTED') || err.message?.includes('INVALID')) {
-          throw err;
-        }
-        this.logger.warn(`⚠️ Error polling plugin status: ${err.message}. Retrying...`);
-      }
-    }
-
-    throw new Error(
-      `Timed out (10 min) waiting for "Compute Instance Run Command" plugin to become RUNNING. ` +
-      `Please enable the plugin manually via OCI Console → Instances → Oracle Cloud Agent tab.`,
-    );
-  }
 
   /**
    * Reset Windows VM password using OCI Run Command (Compute Instance Agent).
-   * 1. Enable plugin via UpdateInstance
-   * 2. Poll PluginClient until plugin is RUNNING
-   * 3. Send Run Command (batch script — OCI Windows runs in cmd.exe)
-   * 4. Poll until command succeeds
+   * Automatically enables the run-command plugin if not yet active.
+   * Falls back to WinRM if OCI Run Command agent doesn't respond.
    */
   async runWindowsPasswordReset(
     instanceId: string,
     compartmentId: string,
     newPassword: string,
+    subnetId?: string,
+    publicIp?: string,
+    currentPassword?: string,
   ): Promise<void> {
-    this.logger.log(`🚀 Starting OCI Run Command for Windows password reset on instance: ${instanceId}`);
+    this.logger.log(`🚀 Starting Windows password reset on instance: ${instanceId}`);
 
-    // Step 1: Request plugin enablement (idempotent)
+    // ── Strategy 1: OCI Run Command (fast path, 2-min timeout) ──
+    try {
+      await this.tryRunCommandPasswordReset(instanceId, compartmentId, newPassword);
+      this.logger.log(`✅ Password changed via OCI Run Command`);
+      return;
+    } catch (runCmdErr: any) {
+      this.logger.warn(`⚠️ OCI Run Command failed: ${runCmdErr.message}`);
+    }
+
+    // ── Strategy 2: WinRM via pywinrm (requires port 5986 + current password) ──
+    if (!subnetId || !publicIp || !currentPassword) {
+      throw new Error(
+        'OCI Run Command failed and WinRM fallback is not available (missing subnet/IP/password).',
+      );
+    }
+
+    this.logger.log(`🔄 Falling back to WinRM for password reset...`);
+    let securityListId: string | undefined;
+    try {
+      // Open WinRM port in security list
+      securityListId = await this.getSecurityListIdForSubnet(subnetId);
+      await this.ensureWinrmPortOpen(securityListId);
+
+      // Wait for security list propagation
+      this.logger.log(`⏳ Waiting 15s for security list propagation...`);
+      await new Promise(resolve => setTimeout(resolve, 15000));
+
+      // Execute password change via WinRM
+      await this.changePasswordViaWinrm(publicIp, currentPassword, newPassword);
+      this.logger.log(`✅ Password changed via WinRM`);
+    } finally {
+      // Always clean up: remove WinRM port from security list
+      if (securityListId) {
+        try {
+          await this.removeWinrmPort(securityListId);
+        } catch (cleanErr: any) {
+          this.logger.warn(`⚠️ Failed to remove WinRM port rule: ${cleanErr.message}`);
+        }
+      }
+    }
+  }
+
+  /**
+   * Try to reset password via OCI Run Command with a short timeout.
+   */
+  private async tryRunCommandPasswordReset(
+    instanceId: string,
+    compartmentId: string,
+    newPassword: string,
+  ): Promise<void> {
+    // Step 1: Enable Run Command plugin
     try {
       await this.enableRunCommandPlugin(instanceId);
     } catch (enableErr: any) {
-      this.logger.warn(`⚠️ Could not request plugin enablement: ${enableErr.message}. Continuing anyway...`);
+      this.logger.warn(`⚠️ Could not request plugin enablement: ${enableErr.message}`);
     }
 
-    // Step 2: Poll until plugin is actually RUNNING (via PluginClient, max 10 min)
-    await this.waitForRunCommandPluginRunning(instanceId, compartmentId);
+    // Step 2: Check plugin status (quick check, 30s max)
+    let pluginRunning = false;
+    try {
+      const pluginClient = new oci.computeinstanceagent.PluginClient({
+        authenticationDetailsProvider: this.provider,
+      });
+      const pluginsResp = await pluginClient.listInstanceAgentPlugins({
+        compartmentId,
+        instanceagentId: instanceId,
+      });
+      const rcPlugin = pluginsResp.items?.find(
+        p => p.name === 'Compute Instance Run Command',
+      );
+      this.logger.log(`🔌 Run Command plugin status: ${rcPlugin?.status ?? 'NOT FOUND'}`);
+      pluginRunning = rcPlugin?.status === 'RUNNING';
+    } catch (err: any) {
+      this.logger.warn(`⚠️ Could not check plugin status: ${err.message}`);
+    }
 
-    // Step 3: Build the script to change the password.
-    // OCI Run Command on Windows runs in cmd.exe (batch shell).
-    // Use "net user" — works in both cmd and PowerShell.
-    const escapedPassword = newPassword.replace(/"/g, '\\"');
-    const script = `net user opc "${escapedPassword}"\r\necho Password changed successfully`;
+    if (!pluginRunning) {
+      throw new Error('Run Command plugin is not RUNNING');
+    }
 
-    // Step 4: Create the Run Command
-    const createRequest: oci.computeinstanceagent.requests.CreateInstanceAgentCommandRequest = {
+    // Step 3: Create the Run Command
+    const escapedPassword = newPassword.replace(/"/g, '""');
+    const script = `net user opc "${escapedPassword}"\r\necho PASSWORD_CHANGED_OK`;
+
+    const createResponse = await this.computeInstanceAgentClient.createInstanceAgentCommand({
       createInstanceAgentCommandDetails: {
-        compartmentId: compartmentId,
-        executionTimeOutInSeconds: 120,
+        compartmentId,
+        executionTimeOutInSeconds: 60,
         displayName: 'Reset Windows Password',
         target: { instanceId },
         content: {
@@ -2574,15 +2566,13 @@ chmod 600 ~/.ssh/authorized_keys`;
           } as oci.computeinstanceagent.models.InstanceAgentCommandOutputViaTextDetails,
         },
       },
-    };
-
-    const createResponse = await this.computeInstanceAgentClient.createInstanceAgentCommand(createRequest);
+    });
     const commandId = createResponse.instanceAgentCommand.id;
     this.logger.log(`✅ OCI Run Command created: ${commandId}`);
 
-    // Step 5: Poll for completion (max 5 minutes, every 10 s)
-    const maxWaitMs = 300_000;
-    const pollIntervalMs = 10_000;
+    // Step 4: Poll for completion (max 2 minutes, every 10 seconds)
+    const maxWaitMs = 120000;
+    const pollIntervalMs = 10000;
     const startTime = Date.now();
 
     while (Date.now() - startTime < maxWaitMs) {
@@ -2591,7 +2581,7 @@ chmod 600 ~/.ssh/authorized_keys`;
       try {
         const execResponse = await this.computeInstanceAgentClient.getInstanceAgentCommandExecution({
           instanceAgentCommandId: commandId,
-          instanceId: instanceId,
+          instanceId,
         });
 
         const execution = execResponse.instanceAgentCommandExecution;
@@ -2600,7 +2590,6 @@ chmod 600 ~/.ssh/authorized_keys`;
         this.logger.log(`📊 Run Command status — delivery: ${deliveryState}, lifecycle: ${lifecycleState}`);
 
         if (lifecycleState === oci.computeinstanceagent.models.InstanceAgentCommandExecution.LifecycleState.Succeeded) {
-          this.logger.log(`✅ OCI Run Command succeeded`);
           return;
         }
 
@@ -2609,22 +2598,146 @@ chmod 600 ~/.ssh/authorized_keys`;
           lifecycleState === oci.computeinstanceagent.models.InstanceAgentCommandExecution.LifecycleState.TimedOut ||
           lifecycleState === oci.computeinstanceagent.models.InstanceAgentCommandExecution.LifecycleState.Canceled
         ) {
-          this.logger.error(`❌ OCI Run Command failed with lifecycle state: ${lifecycleState}`);
-          throw new Error(`OCI Run Command failed with state: ${lifecycleState}`);
+          throw new Error(`Run Command failed with state: ${lifecycleState}`);
         }
       } catch (pollError: any) {
-        if (pollError?.statusCode === 404 || pollError?.status === 404 || String(pollError?.message).includes('404')) {
-          this.logger.log(`⏳ Command not yet picked up by agent, retrying...`);
+        if (pollError?.statusCode === 404 || String(pollError?.message).includes('404')) {
+          this.logger.log(`⏳ Command not yet picked up by agent...`);
           continue;
         }
         throw pollError;
       }
     }
 
-    throw new Error(
-      'OCI Run Command timed out waiting for completion (5 min). ' +
-      'The plugin was RUNNING but the command was not executed. ' +
-      'Please check OCI Console for Run Command execution details.',
+    throw new Error('OCI Run Command timed out (2 min). Agent not processing commands.');
+  }
+
+  /**
+   * Get the first security list OCID associated with a subnet.
+   */
+  private async getSecurityListIdForSubnet(subnetId: string): Promise<string> {
+    const subnetResp = await this.virtualNetworkClient.getSubnet({ subnetId });
+    const secListIds = subnetResp.subnet.securityListIds;
+    if (!secListIds || secListIds.length === 0) {
+      throw new Error(`No security lists found for subnet ${subnetId}`);
+    }
+    return secListIds[0];
+  }
+
+  /**
+   * Temporarily open WinRM HTTPS port (5986) in a security list.
+   */
+  private async ensureWinrmPortOpen(securityListId: string): Promise<void> {
+    this.logger.log(`🔓 Opening WinRM port 5986 in security list: ${securityListId}`);
+
+    const securityList = await this.getSecurityList(securityListId);
+
+    const hasWinrmRule = securityList.ingressSecurityRules.some((rule: any) =>
+      rule.protocol === '6' &&
+      rule.tcpOptions?.destinationPortRange?.min === 5986 &&
+      rule.tcpOptions?.destinationPortRange?.max === 5986,
     );
+
+    if (hasWinrmRule) {
+      this.logger.log('✅ WinRM port 5986 is already open');
+      return;
+    }
+
+    const newIngressRules = [
+      ...securityList.ingressSecurityRules,
+      {
+        source: '0.0.0.0/0',
+        protocol: '6',
+        isStateless: false,
+        tcpOptions: {
+          destinationPortRange: { min: 5986, max: 5986 },
+        },
+        description: 'WinRM HTTPS (temporary for password reset)',
+      },
+    ];
+
+    await this.virtualNetworkClient.updateSecurityList({
+      securityListId,
+      updateSecurityListDetails: {
+        ingressSecurityRules: newIngressRules,
+        egressSecurityRules: securityList.egressSecurityRules,
+      },
+    });
+
+    this.logger.log('✅ WinRM port 5986 opened');
+  }
+
+  /**
+   * Remove the temporary WinRM port (5986) rule from a security list.
+   */
+  private async removeWinrmPort(securityListId: string): Promise<void> {
+    this.logger.log(`🔒 Removing WinRM port 5986 from security list: ${securityListId}`);
+
+    const securityList = await this.getSecurityList(securityListId);
+
+    const filteredRules = securityList.ingressSecurityRules.filter((rule: any) =>
+      !(
+        rule.protocol === '6' &&
+        rule.tcpOptions?.destinationPortRange?.min === 5986 &&
+        rule.tcpOptions?.destinationPortRange?.max === 5986
+      ),
+    );
+
+    await this.virtualNetworkClient.updateSecurityList({
+      securityListId,
+      updateSecurityListDetails: {
+        ingressSecurityRules: filteredRules,
+        egressSecurityRules: securityList.egressSecurityRules,
+      },
+    });
+
+    this.logger.log('✅ WinRM port 5986 removed');
+  }
+
+  /**
+   * Change Windows password via WinRM using the pywinrm helper script.
+   * Passes credentials via stdin for security.
+   */
+  private async changePasswordViaWinrm(
+    publicIp: string,
+    currentPassword: string,
+    newPassword: string,
+  ): Promise<void> {
+    this.logger.log(`🔌 Connecting via WinRM to ${publicIp}:5986...`);
+
+    const scriptPath = path.join(__dirname, '..', '..', '..', 'scripts', 'winrm-password-reset.py');
+    if (!fs.existsSync(scriptPath)) {
+      throw new Error(`WinRM helper script not found at ${scriptPath}`);
+    }
+
+    const input = JSON.stringify({
+      ip: publicIp,
+      username: 'opc',
+      currentPassword,
+      newPassword,
+    });
+
+    const result = spawnSync('python3', [scriptPath], {
+      input,
+      timeout: 60000,
+      encoding: 'utf-8',
+    });
+
+    if (result.error) {
+      throw new Error(`WinRM process error: ${result.error.message}`);
+    }
+
+    this.logger.log(`📊 WinRM exit code: ${result.status}`);
+    if (result.stdout) this.logger.log(`📋 WinRM output: ${result.stdout.trim()}`);
+    if (result.stderr) this.logger.warn(`⚠️ WinRM stderr: ${result.stderr.trim()}`);
+
+    if (result.status !== 0) {
+      let errorMsg = 'WinRM password change failed';
+      try {
+        const parsed = JSON.parse(result.stdout);
+        errorMsg = parsed.error || parsed.stderr || errorMsg;
+      } catch { /* ignore parse error */ }
+      throw new Error(errorMsg);
+    }
   }
 }
