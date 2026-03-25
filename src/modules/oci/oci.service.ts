@@ -1045,6 +1045,19 @@ runcmd:
           assignPublicIp: true,
         },
         metadata: metadata,
+        // Enable the Run Command plugin for all new instances.
+        // This ensures 'Reset Windows Password' works immediately after provisioning.
+        agentConfig: {
+          isMonitoringDisabled: false,
+          isManagementDisabled: false,
+          areAllPluginsDisabled: false,
+          pluginsConfig: [
+            {
+              name: 'Compute Instance Run Command',
+              desiredState: oci.core.models.InstanceAgentPluginConfigDetails.DesiredState.Enabled,
+            },
+          ],
+        },
       };
 
       const request: oci.core.requests.LaunchInstanceRequest = {
@@ -2416,22 +2429,23 @@ chmod 600 ~/.ssh/authorized_keys`;
    * Must also set isManagementDisabled=false so management plugins can run.
    */
   private async enableRunCommandPlugin(instanceId: string): Promise<void> {
-    this.logger.log(`🔌 Enabling run-command plugin on instance: ${instanceId}`);
+    this.logger.log(`🔌 Enabling 'Compute Instance Run Command' plugin on instance: ${instanceId}`);
     await this.computeClient.updateInstance({
       instanceId,
       updateInstanceDetails: {
         agentConfig: {
           isManagementDisabled: false,
+          areAllPluginsDisabled: false,
           pluginsConfig: [
             {
-              name: 'run-command',
+              name: 'Compute Instance Run Command',
               desiredState: oci.core.models.InstanceAgentPluginConfigDetails.DesiredState.Enabled,
             },
           ],
         },
       },
     });
-    this.logger.log(`✅ run-command plugin enable request sent`);
+    this.logger.log(`✅ 'Compute Instance Run Command' plugin enable request sent`);
   }
 
   /**
@@ -2446,13 +2460,13 @@ chmod 600 ~/.ssh/authorized_keys`;
   ): Promise<void> {
     this.logger.log(`🚀 Starting OCI Run Command for Windows password reset on instance: ${instanceId}`);
 
-    // Step 1: Pre-enable the run-command plugin so the agent will execute commands.
+    // Step 1: Enable the 'Compute Instance Run Command' plugin.
     // This is idempotent — safe to call even when already enabled.
     try {
       await this.enableRunCommandPlugin(instanceId);
-      // Wait 30 seconds for the plugin to fully initialise before sending the command.
-      this.logger.log(`⏳ Waiting 30 s for run-command plugin to initialise...`);
-      await new Promise(resolve => setTimeout(resolve, 30000));
+      // Wait 60 seconds for the plugin to fully initialise before sending the command.
+      this.logger.log(`⏳ Waiting 60 s for 'Compute Instance Run Command' plugin to initialise...`);
+      await new Promise(resolve => setTimeout(resolve, 60000));
     } catch (enableErr: any) {
       // Non-fatal: log and continue — the plugin may already be enabled.
       this.logger.warn(`⚠️ Could not pre-enable run-command plugin: ${enableErr.message}. Continuing anyway...`);
