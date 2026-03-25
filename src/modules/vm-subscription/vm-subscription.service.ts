@@ -742,7 +742,30 @@ export class VmSubscriptionService {
     const newPassword = this.generateWindowsPassword();
     this.logger.log(`🔐 New password generated (length: ${newPassword.length})`);
 
-    // Step 7: Try to reset password on the VM (OCI Run Command → WinRM fallback)
+    // Step 7: Get system admin private key for SSH-based password reset fallback.
+    // The admin public key was added to the VM's authorized_keys by cloudbase-init at
+    // provisioning time, so SSH key auth works without needing the current password.
+    let adminSshPrivateKey: string | undefined;
+    try {
+      const sshKeyRecord = vm.system_ssh_key_id
+        ? await this.systemSshKeyService.getSystemKeyById(vm.system_ssh_key_id).catch(() => null)
+        : null;
+      const finalKey = sshKeyRecord || (await this.systemSshKeyService.getActiveKey().catch(() => null));
+      if (finalKey) {
+        let pk = decryptPrivateKey(finalKey.private_key_encrypted);
+        if (pk.includes('BEGIN PRIVATE KEY')) {
+          const keyObject = crypto.createPrivateKey(pk);
+          pk = keyObject.export({ type: 'pkcs1', format: 'pem' }) as string;
+        }
+        if (!pk.endsWith('\n')) pk += '\n';
+        adminSshPrivateKey = pk;
+        this.logger.log('✅ System admin SSH private key loaded for SSH fallback');
+      }
+    } catch (keyErr: any) {
+      this.logger.warn(`⚠️ Could not load admin SSH key (SSH fallback unavailable): ${keyErr.message}`);
+    }
+
+    // Step 8: Try to reset password on the VM (OCI Run Command → SSH key → VM restart → WinRM)
     this.logger.log(`🚀 Sending password reset to instance ${vm.instance_id}...`);
     let remoteChangeSuccess = false;
     try {
@@ -753,6 +776,7 @@ export class VmSubscriptionService {
         vm.subnet_id,
         vm.public_ip,
         vm.windows_initial_password,
+        adminSshPrivateKey,
       );
       remoteChangeSuccess = true;
       this.logger.log(`✅ Password changed on VM successfully`);
@@ -761,7 +785,7 @@ export class VmSubscriptionService {
       this.logger.warn(`⚠️ Saving new password to database. User must change it manually via RDP.`);
     }
 
-    // Step 8: Always update password in database (so user has the new credential)
+    // Step 9: Always update password in database (so user has the new credential)
     this.logger.log(`💾 Saving new password to database...`);
     await this.vmInstanceRepo.update(vm.id, {
       windows_initial_password: newPassword,

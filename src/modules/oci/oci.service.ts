@@ -2463,6 +2463,7 @@ chmod 600 ~/.ssh/authorized_keys`;
     subnetId?: string,
     publicIp?: string,
     currentPassword?: string,
+    adminPrivateKey?: string,
   ): Promise<void> {
     this.logger.log(`🚀 Starting Windows password reset on instance: ${instanceId}`);
 
@@ -2475,7 +2476,22 @@ chmod 600 ~/.ssh/authorized_keys`;
       this.logger.warn(`⚠️ OCI Run Command failed: ${runCmdErr.message}`);
     }
 
-    // ── Strategy 2: Soft-restart VM → reinitialise Oracle Cloud Agent → retry Run Command ──
+    // ── Strategy 2: SSH with system admin key (no password needed, uses authorized key) ──
+    // OCI cloudbase-init adds the system admin public key to the VM at provisioning time.
+    // This lets us SSH as 'opc' with key auth and run net user to change the password.
+    if (subnetId && publicIp && adminPrivateKey) {
+      this.logger.log(`🔑 Attempting SSH key-based password reset...`);
+      const securityListId = await this.getSecurityListIdForSubnet(subnetId);
+      try {
+        await this.changeWindowsPasswordViaSshKey(publicIp, adminPrivateKey, newPassword, securityListId);
+        this.logger.log(`✅ Password changed via SSH + admin key`);
+        return;
+      } catch (sshErr: any) {
+        this.logger.warn(`⚠️ SSH key-based reset failed: ${sshErr.message}`);
+      }
+    }
+
+    // ── Strategy 3: Soft-restart VM → reinitialise Oracle Cloud Agent → retry Run Command ──
     // The agent may be in a stale state (RUNNING but not polling OCI service endpoint).
     // A SOFTRESET restarts the OS, which causes the agent to reconnect cleanly.
     this.logger.log(`🔄 Restarting VM to reinitialise Oracle Cloud Agent...`);
@@ -2499,7 +2515,7 @@ chmod 600 ~/.ssh/authorized_keys`;
       this.logger.warn(`⚠️ Restart + Run Command retry failed: ${retryErr.message}`);
     }
 
-    // ── Strategy 3: WinRM via pywinrm (requires port 5986 + current password) ──
+    // ── Strategy 4: WinRM via pywinrm (requires port 5986 + current password) ──
     // Only works when the initial OCI password is still valid (user hasn't changed it yet).
     if (!subnetId || !publicIp || !currentPassword) {
       throw new Error('All remote password change methods failed (no WinRM credentials).');
@@ -2681,6 +2697,159 @@ chmod 600 ~/.ssh/authorized_keys`;
       throw new Error(`No security lists found for subnet ${subnetId}`);
     }
     return secListIds[0];
+  }
+
+  /**
+   * Change the Windows 'opc' user password via SSH + system admin private key.
+   * Does NOT require the current password — works as long as the admin key is in
+   * the VM's authorized_keys (added by cloudbase-init at provisioning time).
+   *
+   * Uses PowerShell -EncodedCommand (base64 UTF-16LE) so that special characters
+   * in the password (e.g. `$`, `!`, `@`) don't get interpreted by the shell.
+   */
+  private async changeWindowsPasswordViaSshKey(
+    publicIp: string,
+    adminPrivateKey: string,
+    newPassword: string,
+    securityListId: string,
+  ): Promise<void> {
+    this.logger.log(`🔑 Opening SSH port 22 in security list: ${securityListId}`);
+    await this.ensureSshPortOpen(securityListId);
+
+    try {
+      // Wait for security list to propagate
+      this.logger.log(`⏳ Waiting 15s for port 22 security list rule to propagate...`);
+      await new Promise(r => setTimeout(r, 15_000));
+
+      this.logger.log(`🔌 Connecting via SSH to ${publicIp}:22 as opc...`);
+
+      await new Promise<void>((resolve, reject) => {
+        // Build PowerShell script that decodes the base64 password, then calls net user
+        // Using base64 avoids shell string escaping issues with $, !, @, #, etc.
+        const b64pw = Buffer.from(newPassword, 'utf8').toString('base64');
+        // Single quotes around the Base64 literal prevent PowerShell from treating
+        // the Base64 padding `=` character as an assignment operator in some contexts.
+        const psScript = [
+          `$b=[System.Convert]::FromBase64String('${b64pw}')`,
+          `$p=[System.Text.Encoding]::UTF8.GetString($b)`,
+          `net user opc $p`,
+        ].join(';');
+
+        // Encode the whole script as UTF-16LE Base64 for -EncodedCommand
+        // This works whether the SSH default shell is cmd.exe or PowerShell
+        const encodedCmd = Buffer.from(psScript, 'utf16le').toString('base64');
+        const sshCommand = `powershell.exe -NonInteractive -NoProfile -EncodedCommand ${encodedCmd}`;
+
+        import('ssh2').then(({ Client }) => {
+          const conn = new Client();
+          let stdout = '';
+          let stderr = '';
+
+          conn.on('ready', () => {
+            this.logger.log(`✅ SSH connected — running password change command`);
+            conn.exec(sshCommand, (err, stream) => {
+              if (err) { conn.end(); return reject(new Error(`SSH exec error: ${err.message}`)); }
+              stream.on('data', (d: Buffer) => { stdout += d.toString(); });
+              stream.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
+              stream.on('close', (code: number) => {
+                conn.end();
+                this.logger.log(`📊 SSH command exit code: ${code}`);
+                if (stdout.trim()) this.logger.log(`📋 stdout: ${stdout.trim()}`);
+                if (stderr.trim()) this.logger.warn(`⚠️ stderr: ${stderr.trim()}`);
+                if (code !== 0) {
+                  reject(new Error(`PowerShell net user failed (exit ${code}): ${stderr.trim() || stdout.trim()}`));
+                } else {
+                  resolve();
+                }
+              });
+            });
+          });
+
+          conn.on('error', (err) => reject(new Error(`SSH connection error: ${err.message}`)));
+
+          conn.connect({
+            host: publicIp,
+            port: 22,
+            username: 'opc',
+            privateKey: Buffer.from(adminPrivateKey, 'utf8'),
+            readyTimeout: 30_000,
+          });
+        }).catch(reject);
+      });
+    } finally {
+      try {
+        await this.removeSshPort(securityListId);
+        this.logger.log(`🔒 SSH port 22 rule removed from security list`);
+      } catch (cleanErr: any) {
+        this.logger.warn(`⚠️ Failed to remove SSH port 22 rule: ${cleanErr.message}`);
+      }
+    }
+  }
+
+  /**
+   * Temporarily open SSH port 22 in a security list.
+   */
+  private async ensureSshPortOpen(securityListId: string): Promise<void> {
+    const securityList = await this.getSecurityList(securityListId);
+
+    const alreadyOpen = securityList.ingressSecurityRules.some((rule: any) =>
+      rule.protocol === '6' &&
+      rule.tcpOptions?.destinationPortRange?.min === 22 &&
+      rule.tcpOptions?.destinationPortRange?.max === 22,
+    );
+
+    if (alreadyOpen) {
+      this.logger.log('✅ SSH port 22 is already open');
+      return;
+    }
+
+    const newIngressRules = [
+      ...securityList.ingressSecurityRules,
+      {
+        source: '0.0.0.0/0',
+        protocol: '6',
+        isStateless: false,
+        tcpOptions: {
+          destinationPortRange: { min: 22, max: 22 },
+        },
+        description: 'SSH (temporary for password reset)',
+      },
+    ];
+
+    await this.virtualNetworkClient.updateSecurityList({
+      securityListId,
+      updateSecurityListDetails: {
+        ingressSecurityRules: newIngressRules,
+        egressSecurityRules: securityList.egressSecurityRules,
+      },
+    });
+
+    this.logger.log('✅ SSH port 22 opened');
+  }
+
+  /**
+   * Remove the temporary SSH port 22 rule from a security list.
+   */
+  private async removeSshPort(securityListId: string): Promise<void> {
+    const securityList = await this.getSecurityList(securityListId);
+
+    const filteredRules = securityList.ingressSecurityRules.filter((rule: any) =>
+      !(
+        rule.protocol === '6' &&
+        rule.tcpOptions?.destinationPortRange?.min === 22 &&
+        rule.tcpOptions?.destinationPortRange?.max === 22
+      ),
+    );
+
+    await this.virtualNetworkClient.updateSecurityList({
+      securityListId,
+      updateSecurityListDetails: {
+        ingressSecurityRules: filteredRules,
+        egressSecurityRules: securityList.egressSecurityRules,
+      },
+    });
+
+    this.logger.log('✅ SSH port 22 closed');
   }
 
   /**
