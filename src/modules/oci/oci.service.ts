@@ -2234,10 +2234,6 @@ chmod 600 ~/.ssh/authorized_keys`;
         queryResolution = '1h';
       }
 
-      this.logger.debug(
-        `Metrics for ${instanceId}: time range ${timeRangeHours.toFixed(2)}h, using ${queryResolution} resolution`,
-      );
-
       const summarizeMetricsDataRequest: oci.monitoring.requests.SummarizeMetricsDataRequest = {
         compartmentId: compartmentId,
         summarizeMetricsDataDetails: {
