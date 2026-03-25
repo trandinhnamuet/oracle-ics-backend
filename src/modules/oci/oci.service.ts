@@ -2705,7 +2705,7 @@ chmod 600 ~/.ssh/authorized_keys`;
   ): Promise<void> {
     this.logger.log(`🔌 Connecting via WinRM to ${publicIp}:5986...`);
 
-    const scriptPath = path.join(__dirname, '..', '..', '..', 'scripts', 'winrm-password-reset.py');
+    const scriptPath = path.join(process.cwd(), 'scripts', 'winrm-password-reset.py');
     if (!fs.existsSync(scriptPath)) {
       throw new Error(`WinRM helper script not found at ${scriptPath}`);
     }
