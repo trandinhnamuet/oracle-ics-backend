@@ -2362,9 +2362,32 @@ chmod 600 ~/.ssh/authorized_keys`;
   }
 
   /**
-   * Reset Windows VM password using OCI Run Command (Compute Instance Agent)
-   * This approach does NOT require SSH port 22 — it works through the OCI control plane
-   * The OCI agent pre-installed on all OCI instances will pick up and execute the command
+   * Enable the "run-command" plugin on an OCI instance via UpdateInstance.
+   * Must also set isManagementDisabled=false so management plugins can run.
+   */
+  private async enableRunCommandPlugin(instanceId: string): Promise<void> {
+    this.logger.log(`🔌 Enabling run-command plugin on instance: ${instanceId}`);
+    await this.computeClient.updateInstance({
+      instanceId,
+      updateInstanceDetails: {
+        agentConfig: {
+          isManagementDisabled: false,
+          pluginsConfig: [
+            {
+              name: 'run-command',
+              desiredState: oci.core.models.InstanceAgentPluginConfigDetails.DesiredState.Enabled,
+            },
+          ],
+        },
+      },
+    });
+    this.logger.log(`✅ run-command plugin enable request sent`);
+  }
+
+  /**
+   * Reset Windows VM password using OCI Run Command (Compute Instance Agent).
+   * Automatically enables the run-command plugin if not yet active.
+   * Does NOT require SSH port 22 — works through the OCI control plane.
    */
   async runWindowsPasswordReset(
     instanceId: string,
@@ -2373,24 +2396,32 @@ chmod 600 ~/.ssh/authorized_keys`;
   ): Promise<void> {
     this.logger.log(`🚀 Starting OCI Run Command for Windows password reset on instance: ${instanceId}`);
 
-    // Escape the password for use in PowerShell (escape single quotes and special chars)
+    // Step 1: Pre-enable the run-command plugin so the agent will execute commands.
+    // This is idempotent — safe to call even when already enabled.
+    try {
+      await this.enableRunCommandPlugin(instanceId);
+      // Wait 30 seconds for the plugin to fully initialise before sending the command.
+      this.logger.log(`⏳ Waiting 30 s for run-command plugin to initialise...`);
+      await new Promise(resolve => setTimeout(resolve, 30000));
+    } catch (enableErr: any) {
+      // Non-fatal: log and continue — the plugin may already be enabled.
+      this.logger.warn(`⚠️ Could not pre-enable run-command plugin: ${enableErr.message}. Continuing anyway...`);
+    }
+
+    // Step 2: Build the PowerShell script to change the password
     const escapedPassword = newPassword.replace(/'/g, "''");
-    const psScript = `
-$password = '${escapedPassword}'
+    const psScript = `$password = '${escapedPassword}'
 $securePass = ConvertTo-SecureString $password -AsPlainText -Force
 Set-LocalUser -Name opc -Password $securePass
-Write-Output "Password changed successfully"
-`.trim();
+Write-Output "Password changed successfully"`;
 
-    // Create the Run Command
+    // Step 3: Create the Run Command
     const createRequest: oci.computeinstanceagent.requests.CreateInstanceAgentCommandRequest = {
       createInstanceAgentCommandDetails: {
         compartmentId: compartmentId,
         executionTimeOutInSeconds: 120,
         displayName: 'Reset Windows Password',
-        target: {
-          instanceId: instanceId,
-        },
+        target: { instanceId },
         content: {
           source: {
             sourceType: 'TEXT',
@@ -2407,8 +2438,8 @@ Write-Output "Password changed successfully"
     const commandId = createResponse.instanceAgentCommand.id;
     this.logger.log(`✅ OCI Run Command created: ${commandId}`);
 
-    // Poll for completion (max 3 minutes, every 10 seconds)
-    const maxWaitMs = 180000;
+    // Step 4: Poll for completion (max 5 minutes, every 10 seconds)
+    const maxWaitMs = 300000;
     const pollIntervalMs = 10000;
     const startTime = Date.now();
 
@@ -2449,6 +2480,6 @@ Write-Output "Password changed successfully"
       }
     }
 
-    throw new Error('OCI Run Command timed out waiting for completion (3 minutes exceeded)');
+    throw new Error('OCI Run Command timed out waiting for completion (5 minutes exceeded). Please enable the "run-command" Oracle Cloud Agent plugin on the VM manually via OCI Console.');
   }
 }
