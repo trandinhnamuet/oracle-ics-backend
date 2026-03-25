@@ -742,13 +742,20 @@ export class VmSubscriptionService {
     const newPassword = this.generateWindowsPassword();
     this.logger.log(`🔐 New password generated (length: ${newPassword.length})`);
 
-    // Step 7: Reset password via OCI Run Command
-    this.logger.log(`🚀 Sending OCI Run Command to instance ${vm.instance_id}...`);
+    // Step 7: Reset password via OCI Run Command (with WinRM fallback)
+    this.logger.log(`🚀 Sending password reset to instance ${vm.instance_id}...`);
     try {
-      await this.ociService.runWindowsPasswordReset(vm.instance_id, vm.compartment_id, newPassword);
-      this.logger.log(`✅ Password changed successfully via OCI Run Command`);
+      await this.ociService.runWindowsPasswordReset(
+        vm.instance_id,
+        vm.compartment_id,
+        newPassword,
+        vm.subnet_id,
+        vm.public_ip,
+        vm.windows_initial_password,
+      );
+      this.logger.log(`✅ Password changed successfully`);
     } catch (runCmdError) {
-      this.logger.error(`❌ OCI Run Command failed: ${runCmdError.message}`);
+      this.logger.error(`❌ Password reset failed: ${runCmdError.message}`);
       throw new BadRequestException(`Failed to reset Windows password: ${runCmdError.message}`);
     }
 
