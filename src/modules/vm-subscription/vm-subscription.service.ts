@@ -681,6 +681,269 @@ export class VmSubscriptionService {
   }
 
   /**
+   * Reset Windows VM password via SSH
+   * Connects to the Windows VM using admin SSH key and runs net user command
+   * OCI Windows images come with OpenSSH pre-installed
+   */
+  async resetWindowsPassword(subscriptionId: string, userId: number) {
+    this.logger.log('========================================');
+    this.logger.log(`🔑 RESET WINDOWS PASSWORD`);
+    this.logger.log(`📋 Subscription ID: ${subscriptionId}`);
+    this.logger.log(`👤 User ID: ${userId}`);
+    this.logger.log('========================================');
+
+    // Step 1: Validate subscription
+    const subscription = await this.checkSubscriptionEligibility(subscriptionId, userId);
+    this.logger.log(`✅ Subscription eligibility check passed`);
+
+    if (!subscription.vm_instance_id) {
+      throw new BadRequestException('VM not configured for this subscription');
+    }
+
+    // Step 2: Find VM
+    const vm = await this.vmInstanceRepo.findOne({
+      where: { id: subscription.vm_instance_id },
+    });
+
+    if (!vm) {
+      this.logger.error(`❌ VM not found with ID: ${subscription.vm_instance_id}`);
+      throw new NotFoundException('VM not found');
+    }
+
+    this.logger.log(`✅ VM found: ${vm.instance_name} (${vm.operating_system})`);
+
+    // Step 3: Verify this is a Windows VM
+    const isWindows = vm.operating_system?.toLowerCase().includes('windows');
+    if (!isWindows) {
+      this.logger.warn(`❌ Not a Windows VM: ${vm.operating_system}`);
+      throw new BadRequestException(
+        'Password reset is only available for Windows VMs. For Linux VMs, use SSH key regeneration.',
+      );
+    }
+
+    // Step 4: Check VM is running
+    this.logger.log(`🔍 Checking VM lifecycle state...`);
+    const vmDetail = await this.vmProvisioningService.getVmById(subscription.user_id, vm.id);
+    this.logger.log(`📊 VM lifecycle state: ${vmDetail.lifecycleState}`);
+
+    if (vmDetail.lifecycleState !== 'RUNNING') {
+      throw new BadRequestException(
+        `VM must be in RUNNING state to reset password. Current state: ${vmDetail.lifecycleState}`,
+      );
+    }
+
+    // Step 5: Check VM has public IP
+    if (!vm.public_ip) {
+      throw new BadRequestException('VM does not have a public IP address');
+    }
+
+    // Step 6: Generate a secure random password
+    // Windows password requirements: min 8 chars, uppercase, lowercase, digit, special char
+    const newPassword = this.generateWindowsPassword();
+    this.logger.log(`🔐 New password generated (length: ${newPassword.length})`);
+
+    // Step 7: Get admin SSH key
+    this.logger.log(`🔑 Retrieving admin SSH key...`);
+    let adminKey = vm.system_ssh_key_id
+      ? await this.systemSshKeyService.getSystemKeyById(vm.system_ssh_key_id).catch(() => null)
+      : null;
+
+    if (!adminKey) {
+      this.logger.warn(`⚠️ VM-specific key not found, falling back to active key`);
+      adminKey = await this.systemSshKeyService.getActiveKey();
+    }
+
+    if (!adminKey) {
+      this.logger.error(`❌ No active admin SSH key found`);
+      throw new InternalServerErrorException('Admin SSH key not configured');
+    }
+
+    this.logger.log(`✅ Admin key retrieved (ID: ${adminKey.id})`);
+
+    // Step 8: Decrypt admin private key
+    this.logger.log(`🔓 Decrypting admin private key...`);
+    let adminPrivateKey = decryptPrivateKey(adminKey.private_key_encrypted);
+
+    // Convert PKCS#8 to PKCS#1 if needed for ssh2 compatibility
+    if (adminPrivateKey.includes('BEGIN PRIVATE KEY')) {
+      this.logger.log(`🔄 Converting PKCS#8 key to PKCS#1 format...`);
+      try {
+        const keyObject = crypto.createPrivateKey(adminPrivateKey);
+        adminPrivateKey = keyObject.export({ type: 'pkcs1', format: 'pem' }).toString();
+        this.logger.log(`✅ Key converted to PKCS#1 (RSA PRIVATE KEY)`);
+      } catch (convertError) {
+        this.logger.warn(`⚠️ Key conversion failed: ${convertError.message}`);
+      }
+    }
+
+    if (!adminPrivateKey.endsWith('\n')) {
+      adminPrivateKey += '\n';
+    }
+
+    this.logger.log(`✅ Admin key decrypted (length: ${adminPrivateKey.length} bytes)`);
+
+    // Step 9: SSH into VM and change password
+    this.logger.log(`🔐 Connecting to opc@${vm.public_ip} via SSH to change password...`);
+
+    try {
+      await this.changeWindowsPasswordViaSsh(vm.public_ip, adminPrivateKey, newPassword);
+      this.logger.log(`✅ Password changed successfully via SSH`);
+    } catch (sshError) {
+      this.logger.error(`❌ SSH password change failed: ${sshError.message}`);
+      throw new BadRequestException(
+        `Failed to reset password: ${sshError.message}. Please ensure the VM is running and accessible.`,
+      );
+    }
+
+    // Step 10: Update password in database
+    this.logger.log(`💾 Saving new password to database...`);
+    await this.vmInstanceRepo.update(vm.id, {
+      windows_initial_password: newPassword,
+    });
+    this.logger.log(`✅ Password saved to database`);
+
+    this.logger.log('========================================');
+    this.logger.log(`🎉 WINDOWS PASSWORD RESET COMPLETE`);
+    this.logger.log('========================================');
+
+    return {
+      success: true,
+      username: 'opc',
+      newPassword: newPassword,
+      message: 'Windows password has been reset successfully.',
+    };
+  }
+
+  /**
+   * Generate a secure random Windows-compatible password
+   * Ensures complexity requirements: uppercase, lowercase, digit, special char
+   */
+  private generateWindowsPassword(): string {
+    const upper = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    const lower = 'abcdefghijklmnopqrstuvwxyz';
+    const digits = '0123456789';
+    const special = '!@#$%&*_+-=';
+    const all = upper + lower + digits + special;
+
+    // Ensure at least one of each required type
+    let password = '';
+    password += upper[crypto.randomInt(upper.length)];
+    password += lower[crypto.randomInt(lower.length)];
+    password += digits[crypto.randomInt(digits.length)];
+    password += special[crypto.randomInt(special.length)];
+
+    // Fill remaining 12 characters randomly (total 16 chars)
+    for (let i = 0; i < 12; i++) {
+      password += all[crypto.randomInt(all.length)];
+    }
+
+    // Shuffle the password characters
+    const arr = password.split('');
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = crypto.randomInt(i + 1);
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+
+    return arr.join('');
+  }
+
+  /**
+   * Change Windows password via SSH connection
+   * Uses OpenSSH on Windows VM to execute net user command
+   */
+  private async changeWindowsPasswordViaSsh(
+    publicIp: string,
+    adminPrivateKey: string,
+    newPassword: string,
+  ): Promise<void> {
+    const { Client } = await import('ssh2');
+
+    return new Promise((resolve, reject) => {
+      const conn = new Client();
+      const timeout = setTimeout(() => {
+        conn.end();
+        reject(new Error('SSH connection timed out after 30 seconds'));
+      }, 30000);
+
+      conn.on('ready', () => {
+        this.logger.log(`✅ SSH connection established to ${publicIp}`);
+
+        // Use PowerShell to change the password (more reliable on Windows)
+        // Escape single quotes in password for PowerShell
+        const escapedPassword = newPassword.replace(/'/g, "''");
+        const command = `powershell -Command "net user opc '${escapedPassword}'"`;
+
+        this.logger.log(`🔧 Executing password change command...`);
+
+        conn.exec(command, (err, stream) => {
+          if (err) {
+            clearTimeout(timeout);
+            conn.end();
+            this.logger.error(`❌ SSH exec error: ${err.message}`);
+            return reject(new Error(`Failed to execute command: ${err.message}`));
+          }
+
+          let stdout = '';
+          let stderr = '';
+
+          stream.on('data', (data: Buffer) => {
+            stdout += data.toString();
+            this.logger.log(`📤 stdout: ${data.toString().trim()}`);
+          });
+
+          stream.stderr.on('data', (data: Buffer) => {
+            stderr += data.toString();
+            this.logger.warn(`📤 stderr: ${data.toString().trim()}`);
+          });
+
+          stream.on('close', (code: number) => {
+            clearTimeout(timeout);
+            conn.end();
+
+            this.logger.log(`🔚 Command exit code: ${code}`);
+            this.logger.log(`📤 Full stdout: ${stdout.trim()}`);
+            if (stderr) this.logger.log(`📤 Full stderr: ${stderr.trim()}`);
+
+            if (code === 0) {
+              this.logger.log(`✅ Password change command completed successfully`);
+              resolve();
+            } else {
+              this.logger.error(`❌ Password change command failed with exit code ${code}`);
+              reject(new Error(
+                `Password change failed (exit code ${code}): ${stderr || stdout || 'Unknown error'}`,
+              ));
+            }
+          });
+        });
+      });
+
+      conn.on('error', (err) => {
+        clearTimeout(timeout);
+        this.logger.error(`❌ SSH connection error: ${err.message}`);
+        reject(new Error(`SSH connection failed: ${err.message}`));
+      });
+
+      conn.connect({
+        host: publicIp,
+        port: 22,
+        username: 'opc',
+        privateKey: adminPrivateKey,
+        readyTimeout: 20000,
+        algorithms: {
+          kex: [
+            'ecdh-sha2-nistp256',
+            'ecdh-sha2-nistp384',
+            'ecdh-sha2-nistp521',
+            'diffie-hellman-group-exchange-sha256',
+            'diffie-hellman-group14-sha256',
+            'diffie-hellman-group14-sha1',
+          ],
+        },
+      });
+    });
+  }
+
+  /**
    * Generate SSH key pair for user
    */
   private generateSshKeyPair() {

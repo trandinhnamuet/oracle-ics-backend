@@ -107,6 +107,25 @@ export class VmSubscriptionController {
   }
 
   /**
+   * Reset Windows VM password via SSH
+   * POST /vm-subscription/:subscriptionId/reset-windows-password
+   */
+  @Post(':subscriptionId/reset-windows-password')
+  @HttpCode(HttpStatus.OK)
+  async resetWindowsPassword(
+    @Request() req,
+    @Param('subscriptionId') subscriptionId: string,
+  ) {
+    console.log('\n========== RESET WINDOWS PASSWORD ENDPOINT ==========');
+    console.log('📋 Subscription ID:', subscriptionId);
+    console.log('👤 User ID:', req.user?.id);
+    console.log('====================================================\n');
+
+    const userId = req.user.id;
+    return this.vmSubscriptionService.resetWindowsPassword(subscriptionId, userId);
+  }
+
+  /**
    * Delete VM only (keep subscription)
    * DELETE /vm-subscription/:subscriptionId/vm-only
    */
