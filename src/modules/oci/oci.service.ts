@@ -646,6 +646,56 @@ export class OciService {
   }
 
   /**
+   * Add SSH (port 22) rule to Security List if not exists
+   */
+  async ensureSshAccessEnabled(securityListId: string): Promise<void> {
+    try {
+      this.logger.log(`🔍 Checking if SSH port 22 is open in security list: ${securityListId}`);
+
+      const securityList = await this.getSecurityList(securityListId);
+
+      const hasSshRule = securityList.ingressSecurityRules.some((rule: any) =>
+        rule.protocol === '6' &&
+        rule.tcpOptions?.destinationPortRange?.min === 22 &&
+        rule.tcpOptions?.destinationPortRange?.max === 22,
+      );
+
+      if (hasSshRule) {
+        this.logger.log('✅ SSH port 22 is already open');
+        return;
+      }
+
+      this.logger.log('⚠️  SSH port 22 is not open, adding rule...');
+
+      const newIngressRules = [
+        ...securityList.ingressSecurityRules,
+        {
+          source: '0.0.0.0/0',
+          protocol: '6',
+          isStateless: false,
+          tcpOptions: {
+            destinationPortRange: { min: 22, max: 22 },
+          },
+          description: 'SSH access for admin operations',
+        },
+      ];
+
+      await this.virtualNetworkClient.updateSecurityList({
+        securityListId,
+        updateSecurityListDetails: {
+          ingressSecurityRules: newIngressRules,
+          egressSecurityRules: securityList.egressSecurityRules,
+        },
+      });
+
+      this.logger.log('✅ SSH port 22 opened successfully in security list');
+    } catch (error) {
+      this.logger.error('❌ Error ensuring SSH access:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Add RDP (port 3389) rule to Security List if not exists
    * @param securityListId - The OCID of the security list
    */

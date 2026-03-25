@@ -742,20 +742,85 @@ export class VmSubscriptionService {
     const newPassword = this.generateWindowsPassword();
     this.logger.log(`🔐 New password generated (length: ${newPassword.length})`);
 
-    // Step 7: Reset password via OCI Run Command (does NOT require SSH port 22)
-    this.logger.log(`🚀 Sending OCI Run Command to instance ${vm.instance_id}...`);
-
-    try {
-      await this.ociService.runWindowsPasswordReset(vm.instance_id, vm.compartment_id, newPassword);
-      this.logger.log(`✅ Password changed successfully via OCI Run Command`);
-    } catch (runCmdError) {
-      this.logger.error(`❌ OCI Run Command failed: ${runCmdError.message}`);
-      throw new BadRequestException(
-        `Failed to reset password: ${runCmdError.message}. Please ensure the OCI agent is running on the VM.`,
-      );
+    // Step 7: Open SSH port 22 in the VCN Security List (Windows VMs only have RDP open by default)
+    if (vm.vcn_id) {
+      try {
+        this.logger.log(`🔓 Ensuring SSH port 22 is open in security list...`);
+        const vcnDetails = await this.ociService.getVcn(vm.vcn_id);
+        if (vcnDetails.defaultSecurityListId) {
+          await this.ociService.ensureSshAccessEnabled(vcnDetails.defaultSecurityListId);
+          this.logger.log(`✅ SSH port 22 is open — waiting 10s for rule to propagate...`);
+          await new Promise(resolve => setTimeout(resolve, 10000));
+        }
+      } catch (sslErr) {
+        this.logger.warn(`⚠️ Could not open SSH port in security list: ${sslErr.message}. Continuing anyway...`);
+      }
     }
 
-    // Step 8: Update password in database
+    // Step 8: Get admin SSH key and decrypt it
+    this.logger.log(`🔑 Retrieving admin SSH key...`);
+    let adminKey = vm.system_ssh_key_id
+      ? await this.systemSshKeyService.getSystemKeyById(vm.system_ssh_key_id).catch(() => null)
+      : null;
+
+    if (!adminKey) {
+      this.logger.warn(`⚠️ VM-specific key not found, falling back to active key`);
+      adminKey = await this.systemSshKeyService.getActiveKey();
+    }
+
+    if (!adminKey) {
+      this.logger.error(`❌ No active admin SSH key found`);
+      throw new InternalServerErrorException('Admin SSH key not configured');
+    }
+
+    this.logger.log(`✅ Admin key retrieved (ID: ${adminKey.id})`);
+
+    let adminPrivateKey = decryptPrivateKey(adminKey.private_key_encrypted);
+
+    // Convert PKCS#8 to PKCS#1 if needed for ssh2 compatibility
+    if (adminPrivateKey.includes('BEGIN PRIVATE KEY')) {
+      try {
+        const keyObject = crypto.createPrivateKey(adminPrivateKey);
+        adminPrivateKey = keyObject.export({ type: 'pkcs1', format: 'pem' }).toString();
+        this.logger.log(`✅ Key converted to PKCS#1 format`);
+      } catch (convertError) {
+        this.logger.warn(`⚠️ Key conversion failed: ${convertError.message}`);
+      }
+    }
+    if (!adminPrivateKey.endsWith('\n')) adminPrivateKey += '\n';
+
+    // Step 9: Try SSH first (faster, more reliable when port 22 is open)
+    this.logger.log(`🔐 Attempting SSH connection to opc@${vm.public_ip}...`);
+    let passwordChanged = false;
+    let sshErrorMessage = '';
+
+    try {
+      await this.changeWindowsPasswordViaSsh(vm.public_ip, adminPrivateKey, newPassword);
+      this.logger.log(`✅ Password changed successfully via SSH`);
+      passwordChanged = true;
+    } catch (sshError) {
+      sshErrorMessage = sshError.message;
+      this.logger.warn(`⚠️ SSH failed: ${sshErrorMessage} — falling back to OCI Run Command...`);
+    }
+
+    // Step 10: Fallback to OCI Run Command if SSH failed
+    if (!passwordChanged) {
+      this.logger.log(`🚀 Sending OCI Run Command to instance ${vm.instance_id}...`);
+      try {
+        await this.ociService.runWindowsPasswordReset(vm.instance_id, vm.compartment_id, newPassword);
+        this.logger.log(`✅ Password changed successfully via OCI Run Command`);
+        passwordChanged = true;
+      } catch (runCmdError) {
+        this.logger.error(`❌ OCI Run Command also failed: ${runCmdError.message}`);
+        throw new BadRequestException(
+          `Failed to reset password via both SSH and OCI Run Command. ` +
+          `SSH error: ${sshErrorMessage || 'unknown'}. ` +
+          `Run Command error: ${runCmdError.message}.`,
+        );
+      }
+    }
+
+    // Step 11: Update password in database
     this.logger.log(`💾 Saving new password to database...`);
     await this.vmInstanceRepo.update(vm.id, {
       windows_initial_password: newPassword,
