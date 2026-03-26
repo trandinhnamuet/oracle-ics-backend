@@ -15,13 +15,11 @@ username = data['username']
 current_password = data['currentPassword']
 new_password = data['newPassword']
 
-# For local Windows accounts, NTLM requires the username in '.\username' format.
-# We try negotiate (Kerberos → NTLM fallback) first, then plain NTLM, across both formats.
+# For local Windows accounts, NTLM sometimes requires '.\username' format.
+# Try both formats to maximize compatibility.
 SESSION_ATTEMPTS = [
-    ('negotiate', f'.\\{username}'),
-    ('ntlm',      f'.\\{username}'),
-    ('negotiate', username),
-    ('ntlm',      username),
+    ('ntlm', f'.\\{username}'),
+    ('ntlm', username),
 ]
 
 last_error = None

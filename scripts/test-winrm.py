@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Direct WinRM test."""
+"""Direct WinRM test - ensure port 5986 is already open in OCI security list before running."""
 import subprocess
 import json
 
@@ -15,7 +15,7 @@ r = subprocess.run(
     input=test_json,
     capture_output=True,
     text=True,
-    timeout=60,
+    timeout=120,
 )
 print('STDOUT:', r.stdout.strip())
 print('STDERR:', r.stderr.strip())
