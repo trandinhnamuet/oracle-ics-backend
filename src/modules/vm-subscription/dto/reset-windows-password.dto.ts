@@ -10,27 +10,26 @@ function IsWindowsPasswordCompliant(validationOptions?: ValidationOptions) {
       validator: {
         validate(value: unknown): boolean {
           if (typeof value !== 'string') return false;
-          const categories = [
-            /[A-Z]/.test(value),
-            /[a-z]/.test(value),
-            /[0-9]/.test(value),
-            /[^A-Za-z0-9]/.test(value),
-          ];
-          const metCount = categories.filter(Boolean).length;
           // Reject if contains the account name "opc" (case-insensitive)
           if (value.toLowerCase().includes('opc')) return false;
-          return metCount >= 3;
+          // Require ALL 4 categories (matches OCI Windows image hardened policy)
+          const hasUpper = /[A-Z]/.test(value);
+          const hasLower = /[a-z]/.test(value);
+          const hasDigit = /[0-9]/.test(value);
+          const hasSpecial = /[^A-Za-z0-9]/.test(value);
+          return hasUpper && hasLower && hasDigit && hasSpecial;
         },
         defaultMessage(args: ValidationArguments): string {
           const val = args.value as string;
           if (typeof val === 'string' && val.toLowerCase().includes('opc')) {
             return 'Password must not contain the username "opc"';
           }
-          return (
-            'Password must contain characters from at least 3 of the following 4 categories: ' +
-            'uppercase letters (A-Z), lowercase letters (a-z), digits (0-9), ' +
-            'special characters (e.g. !@#$%^&*)'
-          );
+          const missing: string[] = [];
+          if (!/[A-Z]/.test(val)) missing.push('uppercase letter (A-Z)');
+          if (!/[a-z]/.test(val)) missing.push('lowercase letter (a-z)');
+          if (!/[0-9]/.test(val)) missing.push('digit (0-9)');
+          if (!/[^A-Za-z0-9]/.test(val)) missing.push('special character (e.g. !@#$%)');
+          return `Password is missing: ${missing.join(', ')}`;
         },
       },
     });

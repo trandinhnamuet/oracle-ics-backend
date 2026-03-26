@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import * as oci from 'oci-sdk';
@@ -2563,6 +2563,12 @@ chmod 600 ~/.ssh/authorized_keys`;
         this.logger.log(`✅ Password changed via WinRM`);
         return;
       } catch (winrmErr: any) {
+        // If Windows itself rejected the password (bad input), re-throw immediately
+        // — no point trying other strategies with the same password
+        if (winrmErr instanceof BadRequestException) {
+          this.logger.warn(`⚠️ WinRM: Windows rejected the password — propagating to caller`);
+          throw winrmErr;
+        }
         this.logger.warn(`⚠️ WinRM strategy failed: ${winrmErr.message}`);
       } finally {
         try {
@@ -3031,10 +3037,28 @@ chmod 600 ~/.ssh/authorized_keys`;
 
     if (result.status !== 0) {
       let errorMsg = 'WinRM password change failed';
+      let isPasswordRejected = false;
       try {
         const parsed = JSON.parse(result.stdout);
-        errorMsg = parsed.error || parsed.stderr || errorMsg;
+        const stderr: string = parsed.stderr || '';
+        errorMsg = stderr || parsed.error || errorMsg;
+        // Detect Windows password policy rejection (NET HELPMSG 2245)
+        if (
+          stderr.toLowerCase().includes('password policy') ||
+          stderr.toLowerCase().includes('does not meet') ||
+          stderr.toLowerCase().includes('2245')
+        ) {
+          isPasswordRejected = true;
+        }
       } catch { /* ignore parse error */ }
+      if (isPasswordRejected) {
+        // Throw BadRequestException so the caller can surface it to the user
+        // without falling through to other strategies (which would also fail)
+        throw new BadRequestException(
+          `Windows rejected the new password: ${errorMsg.trim()}. ` +
+          `Please choose a password with at least 8 characters containing uppercase, lowercase, digits, and special characters.`
+        );
+      }
       throw new Error(errorMsg);
     }
   }
