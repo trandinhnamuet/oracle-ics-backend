@@ -12,7 +12,7 @@ import {
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../../auth/jwt-auth.guard';
 import { VmSubscriptionService } from './vm-subscription.service';
-import { ConfigureVmDto, RequestNewKeyDto } from './dto';
+import { ConfigureVmDto, RequestNewKeyDto, ResetWindowsPasswordDto } from './dto';
 import { VmActionDto } from '../vm-provisioning/dto';
 
 @Controller('vm-subscription')
@@ -115,14 +115,16 @@ export class VmSubscriptionController {
   async resetWindowsPassword(
     @Request() req,
     @Param('subscriptionId') subscriptionId: string,
+    @Body() body: ResetWindowsPasswordDto,
   ) {
     console.log('\n========== RESET WINDOWS PASSWORD ENDPOINT ==========');
     console.log('📋 Subscription ID:', subscriptionId);
     console.log('👤 User ID:', req.user?.id);
+    console.log('🔑 Custom password provided:', !!body?.newPassword);
     console.log('====================================================\n');
 
     const userId = req.user.id;
-    return this.vmSubscriptionService.resetWindowsPassword(subscriptionId, userId);
+    return this.vmSubscriptionService.resetWindowsPassword(subscriptionId, userId, body?.newPassword);
   }
 
   /**

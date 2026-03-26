@@ -685,11 +685,12 @@ export class VmSubscriptionService {
    * Connects to the Windows VM using admin SSH key and runs net user command
    * OCI Windows images come with OpenSSH pre-installed
    */
-  async resetWindowsPassword(subscriptionId: string, userId: number) {
+  async resetWindowsPassword(subscriptionId: string, userId: number, customPassword?: string) {
     this.logger.log('========================================');
     this.logger.log(`🔑 RESET WINDOWS PASSWORD`);
     this.logger.log(`📋 Subscription ID: ${subscriptionId}`);
     this.logger.log(`👤 User ID: ${userId}`);
+    this.logger.log(`🔐 Custom password provided: ${!!customPassword}`);
     this.logger.log('========================================');
 
     // Step 1: Validate subscription
@@ -737,10 +738,10 @@ export class VmSubscriptionService {
       throw new BadRequestException('VM does not have a public IP address');
     }
 
-    // Step 6: Generate a secure random password
+    // Step 6: Use provided password or generate a secure random one
     // Windows password requirements: min 8 chars, uppercase, lowercase, digit, special char
-    const newPassword = this.generateWindowsPassword();
-    this.logger.log(`🔐 New password generated (length: ${newPassword.length})`);
+    const newPassword = customPassword ?? this.generateWindowsPassword();
+    this.logger.log(`🔐 Password source: ${customPassword ? 'user-provided' : 'auto-generated'} (length: ${newPassword.length})`);
 
     // Step 7: Get system admin private key for SSH-based password reset fallback.
     // The admin public key was added to the VM's authorized_keys by cloudbase-init at

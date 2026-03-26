@@ -1,3 +1,0 @@
-username=icsadmin
-IPv4=14.224.205.40
-PASSWORD=ics2025.,
