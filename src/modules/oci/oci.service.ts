@@ -1009,20 +1009,43 @@ runcmd:
 `;
 
       // Prepare metadata
-      // For Windows VMs: Only set ssh_authorized_keys (even though Windows doesn't use them, 
-      //                  it's safer to not send any user_data that might be processed by Cloudbase-Init)
-      // For Linux VMs: Set both ssh_authorized_keys and cloud-init user_data
+      // For Windows VMs: Send ssh_authorized_keys + a cloudbase-init PowerShell user_data
+      //                  that installs/enables OpenSSH Server. This allows credential-less
+      //                  password reset via SSH admin key (see runWindowsPasswordReset).
+      // For Linux VMs: Set both ssh_authorized_keys and full cloud-init user_data.
       const metadata: any = {
         ssh_authorized_keys: sshPublicKeys.join('\n'),
       };
 
-      // Only add user_data for Linux VMs
       if (!isWindowsImage && cloudInitConfig) {
+        // Linux: full cloud-init config
         metadata.user_data = Buffer.from(cloudInitConfig).toString('base64');
         this.logger.log(`🐧 Linux VM: Sending SSH keys + cloud-init config`);
         this.logger.log(`📝 Cloud-init user_data configured (${cloudInitConfig!.length} chars, base64: ${metadata.user_data.length} chars)`);
-      } else {
-        this.logger.log(`🪟 Windows VM: Sending SSH keys ONLY (no cloud-init to avoid interfering with password auth)`);
+      } else if (isWindowsImage) {
+        // Windows: install + start OpenSSH Server so the SSH key reset strategy works.
+        // Cloudbase-init will run this on first boot (with #ps1_sysnative prefix for 64-bit PS).
+        // The 'ssh_authorized_keys' metadata entry is written to authorized_keys by cloudbase-init.
+        const windowsSetupScript = [
+          '#ps1_sysnative',
+          'try {',
+          '  $cap = Get-WindowsCapability -Online | Where-Object { $_.Name -like "OpenSSH.Server*" }',
+          '  if ($cap -and $cap.State -ne "Installed") {',
+          '    Add-WindowsCapability -Online -Name $cap.Name',
+          '  }',
+          '  $svc = Get-Service -Name sshd -ErrorAction SilentlyContinue',
+          '  if ($svc) {',
+          '    Set-Service -Name sshd -StartupType AutomaticDelayedStart',
+          '    if ($svc.Status -ne "Running") { Start-Service sshd }',
+          '  }',
+          '  if (-not (Get-NetFirewallRule -Name "OpenSSH-Server-In-TCP" -ErrorAction SilentlyContinue)) {',
+          '    New-NetFirewallRule -Name "OpenSSH-Server-In-TCP" -DisplayName "OpenSSH Server (sshd)"',
+          '      -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22',
+          '  }',
+          '} catch { Write-Output "OpenSSH setup warning: $_" }',
+        ].join('\n');
+        metadata.user_data = Buffer.from(windowsSetupScript).toString('base64');
+        this.logger.log(`🪟 Windows VM: Sending SSH keys + OpenSSH Server setup script`);
       }
 
       this.logger.log(`🔑 Preparing to launch instance with ${sshPublicKeys.length} SSH keys`);
