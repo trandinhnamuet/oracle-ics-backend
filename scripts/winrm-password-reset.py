@@ -15,18 +15,22 @@ username = data['username']
 current_password = data['currentPassword']
 new_password = data['newPassword']
 
-# For local Windows accounts, NTLM sometimes requires '.\username' format.
-# Try both formats to maximize compatibility.
+# Attempt order:
+#   1. HTTPS (5986) + NTLM + .\username  — standard OCI Windows setup
+#   2. HTTPS (5986) + NTLM + username    — some images drop the .\ prefix
+#   3. HTTP  (5985) + basic + username   — fallback when NTLM fails over IP
+#      (basic auth is enabled in user_data setup script; needs AllowUnencrypted=true)
 SESSION_ATTEMPTS = [
-    ('ntlm', f'.\\{username}'),
-    ('ntlm', username),
+    ('https', 5986, 'ntlm',  f'.\\{username}'),
+    ('https', 5986, 'ntlm',  username),
+    ('http',  5985, 'basic', username),
 ]
 
 last_error = None
-for transport, auth_user in SESSION_ATTEMPTS:
+for scheme, port, transport, auth_user in SESSION_ATTEMPTS:
     try:
         s = winrm.Session(
-            f'https://{ip}:5986/wsman',
+            f'{scheme}://{ip}:{port}/wsman',
             auth=(auth_user, current_password),
             transport=transport,
             server_cert_validation='ignore',
@@ -41,17 +45,22 @@ for transport, auth_user in SESSION_ATTEMPTS:
             'stderr': r.std_err.decode('utf-8', errors='replace').strip(),
             'transport': transport,
             'authUser': auth_user,
+            'port': port,
         }
         print(json.dumps(result))
         sys.exit(0 if r.status_code == 0 else 1)
 
     except Exception as e:
         last_error = str(e)
-        # If the error is NOT a credentials rejection, don't retry next format
-        if 'credential' not in last_error.lower() and 'rejected' not in last_error.lower() and 'unauthorized' not in last_error.lower():
-            print(json.dumps({'error': last_error, 'transport': transport, 'authUser': auth_user, 'exitCode': -1}))
+        # Only continue to next attempt if it looks like an auth/credential error.
+        # For connection errors (refused, timeout) stop immediately.
+        is_auth_error = any(k in last_error.lower() for k in [
+            'credential', 'rejected', 'unauthorized', '401', 'ntlm', 'auth'
+        ])
+        if not is_auth_error:
+            print(json.dumps({'error': last_error, 'transport': transport, 'authUser': auth_user, 'port': port, 'exitCode': -1}))
             sys.exit(1)
 
-# All attempts failed with credentials error
+# All attempts failed
 print(json.dumps({'error': f'All auth transports failed. Last error: {last_error}', 'exitCode': -1}))
 sys.exit(1)
