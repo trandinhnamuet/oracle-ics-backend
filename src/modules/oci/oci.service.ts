@@ -1034,22 +1034,42 @@ runcmd:
         // 4. Clear "must change password at next login" flag (CRITICAL for WinRM NTLM auth —
         //    OCI sets this flag by default; WinRM NTLM refuses even correct credentials when set).
         // 5. Create WinRM HTTP listener explicitly (otherwise port 5985 never listens).
+        // IMPORTANT: Each step has its own try-catch so one failure doesn't skip the rest.
+        //            WinRM setup comes FIRST (before OpenSSH) — it's required for password reset.
         const windowsSetupScript = [
           '#ps1_sysnative',
+          // FIX 4: Clear "must change password" flag — OCI sets this by default on first boot.
+          //        WinRM NTLM refuses even correct credentials while this flag is set.
+          'try { net user opc /logonpasswordchg:no } catch {}',
+          // FIX 3+5: Configure WinRM HTTP (port 5985) — basic auth + HTTP listener + firewall rule.
+          //          This MUST succeed for the Python password-reset script to connect.
           'try {',
-          // FIX 4: Clear "must change password" flag — WinRM NTLM fails if this is set
-          '  net user opc /logonpasswordchg:no',
-          // --- OpenSSH Server ---
-          '  $cap = Get-WindowsCapability -Online | Where-Object { $_.Name -like "OpenSSH.Server*" }',
-          '  if ($cap -and $cap.State -ne "Installed") { Add-WindowsCapability -Online -Name $cap.Name }',
+          '  Set-Item -Path WSMan:\\localhost\\Service\\Auth\\Basic -Value $true -Force',
+          '  Set-Item -Path WSMan:\\localhost\\Service\\AllowUnencrypted -Value $true -Force',
+          '} catch {}',
+          'try {',
+          '  $httpListener = Get-WSManInstance winrm/config/listener -SelectorSet @{Address="*";Transport="HTTP"} -ErrorAction SilentlyContinue',
+          '  if (-not $httpListener) { New-WSManInstance winrm/config/listener -SelectorSet @{Address="*";Transport="HTTP"} -ValueSet @{Port="5985"} | Out-Null }',
+          '} catch {}',
+          'try {',
+          '  if (-not (Get-NetFirewallRule -Name "WinRM-HTTP-In-TCP" -ErrorAction SilentlyContinue)) { New-NetFirewallRule -Name "WinRM-HTTP-In-TCP" -DisplayName "WinRM HTTP (5985)" -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 5985 }',
+          '} catch {}',
+          // --- OpenSSH Server (optional; failure here must NOT affect WinRM above) ---
+          'try {',
+          '  $cap = Get-WindowsCapability -Online -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "OpenSSH.Server*" }',
+          '  if ($cap -and $cap.State -ne "Installed") { Add-WindowsCapability -Online -Name $cap.Name -ErrorAction SilentlyContinue }',
           '  $svc = Get-Service -Name sshd -ErrorAction SilentlyContinue',
           '  if ($svc) {',
-          '    Set-Service -Name sshd -StartupType AutomaticDelayedStart',
-          '    if ($svc.Status -ne "Running") { Start-Service sshd }',
+          '    Set-Service -Name sshd -StartupType AutomaticDelayedStart -ErrorAction SilentlyContinue',
+          '    if ($svc.Status -ne "Running") { Start-Service sshd -ErrorAction SilentlyContinue }',
           '  }',
-          // FIX 1: New-NetFirewallRule on a SINGLE line (no line-continuation needed)
+          '} catch {}',
+          // FIX 1: SSH firewall rule on a SINGLE line
+          'try {',
           '  if (-not (Get-NetFirewallRule -Name "OpenSSH-Server-In-TCP" -ErrorAction SilentlyContinue)) { New-NetFirewallRule -Name "OpenSSH-Server-In-TCP" -DisplayName "OpenSSH Server (sshd)" -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 }',
+          '} catch {}',
           // FIX 2: Copy authorized_keys to admin path (required for Administrators-group users)
+          'try {',
           '  $adminKeysDir = "C:\\ProgramData\\ssh"',
           '  $adminKeysFile = "$adminKeysDir\\administrators_authorized_keys"',
           '  $userKeysFile = "C:\\Users\\opc\\.ssh\\authorized_keys"',
@@ -1060,14 +1080,7 @@ runcmd:
           '    icacls $adminKeysFile /grant "NT AUTHORITY\\SYSTEM:(F)" | Out-Null',
           '    icacls $adminKeysFile /grant "BUILTIN\\Administrators:(F)" | Out-Null',
           '  }',
-          // FIX 3: Enable WinRM basic auth + HTTP listener so port-5985 fallback works
-          '  Set-Item -Path WSMan:\\localhost\\Service\\Auth\\Basic -Value $true -Force',
-          '  Set-Item -Path WSMan:\\localhost\\Service\\AllowUnencrypted -Value $true -Force',
-          '  if (-not (Get-NetFirewallRule -Name "WinRM-HTTP-In-TCP" -ErrorAction SilentlyContinue)) { New-NetFirewallRule -Name "WinRM-HTTP-In-TCP" -DisplayName "WinRM HTTP (5985)" -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 5985 }',
-          // FIX 5: Create WinRM HTTP listener explicitly (port 5985 won't listen without this)
-          '  $httpListener = Get-WSManInstance winrm/config/listener -SelectorSet @{Address="*";Transport="HTTP"} -ErrorAction SilentlyContinue',
-          '  if (-not $httpListener) { New-WSManInstance winrm/config/listener -SelectorSet @{Address="*";Transport="HTTP"} -ValueSet @{Port="5985"} | Out-Null }',
-          '} catch { Write-Output "Setup warning: $_" }',
+          '} catch {}',
         ].join('\n');
         metadata.user_data = Buffer.from(windowsSetupScript).toString('base64');
         this.logger.log(`🪟 Windows VM: Sending SSH keys + OpenSSH Server setup script`);

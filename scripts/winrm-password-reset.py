@@ -27,6 +27,8 @@ SESSION_ATTEMPTS = [
 ]
 
 last_error = None
+attempt_errors = []
+
 for scheme, port, transport, auth_user in SESSION_ATTEMPTS:
     try:
         s = winrm.Session(
@@ -52,15 +54,17 @@ for scheme, port, transport, auth_user in SESSION_ATTEMPTS:
 
     except Exception as e:
         last_error = str(e)
+        # Always record the error for diagnostics
+        attempt_errors.append({'port': port, 'transport': transport, 'authUser': auth_user, 'error': last_error[:300]})
         # Only continue to next attempt if it looks like an auth/credential error.
         # For connection errors (refused, timeout) stop immediately.
         is_auth_error = any(k in last_error.lower() for k in [
             'credential', 'rejected', 'unauthorized', '401', 'ntlm', 'auth'
         ])
         if not is_auth_error:
-            print(json.dumps({'error': last_error, 'transport': transport, 'authUser': auth_user, 'port': port, 'exitCode': -1}))
+            print(json.dumps({'error': last_error, 'transport': transport, 'authUser': auth_user, 'port': port, 'exitCode': -1, 'attempts': attempt_errors}))
             sys.exit(1)
 
-# All attempts failed
-print(json.dumps({'error': f'All auth transports failed. Last error: {last_error}', 'exitCode': -1}))
+# All attempts failed — include all attempt errors in the output
+print(json.dumps({'error': f'All auth transports failed. Last error: {last_error}', 'exitCode': -1, 'attempts': attempt_errors}))
 sys.exit(1)
