@@ -2491,20 +2491,41 @@ chmod 600 ~/.ssh/authorized_keys`;
       }
     }
 
-    // ── Strategy 3: Soft-restart VM → reinitialise Oracle Cloud Agent → retry Run Command ──
-    // The agent may be in a stale state (RUNNING but not polling OCI service endpoint).
-    // A SOFTRESET restarts the OS, which causes the agent to reconnect cleanly.
-    this.logger.log(`🔄 Restarting VM to reinitialise Oracle Cloud Agent...`);
+    // ── Strategy 3: WinRM via pywinrm (requires port 5986 + current password from DB) ──
+    // Works as long as the DB password matches the actual VM password.
+    // Try this BEFORE restarting the VM to avoid disrupting the user.
+    if (subnetId && publicIp && currentPassword) {
+      this.logger.log(`🔐 Attempting WinRM password reset...`);
+      const secListId = await this.getSecurityListIdForSubnet(subnetId);
+      await this.ensureWinrmPortOpen(secListId);
+      try {
+        this.logger.log(`⏳ Waiting 15s for WinRM security list propagation...`);
+        await new Promise(resolve => setTimeout(resolve, 15_000));
+
+        await this.changePasswordViaWinrm(publicIp, currentPassword, newPassword);
+        this.logger.log(`✅ Password changed via WinRM`);
+        return;
+      } catch (winrmErr: any) {
+        this.logger.warn(`⚠️ WinRM strategy failed: ${winrmErr.message}`);
+      } finally {
+        try {
+          await this.removeWinrmPort(secListId);
+        } catch (cleanErr: any) {
+          this.logger.warn(`⚠️ Failed to remove WinRM port rule: ${cleanErr.message}`);
+        }
+      }
+    }
+
+    // ── Strategy 4: Soft-restart VM → reinitialise Oracle Cloud Agent → retry Run Command ──
+    // Last resort: SOFTRESET the VM to restart the Oracle Cloud Agent.
+    // This is disruptive (VM reboots) and slow (~5+ min for Windows to fully boot).
+    this.logger.log(`🔄 Last resort: restarting VM to reinitialise Oracle Cloud Agent...`);
     try {
       await this.restartInstance(instanceId);
       this.logger.log(`✅ SOFTRESET issued — waiting for VM to restart...`);
 
-      // Wait for instance to reach RUNNING and agent to initialise (max 5 min)
+      // Wait for OCI to report RUNNING + allow Windows to fully boot
       await this.waitForInstanceRunning(instanceId, 5 * 60_000);
-
-      // Extra wait for Oracle Cloud Agent to connect after OS boot
-      this.logger.log(`⏳ Waiting 60s for Oracle Cloud Agent to initialise...`);
-      await new Promise(resolve => setTimeout(resolve, 60_000));
 
       // Retry Run Command with same 2-minute timeout
       this.logger.log(`🔁 Retrying OCI Run Command after VM restart...`);
@@ -2515,32 +2536,7 @@ chmod 600 ~/.ssh/authorized_keys`;
       this.logger.warn(`⚠️ Restart + Run Command retry failed: ${retryErr.message}`);
     }
 
-    // ── Strategy 4: WinRM via pywinrm (requires port 5986 + current password) ──
-    // Only works when the initial OCI password is still valid (user hasn't changed it yet).
-    if (!subnetId || !publicIp || !currentPassword) {
-      throw new Error('All remote password change methods failed (no WinRM credentials).');
-    }
-
-    this.logger.log(`🔄 Falling back to WinRM for password reset...`);
-    let securityListId: string | undefined;
-    try {
-      securityListId = await this.getSecurityListIdForSubnet(subnetId);
-      await this.ensureWinrmPortOpen(securityListId);
-
-      this.logger.log(`⏳ Waiting 15s for security list propagation...`);
-      await new Promise(resolve => setTimeout(resolve, 15000));
-
-      await this.changePasswordViaWinrm(publicIp, currentPassword, newPassword);
-      this.logger.log(`✅ Password changed via WinRM`);
-    } finally {
-      if (securityListId) {
-        try {
-          await this.removeWinrmPort(securityListId);
-        } catch (cleanErr: any) {
-          this.logger.warn(`⚠️ Failed to remove WinRM port rule: ${cleanErr.message}`);
-        }
-      }
-    }
+    throw new Error('All remote password change methods exhausted — manual intervention required.');
   }
 
   /**
@@ -2562,20 +2558,23 @@ chmod 600 ~/.ssh/authorized_keys`;
 
     if (stateAfter30s === 'RUNNING') {
       // OCI still shows RUNNING — the OS is restarting internally (common for SOFTRESET)
-      // Wait a fixed 3 min for the internal reboot to complete
-      this.logger.log(`ℹ️ OCI state still RUNNING — waiting 3 min for internal OS restart...`);
-      await new Promise(r => setTimeout(r, 180_000));
+      // Wait a fixed 4 min for the internal reboot + Windows boot to complete
+      this.logger.log(`ℹ️ OCI state still RUNNING — waiting 4 min for internal OS restart...`);
+      await new Promise(r => setTimeout(r, 240_000));
       return;
     }
 
-    // OCI reflects a non-RUNNING state — wait for it to come back
+    // OCI reflects a non-RUNNING state — poll until RUNNING, then wait for Windows to finish booting
     while (Date.now() - start < maxWaitMs) {
       await new Promise(r => setTimeout(r, pollMs));
       const resp = await this.computeClient.getInstance({ instanceId });
       const state = resp.instance.lifecycleState as string;
       this.logger.log(`📊 Instance state: ${state}`);
       if (state === 'RUNNING') {
-        this.logger.log(`✅ VM returned to RUNNING`);
+        // OCI reports RUNNING, but Windows is likely still booting.
+        // Wait an extra 3 minutes for the OS + Oracle Cloud Agent to fully initialise.
+        this.logger.log(`✅ OCI reports RUNNING — waiting 3 min for Windows boot to complete...`);
+        await new Promise(r => setTimeout(r, 180_000));
         return;
       }
     }
