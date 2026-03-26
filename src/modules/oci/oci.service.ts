@@ -1027,16 +1027,18 @@ runcmd:
         // Cloudbase-init will run this on first boot (with #ps1_sysnative prefix for 64-bit PS).
         // The 'ssh_authorized_keys' metadata entry is written to authorized_keys by cloudbase-init.
         //
-        // IMPORTANT FIXES:
-        // 1. New-NetFirewallRule must be on ONE line — PowerShell does NOT continue across lines
-        //    without a backtick; a split command silently fails inside try-catch.
-        // 2. For Windows admin users (opc is in Administrators group), OpenSSH requires keys at
-        //    C:\ProgramData\ssh\administrators_authorized_keys, NOT ~/.ssh/authorized_keys.
-        //    CloudBase-init writes to the user path; we must copy to the admin path + set ICACLS.
-        // 3. Enable WinRM basic auth so that fallback via port 5985 works when NTLM fails.
+        // IMPORTANT FIXES applied in this script:
+        // 1. New-NetFirewallRule must be on ONE line (no backtick continuation).
+        // 2. Admin SSH users need keys at C:\ProgramData\ssh\administrators_authorized_keys + ICACLS.
+        // 3. WinRM basic auth + HTTP listener so port-5985 fallback works.
+        // 4. Clear "must change password at next login" flag (CRITICAL for WinRM NTLM auth —
+        //    OCI sets this flag by default; WinRM NTLM refuses even correct credentials when set).
+        // 5. Create WinRM HTTP listener explicitly (otherwise port 5985 never listens).
         const windowsSetupScript = [
           '#ps1_sysnative',
           'try {',
+          // FIX 4: Clear "must change password" flag — WinRM NTLM fails if this is set
+          '  net user opc /logonpasswordchg:no',
           // --- OpenSSH Server ---
           '  $cap = Get-WindowsCapability -Online | Where-Object { $_.Name -like "OpenSSH.Server*" }',
           '  if ($cap -and $cap.State -ne "Installed") { Add-WindowsCapability -Online -Name $cap.Name }',
@@ -1062,6 +1064,9 @@ runcmd:
           '  Set-Item -Path WSMan:\\localhost\\Service\\Auth\\Basic -Value $true -Force',
           '  Set-Item -Path WSMan:\\localhost\\Service\\AllowUnencrypted -Value $true -Force',
           '  if (-not (Get-NetFirewallRule -Name "WinRM-HTTP-In-TCP" -ErrorAction SilentlyContinue)) { New-NetFirewallRule -Name "WinRM-HTTP-In-TCP" -DisplayName "WinRM HTTP (5985)" -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 5985 }',
+          // FIX 5: Create WinRM HTTP listener explicitly (port 5985 won't listen without this)
+          '  $httpListener = Get-WSManInstance winrm/config/listener -SelectorSet @{Address="*";Transport="HTTP"} -ErrorAction SilentlyContinue',
+          '  if (-not $httpListener) { New-WSManInstance winrm/config/listener -SelectorSet @{Address="*";Transport="HTTP"} -ValueSet @{Port="5985"} | Out-Null }',
           '} catch { Write-Output "Setup warning: $_" }',
         ].join('\n');
         metadata.user_data = Buffer.from(windowsSetupScript).toString('base64');
