@@ -1,3 +1,0 @@
-IPv4=161.33.207.245
-current_password=***REMOVED-PW***
-user=opc
