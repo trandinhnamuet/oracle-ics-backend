@@ -2794,7 +2794,7 @@ chmod 600 ~/.ssh/authorized_keys`;
             port: 22,
             username: 'opc',
             privateKey: Buffer.from(adminPrivateKey, 'utf8'),
-            readyTimeout: 30_000,
+            readyTimeout: 60_000,
           });
         }).catch(reject);
       });
