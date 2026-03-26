@@ -8,6 +8,7 @@ export interface EmailOptions {
 
 export interface EmailTemplateData {
   to: string;
+  lang?: string;
   [key: string]: any;
 }
 
