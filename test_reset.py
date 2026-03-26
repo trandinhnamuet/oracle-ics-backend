@@ -7,6 +7,8 @@ HOST = "14.224.205.40"
 USER = "icsadmin"
 PASSWORD = "ics2025.,"
 SUB_ID = "b8491dd8-d832-4537-978b-1185bd92dc25"
+# Subscription from the reported error:
+SUB_ID_PROD = "5e7f1603-8b9f-42cb-90ab-f713a093634e"
 
 ssh = paramiko.SSHClient()
 ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -29,8 +31,11 @@ if action == "get":
     print("Response:", stdout.read().decode()[:500])
 
 elif action == "reset":
-    cmd = f'curl -s -w "\\nHTTP:%{{http_code}}" -X POST http://localhost:3002/vm-subscription/{SUB_ID}/reset-windows-password -H "Content-Type: application/json" -H "Authorization: Bearer {token}" --max-time 600'
-    print("Calling reset password API (max 10 min)...")
+    sub = sys.argv[2] if len(sys.argv) > 2 else SUB_ID
+    custom_pw = sys.argv[3] if len(sys.argv) > 3 else None
+    body = f' -d \'{{"newPassword":"{custom_pw}"}}\'' if custom_pw else ''
+    cmd = f'curl -s -w "\\nHTTP:%{{http_code}}" -X POST http://localhost:3002/vm-subscription/{sub}/reset-windows-password -H "Content-Type: application/json" -H "Authorization: Bearer {token}"{body} --max-time 600'
+    print(f"Calling reset password API (sub={sub}, custom_pw={'yes' if custom_pw else 'no'})...")
     stdin, stdout, stderr = ssh.exec_command(cmd, timeout=900)
     print("Response:", stdout.read().decode())
     err = stderr.read().decode()
