@@ -782,6 +782,11 @@ export class VmSubscriptionService {
       remoteChangeSuccess = true;
       this.logger.log(`✅ Password changed on VM successfully`);
     } catch (runCmdError) {
+      // Re-throw client errors (e.g. Windows rejected the password) as-is (400)
+      if (runCmdError instanceof BadRequestException) {
+        this.logger.warn(`⚠️ Windows rejected the password: ${runCmdError.message}`);
+        throw runCmdError;
+      }
       this.logger.warn(`⚠️ Remote password change failed: ${runCmdError.message}`);
       this.logger.warn(`⚠️ Saving new password to database. User must change it manually via RDP.`);
     }
