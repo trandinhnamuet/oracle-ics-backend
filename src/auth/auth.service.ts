@@ -80,6 +80,7 @@ export class AuthService {
         userName: `${firstName} ${lastName}`,
         verificationCode: otp,
         expirationMinutes: 10,
+        lang,
       });
       this.logger.log(`OTP email sent successfully to ${email}`);
     } catch (error) {
@@ -212,6 +213,7 @@ export class AuthService {
         userName: `${user.firstName} ${user.lastName}`,
         verificationCode: otp,
         expirationMinutes: 10,
+        lang,
       });
       this.logger.log(`Resend OTP email sent successfully to ${email}`);
     } catch (error) {
@@ -559,6 +561,7 @@ export class AuthService {
           userName: `${user.firstName} ${user.lastName}`,
           verificationCode: otp,
           expirationMinutes: 10,
+          lang,
         });
         this.logger.log(`OTP email sent to unverified account: ${email}`);
       } catch (error) {
@@ -756,6 +759,7 @@ export class AuthService {
       userName: `${user.firstName} ${user.lastName}`,
       resetCode: otp,
       expirationMinutes: 10,
+      lang,
     });
 
     return {

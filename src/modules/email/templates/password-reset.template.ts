@@ -2,16 +2,72 @@ import { PasswordResetData } from '../interfaces/email-options.interface';
 
 export class PasswordResetTemplate {
   static generate(data: PasswordResetData): { subject: string; html: string } {
-    const subject = 'Mã OTP đặt lại mật khẩu - Oracle ICS';
+        const normalizedLang = (data.lang || '').toLowerCase();
+        const isVietnamese = normalizedLang === 'vi' || normalizedLang.startsWith('vi-');
+        const subject = isVietnamese
+            ? 'Mã OTP đặt lại mật khẩu - Oracle ICS'
+            : 'Password Reset OTP Code - Oracle ICS';
     const expirationMinutes = data.expirationMinutes || 10;
+
+        const emailTitle = isVietnamese ? 'Đặt lại mật khẩu - Oracle ICS' : 'Reset Password - Oracle ICS';
+        const headerTitle = isVietnamese ? 'Đặt lại mật khẩu' : 'Password Reset';
+        const greeting = isVietnamese ? 'Chào' : 'Hello';
+        const intro1 = isVietnamese
+            ? 'Chúng tôi đã nhận được yêu cầu đặt lại mật khẩu cho tài khoản Oracle ICS của bạn.'
+            : 'We received a request to reset the password for your Oracle ICS account.';
+        const intro2 = isVietnamese
+            ? 'Vui lòng sử dụng mã OTP dưới đây để xác thực:'
+            : 'Please use the OTP code below to verify this request:';
+        const otpLabel = isVietnamese ? 'MÃ XÁC THỰC OTP' : 'OTP VERIFICATION CODE';
+        const otpExpiry = isVietnamese
+            ? `Mã có hiệu lực trong ${expirationMinutes} phút`
+            : `This code is valid for ${expirationMinutes} minutes`;
+        const guideTitle = isVietnamese ? 'Hướng dẫn đặt lại mật khẩu:' : 'Password reset steps:';
+        const guide1 = isVietnamese
+            ? 'Nhập mã OTP ở trên vào trang xác thực'
+            : 'Enter the OTP code above on the verification page';
+        const guide2 = isVietnamese
+            ? 'Nhập mật khẩu mới (tối thiểu 6 ký tự)'
+            : 'Enter a new password (minimum 6 characters)';
+        const guide3 = isVietnamese
+            ? 'Xác nhận mật khẩu mới'
+            : 'Confirm the new password';
+        const guide4 = isVietnamese
+            ? 'Đăng nhập lại với mật khẩu mới'
+            : 'Sign in with your new password';
+        const securityTitle = isVietnamese ? 'Lưu ý bảo mật:' : 'Security notes:';
+        const security1 = isVietnamese
+            ? 'KHÔNG chia sẻ mã OTP này với bất kỳ ai'
+            : 'DO NOT share this OTP code with anyone';
+        const security2 = isVietnamese
+            ? 'Mã OTP chỉ sử dụng được một lần'
+            : 'OTP code can only be used once';
+        const security3 = isVietnamese
+            ? `Mã sẽ hết hạn sau ${expirationMinutes} phút`
+            : `Code will expire after ${expirationMinutes} minutes`;
+        const security4 = isVietnamese
+            ? 'Đặt mật khẩu mạnh (chữ hoa, chữ thường, số, ký tự đặc biệt)'
+            : 'Use a strong password (uppercase, lowercase, number, special character)';
+        const warningTitle = isVietnamese
+            ? 'Quan trọng: Nếu bạn KHÔNG yêu cầu đặt lại mật khẩu, vui lòng:'
+            : 'Important: If you DID NOT request a password reset, please:';
+        const warning1 = isVietnamese ? 'Bỏ qua email này' : 'Ignore this email';
+        const warning2 = isVietnamese ? 'Liên hệ support@oracle-ics.com ngay lập tức' : 'Contact support@oracle-ics.com immediately';
+        const warning3 = isVietnamese ? 'Kiểm tra lại bảo mật tài khoản của bạn' : 'Review your account security';
+        const footerLine1 = isVietnamese
+            ? 'Email này được gửi tự động từ Oracle ICS System'
+            : 'This email was sent automatically by Oracle ICS System';
+        const footerLine2 = isVietnamese
+            ? 'Nếu cần hỗ trợ, vui lòng liên hệ support@oracle-ics.com'
+            : 'If you need help, please contact support@oracle-ics.com';
     
     const html = `
-<!DOCTYPE html>
-<html lang="vi">
+<!doctype html>
+<html lang="${isVietnamese ? 'vi' : 'en'}">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Đặt lại mật khẩu - Oracle ICS</title>
+        <title>${emailTitle}</title>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -91,53 +147,53 @@ export class PasswordResetTemplate {
 <body>
     <div class="container">
         <div class="header">
-            <h1>🔐 Đặt lại mật khẩu</h1>
+            <h1>${headerTitle}</h1>
             <p>Oracle ICS System</p>
         </div>
         
         <div class="content">
-            <h2>Chào ${data.userName}!</h2>
+            <h2>${greeting} ${data.userName}!</h2>
             
-            <p>Chúng tôi nhận được yêu cầu đặt lại mật khẩu cho tài khoản Oracle ICS của bạn.</p>
-            <p>Vui lòng sử dụng mã OTP dưới đây để xác thực:</p>
+            <p>${intro1}</p>
+            <p>${intro2}</p>
             
             <div class="otp-box">
-                <p>MÃ XÁC THỰC OTP</p>
+                <p>${otpLabel}</p>
                 <div class="otp-code">${data.resetCode}</div>
-                <p>Mã có hiệu lực trong ${expirationMinutes} phút</p>
+                <p>${otpExpiry}</p>
             </div>
             
             <div class="info-box">
-                <h3>📋 Hướng dẫn đặt lại mật khẩu:</h3>
+                <h3>${guideTitle}</h3>
                 <ol>
-                    <li>Nhập mã OTP trên vào trang xác thực</li>
-                    <li>Nhập mật khẩu mới (tối thiểu 6 ký tự)</li>
-                    <li>Xác nhận mật khẩu mới</li>
-                    <li>Đăng nhập với mật khẩu mới</li>
+                    <li>${guide1}</li>
+                    <li>${guide2}</li>
+                    <li>${guide3}</li>
+                    <li>${guide4}</li>
                 </ol>
             </div>
             
-            <h3>🔒 Lưu ý bảo mật:</h3>
+            <h3>${securityTitle}</h3>
             <ul>
-                <li>❌ <strong>KHÔNG chia sẻ</strong> mã OTP này với bất kỳ ai</li>
-                <li>✅ Mã OTP chỉ sử dụng một lần</li>
-                <li>✅ Mã sẽ hết hạn sau ${expirationMinutes} phút</li>
-                <li>✅ Đặt mật khẩu mạnh (chữ hoa, chữ thường, số, ký tự đặc biệt)</li>
+                <li>${security1}</li>
+                <li>${security2}</li>
+                <li>${security3}</li>
+                <li>${security4}</li>
             </ul>
             
             <div class="warning-box">
-                <p><strong>⚠️ Quan trọng:</strong> Nếu bạn KHÔNG yêu cầu đặt lại mật khẩu, vui lòng:</p>
+                <p><strong>${warningTitle}</strong></p>
                 <ul>
-                    <li>Bỏ qua email này</li>
-                    <li>Liên hệ ngay với support@oracle-ics.com</li>
-                    <li>Kiểm tra bảo mật tài khoản</li>
+                    <li>${warning1}</li>
+                    <li>${warning2}</li>
+                    <li>${warning3}</li>
                 </ul>
             </div>
         </div>
         
         <div class="footer">
-            <p>Email này được gửi tự động từ Oracle ICS System</p>
-            <p>Nếu có thắc mắc, vui lòng liên hệ support@oracle-ics.com</p>
+            <p>${footerLine1}</p>
+            <p>${footerLine2}</p>
             <p>© 2025 Oracle ICS. All rights reserved.</p>
         </div>
     </div>

@@ -1,13 +1,39 @@
-export const otpEmailTemplate = (otpCode: string, userName?: string) => {
+export const otpEmailTemplate = (otpCode: string, userName?: string, lang?: string) => {
+  const normalizedLang = (lang || '').toLowerCase();
+  const isVietnamese = normalizedLang === 'vi' || normalizedLang.startsWith('vi-');
+
+  const subject = isVietnamese
+    ? 'Oracle ICS - Ma xac thuc email'
+    : 'Oracle ICS - Email Verification Code';
+
+  const htmlLang = isVietnamese ? 'vi' : 'en';
+  const title = isVietnamese ? 'Xac thuc Email' : 'Email Verification';
+  const greeting = userName
+    ? (isVietnamese ? `Xin chao ${userName},` : `Hello ${userName},`)
+    : (isVietnamese ? 'Xin chao,' : 'Hello,');
+  const message = isVietnamese
+    ? 'De hoan tat xac thuc tai khoan, vui long su dung ma 6 so sau:'
+    : 'To complete your account verification, please use the following 6-digit code:';
+  const codeLabel = isVietnamese ? 'Ma xac thuc cua ban:' : 'Your Verification Code:';
+  const warning = isVietnamese
+    ? 'Quan trong: Ma nay se het han sau 10 phut. Vui long khong chia se ma nay voi bat ky ai.'
+    : 'Important: This code will expire in 10 minutes. Please do not share this code with anyone.';
+  const security = isVietnamese
+    ? "Thong bao bao mat: Neu ban khong yeu cau ma nay, vui long bo qua email. Bao mat tai khoan cua ban la uu tien hang dau cua chung toi."
+    : "Security Notice: If you didn't request this verification code, please ignore this email. Your account security is our priority.";
+  const footer = isVietnamese
+    ? 'Day la email tu dong tu Oracle ICS.'
+    : 'This is an automated message from Oracle ICS.';
+
   return {
-    subject: 'Oracle ICS - Email Verification Code',
+    subject,
     html: `
       <!DOCTYPE html>
-      <html lang="en">
+      <html lang="${htmlLang}">
       <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Email Verification</title>
+        <title>${title}</title>
         <style>
           body {
             margin: 0;
@@ -101,29 +127,29 @@ export const otpEmailTemplate = (otpCode: string, userName?: string) => {
           
           <div class="content">
             <div class="greeting">
-              ${userName ? `Hello ${userName},` : 'Hello,'}
+              ${greeting}
             </div>
             
             <div class="message">
-              To complete your account verification, please use the following 6-digit code:
+              ${message}
             </div>
             
             <div class="otp-container">
-              <div class="otp-label">Your Verification Code:</div>
+              <div class="otp-label">${codeLabel}</div>
               <div class="otp-code">${otpCode}</div>
             </div>
             
             <div class="warning">
-              <strong>⚠️ Important:</strong> This code will expire in 10 minutes. Please do not share this code with anyone.
+              <strong>Important:</strong> ${warning}
             </div>
             
             <div class="security-note">
-              <strong>🔒 Security Notice:</strong> If you didn't request this verification code, please ignore this email. Your account security is our priority.
+              <strong>Security Notice:</strong> ${security}
             </div>
           </div>
           
           <div class="footer">
-            <p>This is an automated message from Oracle ICS.</p>
+            <p>${footer}</p>
             <p>© 2024 Oracle ICS. All rights reserved.</p>
           </div>
         </div>
@@ -131,17 +157,17 @@ export const otpEmailTemplate = (otpCode: string, userName?: string) => {
       </html>
     `,
     text: `
-Oracle ICS - Email Verification
+${subject}
 
-${userName ? `Hello ${userName},` : 'Hello,'}
+${greeting}
 
-To complete your account verification, please use the following 6-digit code:
+${message}
 
 ${otpCode}
 
-This code will expire in 10 minutes. Please do not share this code with anyone.
+${warning}
 
-If you didn't request this verification code, please ignore this email.
+${security}
 
 Oracle ICS Team
     `

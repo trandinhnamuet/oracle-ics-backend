@@ -34,12 +34,33 @@ export class AuthController {
     return options;
   }
 
+  private resolveLang(acceptLang?: string, cookieHeader?: string): string {
+    if (acceptLang) {
+      return extractLang(acceptLang);
+    }
+
+    if (cookieHeader) {
+      const languageCookie = cookieHeader
+        .split(';')
+        .map((cookie) => cookie.trim())
+        .find((cookie) => cookie.startsWith('language='))
+        ?.split('=')[1];
+
+      if (languageCookie) {
+        return extractLang(languageCookie);
+      }
+    }
+
+    return extractLang(undefined);
+  }
+
   @Post('register')
   async register(
     @Body() registerDto: RegisterDto,
     @Headers('accept-language') acceptLang?: string,
+    @Headers('cookie') cookieHeader?: string,
   ) {
-    const lang = extractLang(acceptLang);
+    const lang = this.resolveLang(acceptLang, cookieHeader);
     this.logger.log(`Register request: ${JSON.stringify({ email: registerDto.email })}`);
     return await this.authService.register(registerDto, lang);
   }
@@ -48,8 +69,9 @@ export class AuthController {
   async verifyOtp(
     @Body() verifyOtpDto: VerifyOtpDto,
     @Headers('accept-language') acceptLang?: string,
+    @Headers('cookie') cookieHeader?: string,
   ) {
-    const lang = extractLang(acceptLang);
+    const lang = this.resolveLang(acceptLang, cookieHeader);
     this.logger.log(`Verify OTP request: ${JSON.stringify(verifyOtpDto)}`);
     return await this.authService.verifyOtp(verifyOtpDto, lang);
   }
@@ -58,8 +80,9 @@ export class AuthController {
   async resendOtp(
     @Body() resendOtpDto: ResendOtpDto,
     @Headers('accept-language') acceptLang?: string,
+    @Headers('cookie') cookieHeader?: string,
   ) {
-    const lang = extractLang(acceptLang);
+    const lang = this.resolveLang(acceptLang, cookieHeader);
     this.logger.log(`Resend OTP request: ${JSON.stringify(resendOtpDto)}`);
     return await this.authService.resendOtp(resendOtpDto, lang);
   }
@@ -68,8 +91,9 @@ export class AuthController {
   async forgotPassword(
     @Body() forgotPasswordDto: ForgotPasswordDto,
     @Headers('accept-language') acceptLang?: string,
+    @Headers('cookie') cookieHeader?: string,
   ) {
-    const lang = extractLang(acceptLang);
+    const lang = this.resolveLang(acceptLang, cookieHeader);
     return await this.authService.forgotPassword(forgotPasswordDto, lang);
   }
 
@@ -77,8 +101,9 @@ export class AuthController {
   async verifyResetOtp(
     @Body() verifyResetOtpDto: VerifyResetOtpDto,
     @Headers('accept-language') acceptLang?: string,
+    @Headers('cookie') cookieHeader?: string,
   ) {
-    const lang = extractLang(acceptLang);
+    const lang = this.resolveLang(acceptLang, cookieHeader);
     return await this.authService.verifyResetOtp(verifyResetOtpDto, lang);
   }
 
@@ -86,8 +111,9 @@ export class AuthController {
   async resetPassword(
     @Body() resetPasswordDto: ResetPasswordDto,
     @Headers('accept-language') acceptLang?: string,
+    @Headers('cookie') cookieHeader?: string,
   ) {
-    const lang = extractLang(acceptLang);
+    const lang = this.resolveLang(acceptLang, cookieHeader);
     return await this.authService.resetPassword(resetPasswordDto, lang);
   }
 
