@@ -1038,14 +1038,33 @@ runcmd:
         //            WinRM setup comes FIRST (before OpenSSH) — it's required for password reset.
         const windowsSetupScript = [
           '#ps1_sysnative',
-          // FIX 4: Clear "must change password" flag — OCI sets this by default on first boot.
-          //        WinRM NTLM refuses even correct credentials while this flag is set.
+          '',
+          '# ===== IMMEDIATE SETUP (runs during cloudbase-init UserDataPlugin) =====',
+          '# NOTE: cloudbase-init runs: UserDataPlugin → SetUserPasswordPlugin',
+          '# So this script runs BEFORE OCI sets the password. Any changes to the',
+          '# "must change password" flag here will be OVERRIDDEN by SetUserPasswordPlugin.',
+          '',
+          '# Try to clear "must change password" flag now (may be overridden later)',
           'try { net user opc /logonpasswordchg:no } catch {}',
-          // FIX 3+5: Configure WinRM HTTP (port 5985) — basic auth + HTTP listener + firewall rule.
-          //          This MUST succeed for the Python password-reset script to connect.
+          '',
+          '# ===== DEFERRED FIX (CRITICAL) =====',
+          '# Start a background process that waits 5 minutes, then:',
+          '# 1. Clears the "must change password at next logon" flag',
+          '# 2. Re-runs winrm quickconfig and restarts WinRM service',
+          '# This runs AFTER cloudbase-init SetUserPasswordPlugin finishes,',
+          '# ensuring our changes are NOT overridden.',
+          "Start-Process -FilePath 'powershell.exe' -ArgumentList '-ExecutionPolicy Bypass -Command \"Start-Sleep 300; net user opc /logonpasswordchg:no; cmd /c winrm quickconfig -force 2>$null; Set-Item -Path WSMan:\\localhost\\Service\\Auth\\Basic -Value $true -Force; Set-Item -Path WSMan:\\localhost\\Service\\AllowUnencrypted -Value $true -Force; Restart-Service WinRM -Force -ErrorAction SilentlyContinue\"' -WindowStyle Hidden",
+          '',
+          '# ===== WinRM HTTP SETUP =====',
+          '# Enable & start WinRM service first',
+          'try { Set-Service WinRM -StartupType Automatic -ErrorAction SilentlyContinue } catch {}',
+          'try { Start-Service WinRM -ErrorAction SilentlyContinue } catch {}',
+          '# Use winrm quickconfig to auto-configure everything (listener, firewall, etc.)',
+          'try { cmd /c "winrm quickconfig -force" 2>$null } catch {}',
           'try {',
           '  Set-Item -Path WSMan:\\localhost\\Service\\Auth\\Basic -Value $true -Force',
           '  Set-Item -Path WSMan:\\localhost\\Service\\AllowUnencrypted -Value $true -Force',
+          '  Set-Item -Path WSMan:\\localhost\\Client\\TrustedHosts -Value "*" -Force',
           '} catch {}',
           'try {',
           '  $httpListener = Get-WSManInstance winrm/config/listener -SelectorSet @{Address="*";Transport="HTTP"} -ErrorAction SilentlyContinue',
@@ -1054,7 +1073,10 @@ runcmd:
           'try {',
           '  if (-not (Get-NetFirewallRule -Name "WinRM-HTTP-In-TCP" -ErrorAction SilentlyContinue)) { New-NetFirewallRule -Name "WinRM-HTTP-In-TCP" -DisplayName "WinRM HTTP (5985)" -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 5985 }',
           '} catch {}',
-          // --- OpenSSH Server (optional; failure here must NOT affect WinRM above) ---
+          '# Restart WinRM to pick up all config changes',
+          'try { Restart-Service WinRM -Force -ErrorAction SilentlyContinue } catch {}',
+          '',
+          '# ===== OpenSSH Server (optional) =====',
           'try {',
           '  $cap = Get-WindowsCapability -Online -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "OpenSSH.Server*" }',
           '  if ($cap -and $cap.State -ne "Installed") { Add-WindowsCapability -Online -Name $cap.Name -ErrorAction SilentlyContinue }',
@@ -1064,11 +1086,11 @@ runcmd:
           '    if ($svc.Status -ne "Running") { Start-Service sshd -ErrorAction SilentlyContinue }',
           '  }',
           '} catch {}',
-          // FIX 1: SSH firewall rule on a SINGLE line
           'try {',
           '  if (-not (Get-NetFirewallRule -Name "OpenSSH-Server-In-TCP" -ErrorAction SilentlyContinue)) { New-NetFirewallRule -Name "OpenSSH-Server-In-TCP" -DisplayName "OpenSSH Server (sshd)" -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 }',
           '} catch {}',
-          // FIX 2: Copy authorized_keys to admin path (required for Administrators-group users)
+          '',
+          '# ===== Admin SSH keys =====',
           'try {',
           '  $adminKeysDir = "C:\\ProgramData\\ssh"',
           '  $adminKeysFile = "$adminKeysDir\\administrators_authorized_keys"',
@@ -2528,35 +2550,9 @@ chmod 600 ~/.ssh/authorized_keys`;
   ): Promise<void> {
     this.logger.log(`🚀 Starting Windows password reset on instance: ${instanceId}`);
 
-    // ── Strategy 1: OCI Run Command (primary — no credentials needed, runs as SYSTEM) ──
-    try {
-      await this.tryRunCommandPasswordReset(instanceId, compartmentId, newPassword);
-      this.logger.log(`✅ Password changed via OCI Run Command`);
-      return;
-    } catch (runCmdErr: any) {
-      this.logger.warn(`⚠️ OCI Run Command failed: ${runCmdErr.message}`);
-    }
-
-    // ── Strategy 2: SSH with system admin key (no password needed, uses authorized key) ──
-    // OCI cloudbase-init adds the system admin public key to the VM at provisioning time.
-    // This lets us SSH as 'opc' with key auth and run net user to change the password.
-    if (subnetId && publicIp && adminPrivateKey) {
-      this.logger.log(`🔑 Attempting SSH key-based password reset...`);
-      const securityListId = await this.getSecurityListIdForSubnet(subnetId);
-      try {
-        await this.changeWindowsPasswordViaSshKey(publicIp, adminPrivateKey, newPassword, securityListId);
-        this.logger.log(`✅ Password changed via SSH + admin key`);
-        return;
-      } catch (sshErr: any) {
-        this.logger.warn(`⚠️ SSH key-based reset failed: ${sshErr.message}`);
-      }
-    }
-
-    // ── Strategy 3: WinRM via pywinrm (requires port 5986 + current password from DB) ──
-    // Works as long as the DB password matches the actual VM password.
-    // Try this BEFORE restarting the VM to avoid disrupting the user.
+    // ── Strategy 1: WinRM (primary — uses current password from DB) ──
     if (subnetId && publicIp && currentPassword) {
-      this.logger.log(`🔐 Attempting WinRM password reset...`);
+      this.logger.log(`🔐 Strategy 1: WinRM password reset (primary)...`);
       const secListId = await this.getSecurityListIdForSubnet(subnetId);
       await this.ensureWinrmPortOpen(secListId);
       try {
@@ -2575,26 +2571,31 @@ chmod 600 ~/.ssh/authorized_keys`;
           this.logger.warn(`⚠️ Failed to remove WinRM port rule: ${cleanErr.message}`);
         }
       }
+    } else {
+      this.logger.log(`⏭️ WinRM skipped: ${!subnetId ? 'no subnet' : !publicIp ? 'no public IP' : 'no current password in DB'}`);
     }
 
-    // ── Strategy 4: Soft-restart VM → reinitialise Oracle Cloud Agent → retry Run Command ──
-    // Last resort: SOFTRESET the VM to restart the Oracle Cloud Agent.
-    // This is disruptive (VM reboots) and slow (~5+ min for Windows to fully boot).
-    this.logger.log(`🔄 Last resort: restarting VM to reinitialise Oracle Cloud Agent...`);
+    // ── Strategy 2: OCI Run Command ──
+    this.logger.log(`📡 Strategy 2: OCI Run Command...`);
     try {
-      await this.restartInstance(instanceId);
-      this.logger.log(`✅ SOFTRESET issued — waiting for VM to restart...`);
-
-      // Wait for OCI to report RUNNING + allow Windows to fully boot
-      await this.waitForInstanceRunning(instanceId, 5 * 60_000);
-
-      // Retry Run Command with same 2-minute timeout
-      this.logger.log(`🔁 Retrying OCI Run Command after VM restart...`);
       await this.tryRunCommandPasswordReset(instanceId, compartmentId, newPassword);
-      this.logger.log(`✅ Password changed via OCI Run Command (post-restart)`);
+      this.logger.log(`✅ Password changed via OCI Run Command`);
       return;
-    } catch (retryErr: any) {
-      this.logger.warn(`⚠️ Restart + Run Command retry failed: ${retryErr.message}`);
+    } catch (runCmdErr: any) {
+      this.logger.warn(`⚠️ OCI Run Command failed: ${runCmdErr.message}`);
+    }
+
+    // ── Strategy 3: SSH with system admin key ──
+    if (subnetId && publicIp && adminPrivateKey) {
+      this.logger.log(`🔑 Strategy 3: SSH key-based password reset...`);
+      const securityListId = await this.getSecurityListIdForSubnet(subnetId);
+      try {
+        await this.changeWindowsPasswordViaSshKey(publicIp, adminPrivateKey, newPassword, securityListId);
+        this.logger.log(`✅ Password changed via SSH + admin key`);
+        return;
+      } catch (sshErr: any) {
+        this.logger.warn(`⚠️ SSH key-based reset failed: ${sshErr.message}`);
+      }
     }
 
     throw new Error('All remote password change methods exhausted — manual intervention required.');
