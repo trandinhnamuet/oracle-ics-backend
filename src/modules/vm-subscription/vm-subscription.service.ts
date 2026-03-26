@@ -787,23 +787,35 @@ export class VmSubscriptionService {
 
     // Step 9: Always update password in database (so user has the new credential)
     this.logger.log(`💾 Saving new password to database...`);
-    await this.vmInstanceRepo.update(vm.id, {
-      windows_initial_password: newPassword,
-    });
-    this.logger.log(`✅ Password saved to database`);
+    // Step 9: Update password in the database ONLY if the remote change succeeded.
+    // If we update when remote fails, we overwrite the DB with an unapplied password,
+    // which breaks future WinRM attempts (they'd use a password the VM never received).
+    if (remoteChangeSuccess) {
+      this.logger.log(`💾 Saving new password to database...`);
+      await this.vmInstanceRepo.update(vm.id, {
+        windows_initial_password: newPassword,
+      });
+      this.logger.log(`✅ Password saved to database`);
+    } else {
+      this.logger.warn(`⚠️ Remote change failed — keeping current DB password intact`);
+    }
 
     this.logger.log('========================================');
     this.logger.log(`🎉 WINDOWS PASSWORD RESET COMPLETE (remote: ${remoteChangeSuccess})`);
     this.logger.log('========================================');
+
+    if (!remoteChangeSuccess) {
+      throw new InternalServerErrorException(
+        'Unable to reset the Windows VM password remotely. The VM may be unreachable. Please try again in a few minutes or contact support.',
+      );
+    }
 
     return {
       success: true,
       username: 'opc',
       newPassword: newPassword,
       remoteChangeApplied: remoteChangeSuccess,
-      message: remoteChangeSuccess
-        ? 'Windows password has been reset successfully.'
-        : 'A new password has been generated. Please log in via RDP with your current password and change it to the new password shown above.',
+      message: 'Windows password has been reset successfully.',
     };
   }
 
