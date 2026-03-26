@@ -29,7 +29,7 @@ export class OtpService {
   /**
    * Create or update OTP verification record
    */
-  async createOrUpdateOtp(email: string): Promise<{ otpCode: string; canResend: boolean }> {
+  async createOrUpdateOtp(email: string, lang: string = 'vi'): Promise<{ otpCode: string; canResend: boolean }> {
     try {
       const now = new Date();
       const expiresAt = new Date(now.getTime() + this.OTP_EXPIRY_MINUTES * 60 * 1000);
@@ -72,7 +72,7 @@ export class OtpService {
       }
 
       // Send OTP email
-      const emailTemplate = otpEmailTemplate(otpCode);
+      const emailTemplate = otpEmailTemplate(otpCode, undefined, lang);
       await this.emailService.sendEmail({
         to: email,
         subject: emailTemplate.subject,
