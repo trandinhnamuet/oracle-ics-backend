@@ -16,31 +16,20 @@ export class AuthController {
     private readonly configService: ConfigService,
   ) {}
 
-  /**
-   * Xác định tên cookie refresh token dựa vào Origin header.
-   * admin.oraclecloud.vn dùng 'adminRefreshToken' để tách biệt với
-   * oraclecloud.vn (dùng 'refreshToken'), tránh cookie bị dùng chung.
-   */
-  private getRefreshTokenCookieName(req: Request): string {
-    const origin = (req.headers['origin'] as string) || '';
-    if (origin.includes('admin.')) {
-      return 'adminRefreshToken';
-    }
-    return 'refreshToken';
-  }
-
   private getCookieOptions(maxAge?: number) {
     const options: any = {
       httpOnly: true,
       secure: this.configService.get('NODE_ENV') === 'production',
-      sameSite: 'lax' as const,
+      sameSite: 'lax' as const, // Changed from 'strict' to 'lax' for better cross-domain compatibility
       maxAge: maxAge || 30 * 24 * 60 * 60 * 1000, // 30 days
       path: '/',
     };
 
-    // Không set domain với wildcard subdomain để tránh cookie bị share
-    // giữa oraclecloud.vn và admin.oraclecloud.vn.
-    // Thay vào đó dùng tên cookie khác nhau (refreshToken vs adminRefreshToken).
+    // Add domain for production to ensure cookie works across subdomains
+    const cookieDomain = this.configService.get('COOKIE_DOMAIN');
+    if (cookieDomain) {
+      options.domain = cookieDomain;
+    }
 
     return options;
   }
@@ -127,8 +116,7 @@ export class AuthController {
     }
     
     // Normal login flow - set refresh token as httpOnly cookie
-    const loginCookieName = this.getRefreshTokenCookieName(req);
-    response.cookie(loginCookieName, result.refreshToken, this.getCookieOptions());
+    response.cookie('refreshToken', result.refreshToken, this.getCookieOptions());
 
     return {
       accessToken: result.accessToken,
@@ -143,8 +131,7 @@ export class AuthController {
     @Res({ passthrough: true }) response: Response,
   ) {
     const lang = extractLang(req.headers['accept-language'] as string);
-    const refreshCookieName = this.getRefreshTokenCookieName(req);
-    const refreshToken = req.cookies?.[refreshCookieName] as string | undefined;
+    const refreshToken = req.cookies?.refreshToken as string | undefined;
     if (!refreshToken) {
       throw new UnauthorizedException(t('common.refreshTokenNotFound', lang));
     }
@@ -159,7 +146,7 @@ export class AuthController {
     );
 
     // Set new refresh token as httpOnly cookie (token rotation)
-    response.cookie(refreshCookieName, tokens.refreshToken, this.getCookieOptions());
+    response.cookie('refreshToken', tokens.refreshToken, this.getCookieOptions());
 
     return {
       success: true,
@@ -172,8 +159,7 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   async logout(@Req() req: Request, @Res({ passthrough: true }) response: Response) {
     const lang = extractLang(req.headers['accept-language'] as string);
-    const logoutCookieName = this.getRefreshTokenCookieName(req);
-    const refreshToken = req.cookies?.[logoutCookieName] as string | undefined;
+    const refreshToken = req.cookies?.refreshToken as string | undefined;
 
     // Decode userId from the refreshToken cookie (no verification needed — we just need the sub claim
     // to invalidate the token in DB). This works even when the accessToken is expired.
@@ -192,7 +178,7 @@ export class AuthController {
     // Always clear the cookie regardless of token validity
     const clearOptions = this.getCookieOptions(0);
     delete clearOptions.maxAge;
-    response.clearCookie(logoutCookieName, clearOptions);
+    response.clearCookie('refreshToken', clearOptions);
 
     return { message: t('common.logoutSuccess', lang) };
   }
@@ -204,8 +190,7 @@ export class AuthController {
     @Res({ passthrough: true }) response: Response,
   ) {
     const lang = extractLang(req.headers['accept-language'] as string);
-    const logoutAllCookieName = this.getRefreshTokenCookieName(req);
-    const refreshToken = req.cookies?.[logoutAllCookieName] as string | undefined;
+    const refreshToken = req.cookies?.refreshToken as string | undefined;
 
     let userId: string | undefined;
     if (refreshToken) {
@@ -222,7 +207,7 @@ export class AuthController {
     // Always clear the cookie regardless of token validity
     const clearOptions = this.getCookieOptions(0);
     delete clearOptions.maxAge;
-    response.clearCookie(logoutAllCookieName, clearOptions);
+    response.clearCookie('refreshToken', clearOptions);
 
     return { message: t('common.logoutAllSuccess', lang) };
   }
@@ -263,9 +248,8 @@ export class AuthController {
       // Login with Google
       const result = await this.authService.loginWithGoogle(user, userAgent, req, lang);
 
-      // Set refresh token cookie based on which frontend is logging in
-      const googleCookieName = user.role === 'admin' ? 'adminRefreshToken' : 'refreshToken';
-      response.cookie(googleCookieName, result.refreshToken, this.getCookieOptions());
+      // Set refresh token cookie
+      response.cookie('refreshToken', result.refreshToken, this.getCookieOptions());
 
       // Get frontend URL from env - for admin users, use FRONTEND_URL_ADMIN if available
       let frontendUrl = 'http://localhost:3000';
