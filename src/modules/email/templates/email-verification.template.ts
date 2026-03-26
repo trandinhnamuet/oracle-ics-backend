@@ -2,16 +2,50 @@ import { EmailVerificationData } from '../interfaces/email-options.interface';
 
 export class EmailVerificationTemplate {
   static generate(data: EmailVerificationData): { subject: string; html: string } {
-    const subject = 'Mã xác thực OTP đăng ký - Oracle ICS';
+        const normalizedLang = (data.lang || '').toLowerCase();
+        const isVietnamese = normalizedLang === 'vi' || normalizedLang.startsWith('vi-');
+        const subject = isVietnamese
+            ? 'Mã xác thực OTP đăng ký - Oracle ICS'
+            : 'Registration OTP Verification Code - Oracle ICS';
     const expirationMinutes = data.expirationMinutes || 10;
+
+        const emailTitle = isVietnamese ? 'Xác thực Email - Oracle ICS' : 'Email Verification - Oracle ICS';
+        const headerTitle = isVietnamese ? 'Xác thực Email' : 'Email Verification';
+        const greeting = isVietnamese ? 'Chào' : 'Hello';
+        const intro = isVietnamese
+            ? 'Cảm ơn bạn đã đăng ký tài khoản tại <strong>Oracle ICS</strong>. Để hoàn tất quá trình đăng ký, vui lòng sử dụng mã OTP dưới đây:'
+            : 'Thank you for registering an account at <strong>Oracle ICS</strong>. To complete your registration, please use the OTP code below:';
+        const otpLabel = isVietnamese ? 'MÃ XÁC THỰC OTP' : 'OTP VERIFICATION CODE';
+        const otpExpiry = isVietnamese
+            ? `Mã có hiệu lực trong ${expirationMinutes} phút`
+            : `This code is valid for ${expirationMinutes} minutes`;
+        const noteTitle = isVietnamese ? 'Lưu ý quan trọng:' : 'Important notes:';
+        const note1 = isVietnamese
+            ? `Mã OTP sẽ hết hạn sau <strong>${expirationMinutes} phút</strong>`
+            : `The OTP code will expire after <strong>${expirationMinutes} minutes</strong>`;
+        const note2 = isVietnamese
+            ? 'Không chia sẻ mã này với bất kỳ ai'
+            : 'Do not share this code with anyone';
+        const note3 = isVietnamese
+            ? 'Sau khi xác thực, bạn có thể đăng nhập vào hệ thống'
+            : 'After verification, you can log in to the system';
+        const closing = isVietnamese
+            ? 'Nếu bạn không phải người đăng ký tài khoản này, vui lòng bỏ qua email này.'
+            : 'If you did not create this account, please ignore this email.';
+        const footerLine1 = isVietnamese
+            ? 'Email này được gửi tự động từ Oracle ICS System'
+            : 'This email was sent automatically by Oracle ICS System';
+        const footerLine2 = isVietnamese
+            ? 'Nếu cần hỗ trợ, vui lòng liên hệ support@oracle-ics.com'
+            : 'If you need help, please contact support@oracle-ics.com';
     
     const html = `
-<!DOCTYPE html>
-<html lang="vi">
+<!doctype html>
+<html lang="${isVietnamese ? 'vi' : 'en'}">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Xác thực Email - Oracle ICS</title>
+        <title>${emailTitle}</title>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -78,36 +112,36 @@ export class EmailVerificationTemplate {
 <body>
     <div class="container">
         <div class="header">
-            <h1>✉️ Xác thực Email</h1>
+            <h1>${headerTitle}</h1>
             <p>Oracle ICS System</p>
         </div>
         
         <div class="content">
-            <h2>Chào ${data.userName}!</h2>
+            <h2>${greeting} ${data.userName}!</h2>
             
-            <p>Cảm ơn bạn đã đăng ký tài khoản tại <strong>Oracle ICS</strong>. Để hoàn tất quá trình đăng ký, vui lòng sử dụng mã OTP dưới đây:</p>
+            <p>${intro}</p>
             
             <div class="otp-box">
-                <p style="margin: 0; font-size: 16px;">MÃ XÁC THỰC OTP</p>
+                <p style="margin: 0; font-size: 16px;">${otpLabel}</p>
                 <div class="otp-code">${data.verificationCode}</div>
-                <p style="margin: 0; font-size: 14px;">Mã có hiệu lực trong ${expirationMinutes} phút</p>
+                <p style="margin: 0; font-size: 14px;">${otpExpiry}</p>
             </div>
             
             <div class="info-box">
-                <h3>📌 Lưu ý quan trọng:</h3>
+                <h3>${noteTitle}</h3>
                 <ul>
-                    <li>Mã OTP sẽ hết hạn sau <strong>${expirationMinutes} phút</strong></li>
-                    <li>Không chia sẻ mã này với bất kỳ ai</li>
-                    <li>Sau khi xác thực, bạn có thể đăng nhập vào hệ thống</li>
+                    <li>${note1}</li>
+                    <li>${note2}</li>
+                    <li>${note3}</li>
                 </ul>
             </div>
             
-            <p><strong>Lưu ý:</strong> Nếu bạn không phải người đăng ký tài khoản này, vui lòng bỏ qua email này.</p>
+            <p>${closing}</p>
         </div>
         
         <div class="footer">
-            <p>Email này được gửi tự động từ Oracle ICS System</p>
-            <p>Nếu có thắc mắc, vui lòng liên hệ support@oracle-ics.com</p>
+            <p>${footerLine1}</p>
+            <p>${footerLine2}</p>
             <p>© 2026 Oracle ICS. All rights reserved.</p>
         </div>
     </div>
