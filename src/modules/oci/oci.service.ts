@@ -1026,23 +1026,43 @@ runcmd:
         // Windows: install + start OpenSSH Server so the SSH key reset strategy works.
         // Cloudbase-init will run this on first boot (with #ps1_sysnative prefix for 64-bit PS).
         // The 'ssh_authorized_keys' metadata entry is written to authorized_keys by cloudbase-init.
+        //
+        // IMPORTANT FIXES:
+        // 1. New-NetFirewallRule must be on ONE line — PowerShell does NOT continue across lines
+        //    without a backtick; a split command silently fails inside try-catch.
+        // 2. For Windows admin users (opc is in Administrators group), OpenSSH requires keys at
+        //    C:\ProgramData\ssh\administrators_authorized_keys, NOT ~/.ssh/authorized_keys.
+        //    CloudBase-init writes to the user path; we must copy to the admin path + set ICACLS.
+        // 3. Enable WinRM basic auth so that fallback via port 5985 works when NTLM fails.
         const windowsSetupScript = [
           '#ps1_sysnative',
           'try {',
+          // --- OpenSSH Server ---
           '  $cap = Get-WindowsCapability -Online | Where-Object { $_.Name -like "OpenSSH.Server*" }',
-          '  if ($cap -and $cap.State -ne "Installed") {',
-          '    Add-WindowsCapability -Online -Name $cap.Name',
-          '  }',
+          '  if ($cap -and $cap.State -ne "Installed") { Add-WindowsCapability -Online -Name $cap.Name }',
           '  $svc = Get-Service -Name sshd -ErrorAction SilentlyContinue',
           '  if ($svc) {',
           '    Set-Service -Name sshd -StartupType AutomaticDelayedStart',
           '    if ($svc.Status -ne "Running") { Start-Service sshd }',
           '  }',
-          '  if (-not (Get-NetFirewallRule -Name "OpenSSH-Server-In-TCP" -ErrorAction SilentlyContinue)) {',
-          '    New-NetFirewallRule -Name "OpenSSH-Server-In-TCP" -DisplayName "OpenSSH Server (sshd)"',
-          '      -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22',
+          // FIX 1: New-NetFirewallRule on a SINGLE line (no line-continuation needed)
+          '  if (-not (Get-NetFirewallRule -Name "OpenSSH-Server-In-TCP" -ErrorAction SilentlyContinue)) { New-NetFirewallRule -Name "OpenSSH-Server-In-TCP" -DisplayName "OpenSSH Server (sshd)" -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 }',
+          // FIX 2: Copy authorized_keys to admin path (required for Administrators-group users)
+          '  $adminKeysDir = "C:\\ProgramData\\ssh"',
+          '  $adminKeysFile = "$adminKeysDir\\administrators_authorized_keys"',
+          '  $userKeysFile = "C:\\Users\\opc\\.ssh\\authorized_keys"',
+          '  if (-not (Test-Path $adminKeysDir)) { New-Item -ItemType Directory -Path $adminKeysDir -Force | Out-Null }',
+          '  if (Test-Path $userKeysFile) {',
+          '    Copy-Item $userKeysFile $adminKeysFile -Force',
+          '    icacls $adminKeysFile /inheritance:r | Out-Null',
+          '    icacls $adminKeysFile /grant "NT AUTHORITY\\SYSTEM:(F)" | Out-Null',
+          '    icacls $adminKeysFile /grant "BUILTIN\\Administrators:(F)" | Out-Null',
           '  }',
-          '} catch { Write-Output "OpenSSH setup warning: $_" }',
+          // FIX 3: Enable WinRM basic auth + HTTP listener so port-5985 fallback works
+          '  Set-Item -Path WSMan:\\localhost\\Service\\Auth\\Basic -Value $true -Force',
+          '  Set-Item -Path WSMan:\\localhost\\Service\\AllowUnencrypted -Value $true -Force',
+          '  if (-not (Get-NetFirewallRule -Name "WinRM-HTTP-In-TCP" -ErrorAction SilentlyContinue)) { New-NetFirewallRule -Name "WinRM-HTTP-In-TCP" -DisplayName "WinRM HTTP (5985)" -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 5985 }',
+          '} catch { Write-Output "Setup warning: $_" }',
         ].join('\n');
         metadata.user_data = Buffer.from(windowsSetupScript).toString('base64');
         this.logger.log(`🪟 Windows VM: Sending SSH keys + OpenSSH Server setup script`);
@@ -2875,61 +2895,70 @@ chmod 600 ~/.ssh/authorized_keys`;
   }
 
   /**
-   * Temporarily open WinRM HTTPS port (5986) in a security list.
+   * Temporarily open WinRM ports (5985 HTTP + 5986 HTTPS) in a security list.
+   * Port 5985 is needed for basic-auth fallback; 5986 for NTLM.
    */
   private async ensureWinrmPortOpen(securityListId: string): Promise<void> {
-    this.logger.log(`🔓 Opening WinRM port 5986 in security list: ${securityListId}`);
+    this.logger.log(`🔓 Opening WinRM ports 5985+5986 in security list: ${securityListId}`);
 
     const securityList = await this.getSecurityList(securityListId);
 
-    const hasWinrmRule = securityList.ingressSecurityRules.some((rule: any) =>
+    const has5985 = securityList.ingressSecurityRules.some((rule: any) =>
+      rule.protocol === '6' &&
+      rule.tcpOptions?.destinationPortRange?.min === 5985 &&
+      rule.tcpOptions?.destinationPortRange?.max === 5985,
+    );
+    const has5986 = securityList.ingressSecurityRules.some((rule: any) =>
       rule.protocol === '6' &&
       rule.tcpOptions?.destinationPortRange?.min === 5986 &&
       rule.tcpOptions?.destinationPortRange?.max === 5986,
     );
 
-    if (hasWinrmRule) {
-      this.logger.log('✅ WinRM port 5986 is already open');
-      return;
+    const rulesToAdd: any[] = [];
+    if (!has5985) {
+      rulesToAdd.push({
+        source: '0.0.0.0/0', protocol: '6', isStateless: false,
+        tcpOptions: { destinationPortRange: { min: 5985, max: 5985 } },
+        description: 'WinRM HTTP (temporary for password reset)',
+      });
+    }
+    if (!has5986) {
+      rulesToAdd.push({
+        source: '0.0.0.0/0', protocol: '6', isStateless: false,
+        tcpOptions: { destinationPortRange: { min: 5986, max: 5986 } },
+        description: 'WinRM HTTPS (temporary for password reset)',
+      });
     }
 
-    const newIngressRules = [
-      ...securityList.ingressSecurityRules,
-      {
-        source: '0.0.0.0/0',
-        protocol: '6',
-        isStateless: false,
-        tcpOptions: {
-          destinationPortRange: { min: 5986, max: 5986 },
-        },
-        description: 'WinRM HTTPS (temporary for password reset)',
-      },
-    ];
+    if (rulesToAdd.length === 0) {
+      this.logger.log('✅ WinRM ports 5985+5986 already open');
+      return;
+    }
 
     await this.virtualNetworkClient.updateSecurityList({
       securityListId,
       updateSecurityListDetails: {
-        ingressSecurityRules: newIngressRules,
+        ingressSecurityRules: [...securityList.ingressSecurityRules, ...rulesToAdd],
         egressSecurityRules: securityList.egressSecurityRules,
       },
     });
 
-    this.logger.log('✅ WinRM port 5986 opened');
+    this.logger.log('✅ WinRM ports 5985+5986 opened');
   }
 
   /**
-   * Remove the temporary WinRM port (5986) rule from a security list.
+   * Remove the temporary WinRM port rules (5985 + 5986) from a security list.
    */
   private async removeWinrmPort(securityListId: string): Promise<void> {
-    this.logger.log(`🔒 Removing WinRM port 5986 from security list: ${securityListId}`);
+    this.logger.log(`🔒 Removing WinRM ports 5985+5986 from security list: ${securityListId}`);
 
     const securityList = await this.getSecurityList(securityListId);
 
     const filteredRules = securityList.ingressSecurityRules.filter((rule: any) =>
       !(
         rule.protocol === '6' &&
-        rule.tcpOptions?.destinationPortRange?.min === 5986 &&
-        rule.tcpOptions?.destinationPortRange?.max === 5986
+        (rule.tcpOptions?.destinationPortRange?.min === 5985 ||
+         rule.tcpOptions?.destinationPortRange?.min === 5986)
       ),
     );
 
@@ -2941,7 +2970,7 @@ chmod 600 ~/.ssh/authorized_keys`;
       },
     });
 
-    this.logger.log('✅ WinRM port 5986 removed');
+    this.logger.log('✅ WinRM ports 5985+5986 removed');
   }
 
   /**
@@ -2953,7 +2982,7 @@ chmod 600 ~/.ssh/authorized_keys`;
     currentPassword: string,
     newPassword: string,
   ): Promise<void> {
-    this.logger.log(`🔌 Connecting via WinRM to ${publicIp}:5986...`);
+    this.logger.log(`🔌 Connecting via WinRM to ${publicIp} (5986 HTTPS NTLM, fallback 5985 HTTP basic)...`);
 
     const scriptPath = path.join(process.cwd(), 'scripts', 'winrm-password-reset.py');
     if (!fs.existsSync(scriptPath)) {
