@@ -39,7 +39,7 @@ function IsWindowsPasswordCompliant(validationOptions?: ValidationOptions) {
 export class ResetWindowsPasswordDto {
   @IsOptional()
   @IsString()
-  @MinLength(8, { message: 'Password must be at least 8 characters long' })
+  @MinLength(14, { message: 'Password must be at least 14 characters long' })
   @MaxLength(127, { message: 'Password must not exceed 127 characters' })
   @IsWindowsPasswordCompliant()
   newPassword?: string;
