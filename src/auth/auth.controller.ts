@@ -16,51 +16,41 @@ export class AuthController {
     private readonly configService: ConfigService,
   ) {}
 
+  /**
+   * Xác định tên cookie refresh token dựa vào Origin header.
+   * admin.oraclecloud.vn dùng 'adminRefreshToken' để tách biệt với
+   * oraclecloud.vn (dùng 'refreshToken'), tránh cookie bị dùng chung.
+   */
+  private getRefreshTokenCookieName(req: Request): string {
+    const origin = (req.headers['origin'] as string) || '';
+    if (origin.includes('admin.')) {
+      return 'adminRefreshToken';
+    }
+    return 'refreshToken';
+  }
+
   private getCookieOptions(maxAge?: number) {
     const options: any = {
       httpOnly: true,
       secure: this.configService.get('NODE_ENV') === 'production',
-      sameSite: 'lax' as const, // Changed from 'strict' to 'lax' for better cross-domain compatibility
+      sameSite: 'lax' as const,
       maxAge: maxAge || 30 * 24 * 60 * 60 * 1000, // 30 days
       path: '/',
     };
 
-    // Add domain for production to ensure cookie works across subdomains
-    const cookieDomain = this.configService.get('COOKIE_DOMAIN');
-    if (cookieDomain) {
-      options.domain = cookieDomain;
-    }
+    // Không set domain với wildcard subdomain để tránh cookie bị share
+    // giữa oraclecloud.vn và admin.oraclecloud.vn.
+    // Thay vào đó dùng tên cookie khác nhau (refreshToken vs adminRefreshToken).
 
     return options;
-  }
-
-  private resolveLang(acceptLang?: string, cookieHeader?: string): string {
-    if (acceptLang) {
-      return extractLang(acceptLang);
-    }
-
-    if (cookieHeader) {
-      const languageCookie = cookieHeader
-        .split(';')
-        .map((cookie) => cookie.trim())
-        .find((cookie) => cookie.startsWith('language='))
-        ?.split('=')[1];
-
-      if (languageCookie) {
-        return extractLang(languageCookie);
-      }
-    }
-
-    return extractLang(undefined);
   }
 
   @Post('register')
   async register(
     @Body() registerDto: RegisterDto,
     @Headers('accept-language') acceptLang?: string,
-    @Headers('cookie') cookieHeader?: string,
   ) {
-    const lang = this.resolveLang(acceptLang, cookieHeader);
+    const lang = extractLang(acceptLang);
     this.logger.log(`Register request: ${JSON.stringify({ email: registerDto.email })}`);
     return await this.authService.register(registerDto, lang);
   }
@@ -69,9 +59,8 @@ export class AuthController {
   async verifyOtp(
     @Body() verifyOtpDto: VerifyOtpDto,
     @Headers('accept-language') acceptLang?: string,
-    @Headers('cookie') cookieHeader?: string,
   ) {
-    const lang = this.resolveLang(acceptLang, cookieHeader);
+    const lang = extractLang(acceptLang);
     this.logger.log(`Verify OTP request: ${JSON.stringify(verifyOtpDto)}`);
     return await this.authService.verifyOtp(verifyOtpDto, lang);
   }
@@ -80,9 +69,8 @@ export class AuthController {
   async resendOtp(
     @Body() resendOtpDto: ResendOtpDto,
     @Headers('accept-language') acceptLang?: string,
-    @Headers('cookie') cookieHeader?: string,
   ) {
-    const lang = this.resolveLang(acceptLang, cookieHeader);
+    const lang = extractLang(acceptLang);
     this.logger.log(`Resend OTP request: ${JSON.stringify(resendOtpDto)}`);
     return await this.authService.resendOtp(resendOtpDto, lang);
   }
@@ -91,9 +79,8 @@ export class AuthController {
   async forgotPassword(
     @Body() forgotPasswordDto: ForgotPasswordDto,
     @Headers('accept-language') acceptLang?: string,
-    @Headers('cookie') cookieHeader?: string,
   ) {
-    const lang = this.resolveLang(acceptLang, cookieHeader);
+    const lang = extractLang(acceptLang);
     return await this.authService.forgotPassword(forgotPasswordDto, lang);
   }
 
@@ -101,9 +88,8 @@ export class AuthController {
   async verifyResetOtp(
     @Body() verifyResetOtpDto: VerifyResetOtpDto,
     @Headers('accept-language') acceptLang?: string,
-    @Headers('cookie') cookieHeader?: string,
   ) {
-    const lang = this.resolveLang(acceptLang, cookieHeader);
+    const lang = extractLang(acceptLang);
     return await this.authService.verifyResetOtp(verifyResetOtpDto, lang);
   }
 
@@ -111,9 +97,8 @@ export class AuthController {
   async resetPassword(
     @Body() resetPasswordDto: ResetPasswordDto,
     @Headers('accept-language') acceptLang?: string,
-    @Headers('cookie') cookieHeader?: string,
   ) {
-    const lang = this.resolveLang(acceptLang, cookieHeader);
+    const lang = extractLang(acceptLang);
     return await this.authService.resetPassword(resetPasswordDto, lang);
   }
 
@@ -142,7 +127,8 @@ export class AuthController {
     }
     
     // Normal login flow - set refresh token as httpOnly cookie
-    response.cookie('refreshToken', result.refreshToken, this.getCookieOptions());
+    const loginCookieName = this.getRefreshTokenCookieName(req);
+    response.cookie(loginCookieName, result.refreshToken, this.getCookieOptions());
 
     return {
       accessToken: result.accessToken,
@@ -157,7 +143,8 @@ export class AuthController {
     @Res({ passthrough: true }) response: Response,
   ) {
     const lang = extractLang(req.headers['accept-language'] as string);
-    const refreshToken = req.cookies?.refreshToken as string | undefined;
+    const refreshCookieName = this.getRefreshTokenCookieName(req);
+    const refreshToken = req.cookies?.[refreshCookieName] as string | undefined;
     if (!refreshToken) {
       throw new UnauthorizedException(t('common.refreshTokenNotFound', lang));
     }
@@ -172,7 +159,7 @@ export class AuthController {
     );
 
     // Set new refresh token as httpOnly cookie (token rotation)
-    response.cookie('refreshToken', tokens.refreshToken, this.getCookieOptions());
+    response.cookie(refreshCookieName, tokens.refreshToken, this.getCookieOptions());
 
     return {
       success: true,
@@ -185,7 +172,8 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   async logout(@Req() req: Request, @Res({ passthrough: true }) response: Response) {
     const lang = extractLang(req.headers['accept-language'] as string);
-    const refreshToken = req.cookies?.refreshToken as string | undefined;
+    const logoutCookieName = this.getRefreshTokenCookieName(req);
+    const refreshToken = req.cookies?.[logoutCookieName] as string | undefined;
 
     // Decode userId from the refreshToken cookie (no verification needed — we just need the sub claim
     // to invalidate the token in DB). This works even when the accessToken is expired.
@@ -204,7 +192,7 @@ export class AuthController {
     // Always clear the cookie regardless of token validity
     const clearOptions = this.getCookieOptions(0);
     delete clearOptions.maxAge;
-    response.clearCookie('refreshToken', clearOptions);
+    response.clearCookie(logoutCookieName, clearOptions);
 
     return { message: t('common.logoutSuccess', lang) };
   }
@@ -216,7 +204,8 @@ export class AuthController {
     @Res({ passthrough: true }) response: Response,
   ) {
     const lang = extractLang(req.headers['accept-language'] as string);
-    const refreshToken = req.cookies?.refreshToken as string | undefined;
+    const logoutAllCookieName = this.getRefreshTokenCookieName(req);
+    const refreshToken = req.cookies?.[logoutAllCookieName] as string | undefined;
 
     let userId: string | undefined;
     if (refreshToken) {
@@ -233,7 +222,7 @@ export class AuthController {
     // Always clear the cookie regardless of token validity
     const clearOptions = this.getCookieOptions(0);
     delete clearOptions.maxAge;
-    response.clearCookie('refreshToken', clearOptions);
+    response.clearCookie(logoutAllCookieName, clearOptions);
 
     return { message: t('common.logoutAllSuccess', lang) };
   }
@@ -274,8 +263,9 @@ export class AuthController {
       // Login with Google
       const result = await this.authService.loginWithGoogle(user, userAgent, req, lang);
 
-      // Set refresh token cookie
-      response.cookie('refreshToken', result.refreshToken, this.getCookieOptions());
+      // Set refresh token cookie based on which frontend is logging in
+      const googleCookieName = user.role === 'admin' ? 'adminRefreshToken' : 'refreshToken';
+      response.cookie(googleCookieName, result.refreshToken, this.getCookieOptions());
 
       // Get frontend URL from env - for admin users, use FRONTEND_URL_ADMIN if available
       let frontendUrl = 'http://localhost:3000';
