@@ -14,6 +14,35 @@ export class AdminLoginHistoryService {
   ) {}
 
   /**
+   * Convert Date to UTC ISO 8601 string to ensure consistent timezone handling
+   * This fixes the issue where MySQL TIMESTAMP values are returned in connection timezone
+   * and need to be explicitly converted to UTC before sending to frontend
+   */
+  private convertToUtcIsoString(date: Date | string | null | undefined): string | null {
+    if (!date) return null;
+    try {
+      const dateObj = typeof date === 'string' ? new Date(date) : date;
+      if (isNaN(dateObj.getTime())) return null;
+      return dateObj.toISOString();
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Transform login history data to ensure dates are in UTC ISO format
+   */
+  private transformLoginHistoryData(records: AdminLoginHistory[]): any[] {
+    return records.map(record => ({
+      ...record,
+      loginTime: this.convertToUtcIsoString(record.loginTime),
+      logoutTime: record.logoutTime ? this.convertToUtcIsoString(record.logoutTime) : null,
+      createdAt: record.createdAt ? this.convertToUtcIsoString(record.createdAt) : null,
+      updatedAt: record.updatedAt ? this.convertToUtcIsoString(record.updatedAt) : null,
+    }));
+  }
+
+  /**
    * Record admin login attempt
    */
   async recordLogin(createDto: CreateAdminLoginHistoryDto): Promise<AdminLoginHistory> {
@@ -100,7 +129,7 @@ export class AdminLoginHistoryService {
       .getMany();
 
     return {
-      data,
+      data: this.transformLoginHistoryData(data),
       total,
       page,
       limit,
@@ -136,17 +165,20 @@ export class AdminLoginHistoryService {
       .take(limit)
       .getMany();
 
-    return { data, total };
+    return { data: this.transformLoginHistoryData(data), total };
   }
 
   /**
    * Get single login record by ID
    */
   async getLoginById(id: number): Promise<AdminLoginHistory | null> {
-    return await this.adminLoginHistoryRepository.findOne({
+    const record = await this.adminLoginHistoryRepository.findOne({
       where: { id },
       relations: ['admin'],
     });
+    if (!record) return null;
+    const transformed = this.transformLoginHistoryData([record]);
+    return transformed[0] as any;
   }
 
   /**
@@ -156,7 +188,7 @@ export class AdminLoginHistoryService {
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - days);
 
-    return await this.adminLoginHistoryRepository.find({
+    const data = await this.adminLoginHistoryRepository.find({
       where: {
         adminId,
         loginTime: Between(startDate, new Date()),
@@ -166,6 +198,7 @@ export class AdminLoginHistoryService {
       },
       take: 100,
     });
+    return this.transformLoginHistoryData(data) as any;
   }
 
   /**
@@ -231,7 +264,7 @@ export class AdminLoginHistoryService {
       failedLogins,
       lockedAttempts,
       successRate: totalLogins > 0 ? Math.round((successfulLogins / totalLogins) * 100) : 0,
-      lastLoginTime: lastLogin?.loginTime,
+      lastLoginTime: lastLogin ? this.convertToUtcIsoString(lastLogin.loginTime) : null,
       lastLoginIp: lastLogin?.ipV4 || lastLogin?.ipV6,
       uniqueDevices: parseInt(uniqueDevices?.count || 0),
       uniqueCountries: parseInt(uniqueCountries?.count || 0),

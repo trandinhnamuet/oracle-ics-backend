@@ -685,12 +685,11 @@ export class VmSubscriptionService {
    * Connects to the Windows VM using admin SSH key and runs net user command
    * OCI Windows images come with OpenSSH pre-installed
    */
-  async resetWindowsPassword(subscriptionId: string, userId: number, customPassword?: string) {
+  async resetWindowsPassword(subscriptionId: string, userId: number) {
     this.logger.log('========================================');
     this.logger.log(`🔑 RESET WINDOWS PASSWORD`);
     this.logger.log(`📋 Subscription ID: ${subscriptionId}`);
     this.logger.log(`👤 User ID: ${userId}`);
-    this.logger.log(`🔐 Custom password provided: ${!!customPassword}`);
     this.logger.log('========================================');
 
     // Step 1: Validate subscription
@@ -738,89 +737,36 @@ export class VmSubscriptionService {
       throw new BadRequestException('VM does not have a public IP address');
     }
 
-    // Step 6: Use provided password or generate a secure random one
+    // Step 6: Generate a secure random password
     // Windows password requirements: min 8 chars, uppercase, lowercase, digit, special char
-    const newPassword = customPassword ?? this.generateWindowsPassword();
-    this.logger.log(`🔐 Password source: ${customPassword ? 'user-provided' : 'auto-generated'} (length: ${newPassword.length})`);
+    const newPassword = this.generateWindowsPassword();
+    this.logger.log(`🔐 New password generated (length: ${newPassword.length})`);
 
-    // Step 7: Get system admin private key for SSH-based password reset fallback.
-    // The admin public key was added to the VM's authorized_keys by cloudbase-init at
-    // provisioning time, so SSH key auth works without needing the current password.
-    let adminSshPrivateKey: string | undefined;
+    // Step 7: Reset password via OCI Run Command
+    this.logger.log(`🚀 Sending OCI Run Command to instance ${vm.instance_id}...`);
     try {
-      const sshKeyRecord = vm.system_ssh_key_id
-        ? await this.systemSshKeyService.getSystemKeyById(vm.system_ssh_key_id).catch(() => null)
-        : null;
-      const finalKey = sshKeyRecord || (await this.systemSshKeyService.getActiveKey().catch(() => null));
-      if (finalKey) {
-        let pk = decryptPrivateKey(finalKey.private_key_encrypted);
-        if (pk.includes('BEGIN PRIVATE KEY')) {
-          const keyObject = crypto.createPrivateKey(pk);
-          pk = keyObject.export({ type: 'pkcs1', format: 'pem' }) as string;
-        }
-        if (!pk.endsWith('\n')) pk += '\n';
-        adminSshPrivateKey = pk;
-        this.logger.log('✅ System admin SSH private key loaded for SSH fallback');
-      }
-    } catch (keyErr: any) {
-      this.logger.warn(`⚠️ Could not load admin SSH key (SSH fallback unavailable): ${keyErr.message}`);
-    }
-
-    // Step 8: Try to reset password on the VM (OCI Run Command → SSH key → VM restart → WinRM)
-    this.logger.log(`🚀 Sending password reset to instance ${vm.instance_id}...`);
-    let remoteChangeSuccess = false;
-    try {
-      await this.ociService.runWindowsPasswordReset(
-        vm.instance_id,
-        vm.compartment_id,
-        newPassword,
-        vm.subnet_id,
-        vm.public_ip,
-        vm.windows_initial_password,
-        adminSshPrivateKey,
-      );
-      remoteChangeSuccess = true;
-      this.logger.log(`✅ Password changed on VM successfully`);
+      await this.ociService.runWindowsPasswordReset(vm.instance_id, vm.compartment_id, newPassword);
+      this.logger.log(`✅ Password changed successfully via OCI Run Command`);
     } catch (runCmdError) {
-      // Re-throw client errors (e.g. Windows rejected the password) as-is (400)
-      if (runCmdError instanceof BadRequestException) {
-        this.logger.warn(`⚠️ Windows rejected the password: ${runCmdError.message}`);
-        throw runCmdError;
-      }
-      this.logger.warn(`⚠️ Remote password change failed: ${runCmdError.message}`);
-      this.logger.warn(`⚠️ Saving new password to database. User must change it manually via RDP.`);
+      this.logger.error(`❌ OCI Run Command failed: ${runCmdError.message}`);
+      throw new BadRequestException(`Failed to reset Windows password: ${runCmdError.message}`);
     }
 
-    // Step 9: Always update password in database (so user has the new credential)
+    // Step 8: Update password in database
     this.logger.log(`💾 Saving new password to database...`);
-    // Step 9: Update password in the database ONLY if the remote change succeeded.
-    // If we update when remote fails, we overwrite the DB with an unapplied password,
-    // which breaks future WinRM attempts (they'd use a password the VM never received).
-    if (remoteChangeSuccess) {
-      this.logger.log(`💾 Saving new password to database...`);
-      await this.vmInstanceRepo.update(vm.id, {
-        windows_initial_password: newPassword,
-      });
-      this.logger.log(`✅ Password saved to database`);
-    } else {
-      this.logger.warn(`⚠️ Remote change failed — keeping current DB password intact`);
-    }
+    await this.vmInstanceRepo.update(vm.id, {
+      windows_initial_password: newPassword,
+    });
+    this.logger.log(`✅ Password saved to database`);
 
     this.logger.log('========================================');
-    this.logger.log(`🎉 WINDOWS PASSWORD RESET COMPLETE (remote: ${remoteChangeSuccess})`);
+    this.logger.log(`🎉 WINDOWS PASSWORD RESET COMPLETE`);
     this.logger.log('========================================');
-
-    if (!remoteChangeSuccess) {
-      throw new InternalServerErrorException(
-        'Unable to reset the Windows VM password remotely. The VM may be unreachable. Please try again in a few minutes or contact support.',
-      );
-    }
 
     return {
       success: true,
       username: 'opc',
       newPassword: newPassword,
-      remoteChangeApplied: remoteChangeSuccess,
       message: 'Windows password has been reset successfully.',
     };
   }
