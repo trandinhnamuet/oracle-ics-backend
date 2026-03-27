@@ -41,6 +41,9 @@ export class VmInstance {
   @Column({ type: 'varchar', length: 100, nullable: true })
   operating_system: string;
 
+  @Column({ type: 'varchar', length: 100, nullable: true })
+  operating_system_version: string;
+
   @Column({ type: 'varchar', length: 50, nullable: true })
   region: string;
 

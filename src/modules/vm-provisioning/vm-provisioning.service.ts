@@ -133,6 +133,7 @@ export class VmProvisioningService {
         instance_name: 'PENDING', // Will be updated after OCI launch
         shape: createVmDto.shape,
         image_id: createVmDto.imageId,
+        image_name: createVmDto.imageId,
         lifecycle_state: 'PROVISIONING',
         ssh_public_key: createVmDto.userSshPublicKey,
         vcn_id: vcnResource.vcn_ocid,
@@ -369,15 +370,21 @@ export class VmProvisioningService {
         this.logger.log(`📦 Image OS: ${imageDetails?.operatingSystem || 'Unknown'}`);
         
         const isWindows = imageDetails?.operatingSystem?.toLowerCase().includes('windows');
+
+        // Persist image metadata for admin/package-management UI.
+        savedVm.image_name = imageDetails?.displayName || savedVm.image_name;
+        savedVm.operating_system = imageDetails?.operatingSystem || savedVm.operating_system;
+        savedVm.operating_system_version = imageDetails?.operatingSystemVersion || savedVm.operating_system_version;
+        await this.vmInstanceRepo.save(savedVm);
+        this.logger.log(
+          `✅ Image metadata saved: OS=${savedVm.operating_system || 'Unknown'}, Version=${savedVm.operating_system_version || 'Unknown'}, Image=${savedVm.image_name || 'Unknown'}`,
+        );
         
         if (isWindows) {
           this.logger.log('🪟 ========== WINDOWS VM DETECTED ==========');
           this.logger.log(`🪟 Image: ${imageDetails.displayName}`);
           this.logger.log(`🪟 OS: ${imageDetails.operatingSystem}`);
           
-          // Update OS first
-          savedVm.operating_system = imageDetails.operatingSystem;
-          await this.vmInstanceRepo.save(savedVm);
           this.logger.log('✅ OS type saved to database');
           
           // Step 11.1: Ensure RDP port 3389 is open in Security List
@@ -428,19 +435,26 @@ export class VmProvisioningService {
         if (imageIdLower.includes('windows') || imageIdLower.includes('win-server')) {
           this.logger.log('🪟 Fallback: Detected Windows from imageId pattern');
           savedVm.operating_system = 'Windows Server';
+          savedVm.operating_system_version = savedVm.operating_system_version || 'Unknown';
         } else if (imageIdLower.includes('ubuntu')) {
           this.logger.log('🐧 Fallback: Detected Ubuntu from imageId pattern');
           savedVm.operating_system = 'Ubuntu';
+          savedVm.operating_system_version = savedVm.operating_system_version || 'Unknown';
         } else if (imageIdLower.includes('oracle-linux') || imageIdLower.includes('ol-')) {
           this.logger.log('🐧 Fallback: Detected Oracle Linux from imageId pattern');
           savedVm.operating_system = 'Oracle Linux';
+          savedVm.operating_system_version = savedVm.operating_system_version || 'Unknown';
         } else if (imageIdLower.includes('centos')) {
           this.logger.log('🐧 Fallback: Detected CentOS from imageId pattern');
           savedVm.operating_system = 'CentOS';
+          savedVm.operating_system_version = savedVm.operating_system_version || 'Unknown';
         } else {
           this.logger.warn('⚠️  Could not detect OS from imageId, marking as Unknown');
           savedVm.operating_system = 'Unknown Linux';
+          savedVm.operating_system_version = savedVm.operating_system_version || 'Unknown';
         }
+
+        savedVm.image_name = savedVm.image_name || createVmDto.imageId;
         
         await this.vmInstanceRepo.save(savedVm);
         this.logger.log(`✅ Fallback OS saved: ${savedVm.operating_system}`);
@@ -1018,6 +1032,7 @@ export class VmProvisioningService {
       imageId: vm.image_id,
       imageName: vm.image_name,
       operatingSystem: vm.operating_system,
+      operatingSystemVersion: vm.operating_system_version,
       region: vm.region,
       availabilityDomain: vm.availability_domain,
       lifecycleState: vm.lifecycle_state,
