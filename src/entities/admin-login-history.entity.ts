@@ -18,7 +18,7 @@ export class AdminLoginHistory {
   @Column({ name: 'role', type: 'varchar', length: 50, default: 'admin' })
   role: string;
 
-  @Column({ name: 'login_time', type: 'timestamp' })
+  @Column({ name: 'login_time', type: 'timestamptz' })
   loginTime: Date;
 
   @Column({ name: 'login_status', type: 'varchar', length: 50 })
@@ -60,7 +60,7 @@ export class AdminLoginHistory {
   @Column({ name: 'is_new_device', type: 'boolean', default: false })
   isNewDevice: boolean;
 
-  @Column({ name: 'logout_time', type: 'timestamp', nullable: true })
+  @Column({ name: 'logout_time', type: 'timestamptz', nullable: true })
   logoutTime?: Date;
 
   @Column({ name: 'session_duration_minutes', type: 'int', nullable: true })
@@ -69,7 +69,7 @@ export class AdminLoginHistory {
   @Column({ name: 'failed_attempts_before_success', type: 'int', default: 0 })
   failedAttemptsBeforeSuccess: number;
 
-  @CreateDateColumn({ name: 'created_at' })
+  @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
 
   @ManyToOne(() => User, { nullable: true, onDelete: 'SET NULL' })
