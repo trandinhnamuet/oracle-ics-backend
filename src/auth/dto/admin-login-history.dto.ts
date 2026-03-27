@@ -92,7 +92,7 @@ export class AdminLoginStatisticsDto {
   failedLogins: number;
   lockedAttempts: number;
   successRate: number;
-  lastLoginTime?: Date;
+  lastLoginTime?: string | null;
   lastLoginIp?: string;
   uniqueDevices: number;
   uniqueCountries: number;

@@ -38,7 +38,6 @@ export class AdminLoginHistoryService {
       loginTime: this.convertToUtcIsoString(record.loginTime),
       logoutTime: record.logoutTime ? this.convertToUtcIsoString(record.logoutTime) : null,
       createdAt: record.createdAt ? this.convertToUtcIsoString(record.createdAt) : null,
-      updatedAt: record.updatedAt ? this.convertToUtcIsoString(record.updatedAt) : null,
     }));
   }
 
