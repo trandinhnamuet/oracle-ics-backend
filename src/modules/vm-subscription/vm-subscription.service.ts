@@ -685,7 +685,11 @@ export class VmSubscriptionService {
    * Connects to the Windows VM using admin SSH key and runs net user command
    * OCI Windows images come with OpenSSH pre-installed
    */
-  async resetWindowsPassword(subscriptionId: string, userId: number) {
+  async resetWindowsPassword(
+    subscriptionId: string,
+    userId: number,
+    customPassword?: string,
+  ) {
     this.logger.log('========================================');
     this.logger.log(`🔑 RESET WINDOWS PASSWORD`);
     this.logger.log(`📋 Subscription ID: ${subscriptionId}`);
@@ -737,10 +741,14 @@ export class VmSubscriptionService {
       throw new BadRequestException('VM does not have a public IP address');
     }
 
-    // Step 6: Generate a secure random password
+    // Step 6: Use custom password if provided, otherwise generate a secure random password
     // Windows password requirements: min 8 chars, uppercase, lowercase, digit, special char
-    const newPassword = this.generateWindowsPassword();
-    this.logger.log(`🔐 New password generated (length: ${newPassword.length})`);
+    const newPassword = customPassword?.trim() || this.generateWindowsPassword();
+    if (customPassword?.trim()) {
+      this.logger.log(`🔐 Using custom password (length: ${newPassword.length})`);
+    } else {
+      this.logger.log(`🔐 New password generated (length: ${newPassword.length})`);
+    }
 
     // Step 7: Reset password via OCI Run Command
     this.logger.log(`🚀 Sending OCI Run Command to instance ${vm.instance_id}...`);
