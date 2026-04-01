@@ -10,6 +10,7 @@ import {
 import { TestEmailTemplate } from './templates/test-email.template';
 import { EmailVerificationTemplate } from './templates/email-verification.template';
 import { PasswordResetTemplate } from './templates/password-reset.template';
+import { appendMailLog } from './mail-logger.util';
 
 @Injectable()
 export class EmailService {
@@ -69,9 +70,24 @@ export class EmailService {
       this.logger.log(`📧 Email sent successfully to: ${options.to}`);
       this.logger.debug(`Message ID: ${result.messageId}`);
       
+      appendMailLog({
+        to: options.to,
+        from: String(mailOptions.from),
+        subject: options.subject,
+        messageId: result.messageId,
+        status: 'sent',
+      });
+
       return true;
     } catch (error) {
       this.logger.error(`❌ Failed to send email to ${options.to}:`, error);
+      appendMailLog({
+        to: options.to,
+        from: `${process.env.SMTP_FROM_NAME || 'Oracle ICS'} <${process.env.SMTP_FROM || process.env.SMTP_USER}>`,
+        subject: options.subject,
+        status: 'error',
+        error: error?.message || String(error),
+      });
       return false;
     }
   }
