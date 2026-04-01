@@ -320,7 +320,9 @@ export class SubscriptionService {
             'user.email ILIKE :st0 OR ' +
             'user.firstName ILIKE :st0 OR ' +
             'user.lastName ILIKE :st0 OR ' +
-            'cloudPackage.name ILIKE :st0)',
+            'cloudPackage.name ILIKE :st0 OR ' +
+            'vmInstance.instance_name ILIKE :st0 OR ' +
+            'vmInstance.public_ip ILIKE :st0)',
             { st0: `%${tokens[0]}%` }
           );
         } else {
@@ -330,7 +332,7 @@ export class SubscriptionService {
           tokens.forEach((token, idx) => {
             const p = `st${idx}`;
             queryBuilder.andWhere(
-              `(user.email ILIKE :${p} OR user.firstName ILIKE :${p} OR user.lastName ILIKE :${p} OR cloudPackage.name ILIKE :${p})`,
+              `(user.email ILIKE :${p} OR user.firstName ILIKE :${p} OR user.lastName ILIKE :${p} OR cloudPackage.name ILIKE :${p} OR vmInstance.instance_name ILIKE :${p} OR vmInstance.public_ip ILIKE :${p})`,
               { [p]: `%${token}%` }
             );
           });
