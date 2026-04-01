@@ -2,28 +2,26 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
 
 export class CreateVmActionsLogTable20251126000004 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
-    // Tạo bảng nếu chưa tồn tại (không có cột status để tương thích bảng cũ)
+    // Tạo bảng với cấu trúc tối thiểu (chỉ các cột chắc chắn đã có từ đầu).
+    // CREATE TABLE IF NOT EXISTS sẽ bị bỏ qua nếu bảng đã tồn tại — không lỗi.
     await queryRunner.query(`
       CREATE TABLE IF NOT EXISTS oracle.vm_actions_log (
         id SERIAL PRIMARY KEY,
         vm_instance_id UUID NOT NULL,
         user_id INTEGER NOT NULL,
         action VARCHAR(50) NOT NULL,
-        error_message TEXT,
-        requested_at TIMESTAMP DEFAULT NOW(),
-        completed_at TIMESTAMP,
         CONSTRAINT fk_vm_actions_log_vm FOREIGN KEY (vm_instance_id) REFERENCES oracle.vm_instances(id) ON DELETE CASCADE,
         CONSTRAINT fk_vm_actions_log_user FOREIGN KEY (user_id) REFERENCES oracle.users(id) ON DELETE CASCADE
       );
     `);
 
-    // Thêm cột status nếu chưa có (an toàn khi bảng đã tồn tại từ phiên bản cũ)
-    await queryRunner.query(`
-      ALTER TABLE oracle.vm_actions_log
-        ADD COLUMN IF NOT EXISTS status VARCHAR(50) NOT NULL DEFAULT 'pending';
-    `);
+    // Thêm từng cột bằng ADD COLUMN IF NOT EXISTS để an toàn khi bảng cũ thiếu cột.
+    await queryRunner.query(`ALTER TABLE oracle.vm_actions_log ADD COLUMN IF NOT EXISTS status VARCHAR(50) NOT NULL DEFAULT 'pending';`);
+    await queryRunner.query(`ALTER TABLE oracle.vm_actions_log ADD COLUMN IF NOT EXISTS error_message TEXT;`);
+    await queryRunner.query(`ALTER TABLE oracle.vm_actions_log ADD COLUMN IF NOT EXISTS requested_at TIMESTAMP DEFAULT NOW();`);
+    await queryRunner.query(`ALTER TABLE oracle.vm_actions_log ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP;`);
 
-    // Tạo các index riêng lẻ (tránh lỗi khi gộp chung với CREATE TABLE)
+    // Tạo các index riêng lẻ sau khi đã đảm bảo tất cả cột tồn tại.
     await queryRunner.query(`CREATE INDEX IF NOT EXISTS idx_vm_actions_log_vm_instance_id ON oracle.vm_actions_log(vm_instance_id);`);
     await queryRunner.query(`CREATE INDEX IF NOT EXISTS idx_vm_actions_log_user_id ON oracle.vm_actions_log(user_id);`);
     await queryRunner.query(`CREATE INDEX IF NOT EXISTS idx_vm_actions_log_action ON oracle.vm_actions_log(action);`);
