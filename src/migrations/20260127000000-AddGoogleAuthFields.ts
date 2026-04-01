@@ -2,29 +2,10 @@ import { MigrationInterface, QueryRunner, TableColumn } from 'typeorm';
 
 export class AddGoogleAuthFields20260127000000 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
-    // Add googleId column
-    await queryRunner.addColumn(
-      'oracle.users',
-      new TableColumn({
-        name: 'google_id',
-        type: 'varchar',
-        length: '255',
-        isNullable: true,
-        isUnique: true,
-      })
-    );
-
-    // Add authProvider column with default value
-    await queryRunner.addColumn(
-      'oracle.users',
-      new TableColumn({
-        name: 'auth_provider',
-        type: 'varchar',
-        length: '50',
-        default: "'local'",
-        isNullable: false,
-      })
-    );
+    // Add columns với IF NOT EXISTS để an toàn khi chạy lại
+    await queryRunner.query(`ALTER TABLE oracle.users ADD COLUMN IF NOT EXISTS google_id VARCHAR(255)`);
+    await queryRunner.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_id ON oracle.users(google_id) WHERE google_id IS NOT NULL`);
+    await queryRunner.query(`ALTER TABLE oracle.users ADD COLUMN IF NOT EXISTS auth_provider VARCHAR(50) NOT NULL DEFAULT 'local'`);
 
     // Make password nullable using raw query to preserve data
     // DO NOT use changeColumn() - it will drop and recreate, losing all data!
