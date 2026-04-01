@@ -3,6 +3,7 @@ import * as nodemailer from 'nodemailer';
 import { join } from 'path';
 import { RegistrationRequests } from '../registration-requests/registration-requests.entity';
 import { getEbookTemplate } from './template/ebook';
+import { appendMailLog } from '../../email/mail-logger.util';
 
 @Injectable()
 export class EmailService {
@@ -31,7 +32,14 @@ export class EmailService {
             attachments,
         };
         console.log('Sending email with options:', mailOptions);
-        await this.transporter.sendMail(mailOptions);
+        const result = await this.transporter.sendMail(mailOptions);
+        appendMailLog({
+          to,
+          from: String(mailOptions.from),
+          subject,
+          messageId: result.messageId,
+          status: 'sent',
+        });
     }
 
     async sendRegistrationEbook(registrationData: RegistrationRequests): Promise<void> {
