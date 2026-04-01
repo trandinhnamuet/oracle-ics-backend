@@ -421,6 +421,23 @@ export class VmProvisioningService {
           savedVm.operating_system = imageDetails?.operatingSystem || 'Linux';
           await this.vmInstanceRepo.save(savedVm);
           this.logger.log(`✅ OS type saved: ${savedVm.operating_system}`);
+
+          // Step 11.1 (Linux): Ensure SSH port 22 is open in Security List
+          // This is necessary when reusing an existing VCN whose security list
+          // may not have port 22 (or rules were modified outside our system).
+          try {
+            this.logger.log('🔐 Ensuring SSH port 22 is open for Linux VM...');
+            const vcnDetails = await this.ociService.getVcn(vcnResource.vcn_ocid);
+            if (vcnDetails.defaultSecurityListId) {
+              await this.ociService.ensureSshAccessEnabled(vcnDetails.defaultSecurityListId);
+              this.logger.log('✅ SSH port 22 is now accessible');
+            } else {
+              this.logger.warn('⚠️  Could not find default security list for VCN');
+            }
+          } catch (sshError) {
+            this.logger.error('❌ Failed to open SSH port:', sshError.message);
+            // Continue anyway — user can open it manually in OCI Console
+          }
         }
       } catch (osError) {
         this.logger.error('❌ ========== ERROR CHECKING OS TYPE ==========');
@@ -897,8 +914,20 @@ export class VmProvisioningService {
     if (vcnResource) {
       // Verify that the VCN still exists in OCI
       try {
-        await this.ociService.getVcn(vcnResource.vcn_ocid);
+        const existingVcnDetails = await this.ociService.getVcn(vcnResource.vcn_ocid);
         this.logger.log(`Reusing existing VCN for user ${userCompartment.user_id}: ${vcnResource.vcn_ocid}`);
+
+        // Always ensure SSH port 22 is open on the reused VCN's default security list.
+        // The security list may not have been updated (e.g. first VCN created before this
+        // rule was codified) or rules could have been modified externally.
+        if (existingVcnDetails.defaultSecurityListId) {
+          try {
+            await this.ociService.ensureSshAccessEnabled(existingVcnDetails.defaultSecurityListId);
+          } catch (secErr) {
+            this.logger.warn(`⚠️  ensureSshAccessEnabled on reused VCN failed (non-fatal): ${secErr.message}`);
+          }
+        }
+
         return vcnResource;
       } catch (error) {
         // VCN no longer exists in OCI (deleted when compartment was deleted)
