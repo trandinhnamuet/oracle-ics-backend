@@ -123,6 +123,7 @@ export class VmSubscriptionService {
     subscriptionId: string,
     userId: number,
     configureVmDto: ConfigureVmDto,
+    language?: string,
   ) {
     this.logger.log(`Configuring VM for subscription ${subscriptionId}`);
 
@@ -296,6 +297,8 @@ export class VmSubscriptionService {
             },
             userSshKeyPair,
             subscription,
+            false,
+            language,
           );
           this.logger.log('✅ SSH key email sent successfully');
         } else {
@@ -512,7 +515,7 @@ export class VmSubscriptionService {
   /**
    * Request new SSH key for subscription's VM
    */
-  async requestNewSshKey(subscriptionId: string, userId: number, email?: string) {
+  async requestNewSshKey(subscriptionId: string, userId: number, email?: string, language?: string) {
     this.logger.log('========================================');
     this.logger.log(`🔑 REQUEST NEW SSH KEY`);
     this.logger.log(`📋 Subscription ID: ${subscriptionId}`);
@@ -652,6 +655,7 @@ export class VmSubscriptionService {
           newKeyPair,
           subscription,
           true, // isNewKey = true
+          language,
         );
       }
 
@@ -930,19 +934,27 @@ export class VmSubscriptionService {
   /**
    * Send SSH key to user via email
    */
+  private isVietnameseLanguage(language?: string): boolean {
+    const normalized = (language || '').trim().toLowerCase();
+    return normalized.startsWith('vi');
+  }
+
   private async sendSshKeyEmail(
     email: string,
     vmInfo: any,
     sshKeyPair: { publicKey: string; privateKey: string; fingerprint: string },
     subscription: Subscription,
     isNewKey: boolean = false,
+    language?: string,
   ) {
+    const isVietnamese = this.isVietnameseLanguage(language);
+
     const subject = isNewKey
-      ? 'New SSH Key for Your Oracle Cloud VM'
-      : 'Your Oracle Cloud VM is Ready!';
+      ? (isVietnamese ? 'SSH Key Mới Cho Oracle Cloud VM Của Bạn' : 'New SSH Key for Your Oracle Cloud VM')
+      : (isVietnamese ? 'Máy Ảo Oracle Cloud Của Bạn Đã Sẵn Sàng!' : 'Your Oracle Cloud VM is Ready!');
 
     const htmlContent = `
-      <html>
+      <html lang="${isVietnamese ? 'vi' : 'en'}">
         <head>
           <style>
             body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
@@ -960,56 +972,72 @@ export class VmSubscriptionService {
         <body>
           <div class="container">
             <div class="header">
-              <h1>${isNewKey ? '🔑 New SSH Key Generated' : '✅ VM Successfully Created!'}</h1>
+              <h1>${isNewKey
+                ? (isVietnamese ? '🔑 SSH Key Mới Đã Được Tạo' : '🔑 New SSH Key Generated')
+                : (isVietnamese ? '✅ VM Đã Được Tạo Thành Công!' : '✅ VM Successfully Created!')
+              }</h1>
             </div>
             
             <div class="content">
-              <h2>Hello,</h2>
+              <h2>${isVietnamese ? 'Xin chào,' : 'Hello,'}</h2>
               <p>${isNewKey 
-                ? 'Your new SSH key has been generated and applied to your VM successfully.' 
-                : 'Your Oracle Cloud VM has been provisioned and is ready to use!'
+                ? (isVietnamese
+                  ? 'SSH key mới đã được tạo và áp dụng thành công cho VM của bạn.'
+                  : 'Your new SSH key has been generated and applied to your VM successfully.'
+                )
+                : (isVietnamese
+                  ? 'Máy ảo Oracle Cloud của bạn đã được cấp phát và sẵn sàng sử dụng!'
+                  : 'Your Oracle Cloud VM has been provisioned and is ready to use!'
+                )
               }</p>
               
               ${isNewKey ? `
                 <div class="success">
-                  <h3>✅ Key Management Info</h3>
+                  <h3>${isVietnamese ? '✅ Thông Tin Quản Lý SSH Key' : '✅ Key Management Info'}</h3>
                   <ul style="margin: 10px 0; padding-left: 20px;">
-                    <li><strong>New key has been added</strong> to your VM</li>
-                    <li><strong>Old keys remain active</strong> - you can still use them</li>
-                    <li>Maximum 3 keys are kept (oldest removed automatically)</li>
-                    <li>This provides zero-downtime key rotation</li>
+                    <li>${isVietnamese ? '<strong>SSH key mới đã được thêm</strong> vào VM của bạn' : '<strong>New key has been added</strong> to your VM'}</li>
+                    <li>${isVietnamese ? '<strong>Các key cũ vẫn hoạt động</strong> - bạn vẫn có thể tiếp tục sử dụng' : '<strong>Old keys remain active</strong> - you can still use them'}</li>
+                    <li>${isVietnamese ? 'Hệ thống giữ tối đa 3 key (key cũ nhất sẽ bị gỡ tự động)' : 'Maximum 3 keys are kept (oldest removed automatically)'}</li>
+                    <li>${isVietnamese ? 'Đảm bảo xoay vòng key mà không bị gián đoạn truy cập' : 'This provides zero-downtime key rotation'}</li>
                   </ul>
                 </div>
               ` : ''}
               
               <div class="info-box">
-                <h3>📋 VM Information</h3>
-                <p><strong>VM Name:</strong> ${vmInfo.displayName}</p>
-                <p><strong>Public IP:</strong> ${vmInfo.publicIp || 'Pending...'}</p>
+                <h3>${isVietnamese ? '📋 Thông Tin VM' : '📋 VM Information'}</h3>
+                <p><strong>${isVietnamese ? 'Tên VM:' : 'VM Name:'}</strong> ${vmInfo.displayName}</p>
+                <p><strong>${isVietnamese ? 'IP Public:' : 'Public IP:'}</strong> ${vmInfo.publicIp || (isVietnamese ? 'Đang chờ...' : 'Pending...')}</p>
                 <p><strong>Instance ID:</strong> ${vmInfo.instanceOcid}</p>
                 <p><strong>Subscription ID:</strong> ${subscription.id}</p>
               </div>
 
               <div class="warning">
-                <h3>⚠️ Thông tin bảo mật quan trọng</h3>
-                <p><strong>🔐 Vì lý do bảo mật, SSH private key không được gửi qua email.</strong></p>
-                <p style="margin-top: 10px;">SSH private key đã được hiển thị <strong>1 lần duy nhất</strong> trên nền tảng ngay khi máy ảo được tạo thành công.</p>
-                ${isNewKey ? '<p style="margin-top: 10px;">Nếu bạn cần SSH key mới, vui lòng sử dụng chức năng "Tạo SSH Key mới" trên trang quản lý VM.</p>' : ''}
+                <h3>${isVietnamese ? '⚠️ Thông Tin Bảo Mật Quan Trọng' : '⚠️ Important Security Information'}</h3>
+                <p><strong>${isVietnamese ? '🔐 Vì lý do bảo mật, SSH private key không được gửi qua email.' : '🔐 For security reasons, SSH private key is not sent via email.'}</strong></p>
+                <p style="margin-top: 10px;">${isVietnamese
+                  ? 'SSH private key đã được hiển thị <strong>1 lần duy nhất</strong> trên nền tảng ngay khi máy ảo được tạo thành công.'
+                  : 'Your SSH private key was shown <strong>only once</strong> on the platform right after VM creation.'
+                }</p>
+                ${isNewKey
+                  ? `<p style="margin-top: 10px;">${isVietnamese
+                    ? 'Nếu bạn cần SSH key mới, vui lòng sử dụng chức năng "Tạo SSH Key mới" trên trang quản lý VM.'
+                    : 'If you need another SSH key, please use the "Generate New SSH Key" action on the VM management page.'
+                  }</p>`
+                  : ''
+                }
               </div>
 
-              <h3>🔑 SSH Private Key:</h3>
-              <div class="info-box">
-                <p>Vì lý do bảo mật, khóa SSH không được hiển thị tại đây. Vui lòng kiểm tra lại nền tảng để xem khóa đã được hiển thị khi tạo máy ảo.</p>
-              </div>
-
-              <h3>📝 How to Connect:</h3>
+              <h3>${isVietnamese ? '📝 Cách Kết Nối:' : '📝 How to Connect:'}</h3>
               
-              <h4>Step 1: Save Private Key</h4>
-              <p>Save the private key above to a file:</p>
+              <h4>${isVietnamese ? 'Bước 1: Lưu Private Key' : 'Step 1: Save Private Key'}</h4>
+              <p>${isVietnamese
+                ? 'Hãy lưu SSH private key (đã được hiển thị trên nền tảng) vào file:'
+                : 'Save your SSH private key (shown on the platform) to a file:'
+              }</p>
               
               <p><strong>Windows (PowerShell):</strong></p>
               <div class="code-block">
-# Save key to file
+# ${isVietnamese ? 'Lưu key vào file' : 'Save key to file'}
 Set-Content -Path "$HOME\\.ssh\\oracle-vm-key${isNewKey ? '-new' : ''}.pem" -Value @"
 [PASTE PRIVATE KEY HERE]
 "@
@@ -1017,23 +1045,23 @@ Set-Content -Path "$HOME\\.ssh\\oracle-vm-key${isNewKey ? '-new' : ''}.pem" -Val
               
               <p><strong>Linux/Mac:</strong></p>
               <div class="code-block">
-# Save key to file
+# ${isVietnamese ? 'Lưu key vào file' : 'Save key to file'}
 cat > ~/.ssh/oracle-vm-key${isNewKey ? '-new' : ''}.pem << 'EOF'
 [PASTE PRIVATE KEY HERE]
 EOF
 
-# Set correct permissions
+# ${isVietnamese ? 'Đặt quyền truy cập đúng' : 'Set correct permissions'}
 chmod 600 ~/.ssh/oracle-vm-key${isNewKey ? '-new' : ''}.pem
               </div>
 
-              <h4>Step 2: Connect via SSH</h4>
-              <p>Use the appropriate username based on your VM's operating system:</p>
+              <h4>${isVietnamese ? 'Bước 2: Kết Nối Bằng SSH' : 'Step 2: Connect via SSH'}</h4>
+              <p>${isVietnamese ? 'Sử dụng username phù hợp với hệ điều hành của VM:' : 'Use the appropriate username based on your VM operating system:'}</p>
               
               <table style="border-collapse: collapse; width: 100%; margin: 10px 0;">
                 <tr style="background-color: #f0f0f0;">
-                  <th style="border: 1px solid #ddd; padding: 8px;">Operating System</th>
+                  <th style="border: 1px solid #ddd; padding: 8px;">${isVietnamese ? 'Hệ Điều Hành' : 'Operating System'}</th>
                   <th style="border: 1px solid #ddd; padding: 8px;">Username</th>
-                  <th style="border: 1px solid #ddd; padding: 8px;">SSH Command</th>
+                  <th style="border: 1px solid #ddd; padding: 8px;">${isVietnamese ? 'Lệnh SSH' : 'SSH Command'}</th>
                 </tr>
                 <tr>
                   <td style="border: 1px solid #ddd; padding: 8px;">Oracle Linux</td>
@@ -1048,54 +1076,54 @@ chmod 600 ~/.ssh/oracle-vm-key${isNewKey ? '-new' : ''}.pem
                 <tr>
                   <td style="border: 1px solid #ddd; padding: 8px;">CentOS/Rocky</td>
                   <td style="border: 1px solid #ddd; padding: 8px;"><code>centos</code> or <code>rocky</code></td>
-                  <td style="border: 1px solid #ddd; padding: 8px; font-size: 11px;"><code>ssh -i ~/.ssh/oracle-vm-key.pem centos@${vmInfo.publicIp || 'YOUR_VM_IP'}</code></td>
+                  <td style="border: 1px solid #ddd; padding: 8px; font-size: 11px;"><code>ssh -i ~/.ssh/oracle-vm-key${isNewKey ? '-new' : ''}.pem centos@${vmInfo.publicIp || 'YOUR_VM_IP'}</code></td>
                 </tr>
               </table>
 
-              <h4>Step 3: First Login Commands</h4>
+              <h4>${isVietnamese ? 'Bước 3: Lệnh Sau Khi Đăng Nhập Lần Đầu' : 'Step 3: First Login Commands'}</h4>
               <div class="code-block">
-# Check system info
+# ${isVietnamese ? 'Kiểm tra thông tin hệ thống' : 'Check system info'}
 uname -a
 
-# Update system (Oracle Linux/CentOS/Rocky)
+# ${isVietnamese ? 'Cập nhật hệ thống (Oracle Linux/CentOS/Rocky)' : 'Update system (Oracle Linux/CentOS/Rocky)'}
 sudo dnf update -y
 
-# Update system (Ubuntu)
+# ${isVietnamese ? 'Cập nhật hệ thống (Ubuntu)' : 'Update system (Ubuntu)'}
 sudo apt update && sudo apt upgrade -y
 
-# Switch to root (if needed)
+# ${isVietnamese ? 'Chuyển sang root (nếu cần)' : 'Switch to root (if needed)'}
 sudo su -
               </div>
 
-              <h3>🔐 SSH Key Fingerprint:</h3>
+              <h3>${isVietnamese ? '🔐 Dấu Vân Tay SSH Key:' : '🔐 SSH Key Fingerprint:'}</h3>
               <p><code>${sshKeyPair.fingerprint}</code></p>
 
               <div class="warning">
-                <h3>🔒 Security Best Practices</h3>
+                <h3>${isVietnamese ? '🔒 Khuyến Nghị Bảo Mật' : '🔒 Security Best Practices'}</h3>
                 <ul>
-                  <li>Never share your private key with anyone</li>
-                  <li>Keep a backup of your private key in a secure location</li>
-                  <li>Never commit the key to Git or any version control</li>
-                  <li>Consider using SSH config file for easier connections</li>
-                  <li>You can request a new SSH key anytime from the dashboard</li>
+                  <li>${isVietnamese ? 'Không chia sẻ private key cho bất kỳ ai' : 'Never share your private key with anyone'}</li>
+                  <li>${isVietnamese ? 'Luôn lưu bản sao private key ở nơi an toàn' : 'Keep a backup of your private key in a secure location'}</li>
+                  <li>${isVietnamese ? 'Không đưa private key lên Git hoặc bất kỳ hệ thống version control nào' : 'Never commit the key to Git or any version control'}</li>
+                  <li>${isVietnamese ? 'Cân nhắc sử dụng file cấu hình SSH để kết nối nhanh hơn' : 'Consider using SSH config file for easier connections'}</li>
+                  <li>${isVietnamese ? 'Bạn có thể yêu cầu SSH key mới bất kỳ lúc nào từ dashboard' : 'You can request a new SSH key anytime from the dashboard'}</li>
                 </ul>
               </div>
 
               <div class="info-box">
-                <h3>💡 Troubleshooting</h3>
-                <p><strong>Connection timeout:</strong> Make sure the VM is in RUNNING state and port 22 is open (already configured automatically).</p>
-                <p><strong>Permission denied:</strong> Check that your private key file has correct permissions (600 on Linux/Mac).</p>
-                <p><strong>Wrong username:</strong> Try different usernames based on the table above.</p>
+                <h3>${isVietnamese ? '💡 Khắc Phục Sự Cố' : '💡 Troubleshooting'}</h3>
+                <p><strong>${isVietnamese ? 'Kết nối bị timeout:' : 'Connection timeout:'}</strong> ${isVietnamese ? 'Đảm bảo VM đang ở trạng thái RUNNING và port 22 đang mở (đã được cấu hình tự động).' : 'Make sure the VM is in RUNNING state and port 22 is open (already configured automatically).'}</p>
+                <p><strong>${isVietnamese ? 'Permission denied:' : 'Permission denied:'}</strong> ${isVietnamese ? 'Kiểm tra file private key đã đặt đúng quyền (600 trên Linux/Mac).' : 'Check that your private key file has correct permissions (600 on Linux/Mac).'}</p>
+                <p><strong>${isVietnamese ? 'Sai username:' : 'Wrong username:'}</strong> ${isVietnamese ? 'Thử các username khác nhau theo bảng hướng dẫn ở trên.' : 'Try different usernames based on the table above.'}</p>
               </div>
 
               <a href="https://oraclecloud.vn/package-management/${subscription.id}" class="button">
-                Manage Your VM
+                ${isVietnamese ? 'Quản Lý VM' : 'Manage Your VM'}
               </a>
             </div>
 
             <div class="footer">
               <p>© 2026 Oracle Cloud Management Platform</p>
-              <p>If you have any questions, please contact support@oraclecloud.vn</p>
+              <p>${isVietnamese ? 'Nếu cần hỗ trợ, vui lòng liên hệ support@oraclecloud.vn' : 'If you have any questions, please contact support@oraclecloud.vn'}</p>
             </div>
           </div>
         </body>
