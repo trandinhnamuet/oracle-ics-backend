@@ -7,6 +7,7 @@ import {
   Param,
   UseGuards,
   Request,
+  Headers,
   HttpStatus,
   HttpCode,
 } from '@nestjs/common';
@@ -44,12 +45,14 @@ export class VmSubscriptionController {
     @Request() req,
     @Param('subscriptionId') subscriptionId: string,
     @Body() configureVmDto: ConfigureVmDto,
+    @Headers('accept-language') acceptLanguage?: string,
   ) {
     const userId = req.user.id;
     return this.vmSubscriptionService.configureSubscriptionVm(
       subscriptionId,
       userId,
       configureVmDto,
+      acceptLanguage,
     );
   }
 
@@ -63,6 +66,7 @@ export class VmSubscriptionController {
     @Request() req,
     @Param('subscriptionId') subscriptionId: string,
     @Body() requestNewKeyDto: RequestNewKeyDto,
+    @Headers('accept-language') acceptLanguage?: string,
   ) {
     console.log('🚀 Controller: Request New SSH Key endpoint hit');
     console.log('📋 Subscription ID:', subscriptionId);
@@ -74,6 +78,7 @@ export class VmSubscriptionController {
       subscriptionId,
       userId,
       requestNewKeyDto.email,
+      acceptLanguage,
     );
   }
 
