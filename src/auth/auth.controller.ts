@@ -141,6 +141,36 @@ export class AuthController {
     };
   }
 
+  @Post('admin-login')
+  @HttpCode(HttpStatus.OK)
+  async adminLogin(
+    @Body() loginDto: LoginDto,
+    @Req() req: Request,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const lang = extractLang(req.headers['accept-language'] as string);
+    const userAgent = req.headers['user-agent'] || '';
+
+    // adminOnly = true: non-admin accounts are rejected with same generic 401
+    const result = await this.authService.login(loginDto, userAgent, req, lang, true);
+
+    if ('requiresVerification' in result && result.requiresVerification) {
+      return {
+        requiresVerification: result.requiresVerification,
+        email: result.email,
+        message: result.message,
+      };
+    }
+
+    const loginCookieName = this.getRefreshTokenCookieName(req);
+    response.cookie(loginCookieName, result.refreshToken, this.getCookieOptions());
+
+    return {
+      accessToken: result.accessToken,
+      user: result.user,
+    };
+  }
+
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
   async refresh(

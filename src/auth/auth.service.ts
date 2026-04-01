@@ -439,7 +439,7 @@ export class AuthService {
     return { accessToken, refreshToken };
   }
 
-  async login(loginDto: LoginDto, userAgent: string, request: any, lang: string = DEFAULT_LANG) {
+  async login(loginDto: LoginDto, userAgent: string, request: any, lang: string = DEFAULT_LANG, adminOnly = false) {
     const { email, password, ipv4: ipv4Raw, ipv6: ipv6Raw } = loginDto;
     const ipv4Frontend = ipv4Raw || null;
     const ipv6Frontend = ipv6Raw || null;
@@ -535,6 +535,38 @@ export class AuthService {
       }
 
       // Don't reveal that email exists (security)
+      throw new UnauthorizedException(t('login.invalidCredentials', lang));
+    }
+
+    // Reject non-admin accounts when called from the admin-login endpoint
+    if (adminOnly && user.role !== 'admin') {
+      this.logger.warn(`Admin-only login rejected for non-admin: ${email} (role: ${user.role})`);
+      try {
+        const { browser, os, deviceType } = this.parseUserAgent(userAgent);
+        const geo = GeolocationUtil.getLocationFromIP(ipV4 || ipV6);
+        await this.adminLoginHistoryService.recordLogin({
+          adminId: null,
+          username: user.email,
+          role: user.role || 'customer',
+          loginTime: new Date(),
+          loginStatus: 'failed',
+          ipV4,
+          ipV6,
+          country: geo.country,
+          city: geo.city,
+          isp: null,
+          browser,
+          os,
+          deviceType,
+          userAgent,
+          twoFaStatus: 'not_enabled',
+          sessionId: this.generateSessionId(),
+          isNewDevice: false,
+          failedAttemptsBeforeSuccess: 1,
+        });
+      } catch (error) {
+        this.logger.error('Failed to record non-admin login attempt', error);
+      }
       throw new UnauthorizedException(t('login.invalidCredentials', lang));
     }
 
