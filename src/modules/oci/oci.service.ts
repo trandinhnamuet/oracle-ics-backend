@@ -1082,8 +1082,12 @@ runcmd:
           '  if ($cap -and $cap.State -ne "Installed") { Add-WindowsCapability -Online -Name $cap.Name -ErrorAction SilentlyContinue }',
           '  $svc = Get-Service -Name sshd -ErrorAction SilentlyContinue',
           '  if ($svc) {',
-          '    Set-Service -Name sshd -StartupType AutomaticDelayedStart -ErrorAction SilentlyContinue',
-          '    if ($svc.Status -ne "Running") { Start-Service sshd -ErrorAction SilentlyContinue }',
+          '    Set-Service -Name sshd -StartupType Automatic -ErrorAction SilentlyContinue',
+          '    if ($svc.Status -ne "Running") {',
+          '      Start-Service sshd -ErrorAction SilentlyContinue',
+          '      Start-Sleep 3',
+          '      if ((Get-Service sshd -ErrorAction SilentlyContinue).Status -ne "Running") { Start-Service sshd -ErrorAction SilentlyContinue }',
+          '    }',
           '  }',
           '} catch {}',
           'try {',
@@ -2598,10 +2602,13 @@ chmod 600 ~/.ssh/authorized_keys`;
       this.logger.log(`⏭️ WinRM skipped: ${!subnetId ? 'no subnet' : !publicIp ? 'no public IP' : 'no current password in DB'}`);
     }
 
-    // ── Strategy 2: OCI Run Command ──
-    this.logger.log(`📡 Strategy 2: OCI Run Command...`);
+    // ── Strategy 2: OCI Run Command (up to 8 minutes) ──
+    // Windows Oracle Cloud Agent sometimes takes 3-5+ minutes after first boot to
+    // fully initialise the Run Command plugin execution context. Commands arrive as
+    // VISIBLE/ACCEPTED but don't advance to IN_PROGRESS until the agent is ready.
+    this.logger.log(`📡 Strategy 2: OCI Run Command (timeout 8 min)...`);
     try {
-      await this.tryRunCommandPasswordReset(instanceId, compartmentId, newPassword);
+      await this.tryRunCommandPasswordReset(instanceId, compartmentId, newPassword, 480_000);
       this.logger.log(`✅ Password changed via OCI Run Command`);
       return;
     } catch (runCmdErr: any) {
@@ -2619,6 +2626,22 @@ chmod 600 ~/.ssh/authorized_keys`;
       } catch (sshErr: any) {
         this.logger.warn(`⚠️ SSH key-based reset failed: ${sshErr.message}`);
       }
+    }
+
+    // ── Strategy 4: SOFTRESET VM → wait for reboot → retry OCI Run Command ──
+    // As a last resort, soft-reboot the VM. This restarts the Oracle Cloud Agent
+    // cleanly, which resolves cases where the agent was stuck in a non-executing state.
+    this.logger.log(`🔄 Strategy 4: SOFTRESET VM then retry OCI Run Command...`);
+    try {
+      await this.restartInstance(instanceId);
+      this.logger.log(`✅ SOFTRESET issued — waiting for VM to reboot (~4 min)...`);
+      await this.waitForInstanceRunning(instanceId, 480_000);
+      this.logger.log(`✅ VM is RUNNING after reboot — retrying OCI Run Command...`);
+      await this.tryRunCommandPasswordReset(instanceId, compartmentId, newPassword, 300_000);
+      this.logger.log(`✅ Password changed via OCI Run Command (post-reboot)`);
+      return;
+    } catch (softrResetErr: any) {
+      this.logger.warn(`⚠️ SOFTRESET + retry failed: ${softrResetErr.message}`);
     }
 
     throw new Error('All remote password change methods exhausted — manual intervention required.');
@@ -2668,13 +2691,13 @@ chmod 600 ~/.ssh/authorized_keys`;
 
   /**
    * Try to reset password via OCI Run Command.
-   * @param maxWaitMs  Maximum poll time in ms (default 2 min)
+   * @param maxWaitMs  Maximum poll time in ms (default 8 min)
    */
   private async tryRunCommandPasswordReset(
     instanceId: string,
     compartmentId: string,
     newPassword: string,
-    maxWaitMs: number = 120_000,
+    maxWaitMs: number = 480_000,
   ): Promise<void> {
     // Step 1: Enable Run Command plugin
     try {
@@ -2706,11 +2729,18 @@ chmod 600 ~/.ssh/authorized_keys`;
       throw new Error('Run Command plugin is not RUNNING');
     }
 
-    // Step 3: Create the Run Command
-    const escapedPassword = newPassword.replace(/"/g, '""');
-    // /logonpasswordchg:no clears the "must change password at next logon" flag so the
-    // admin-issued password is directly usable without forcing another RDP change.
-    const script = `net user opc "${escapedPassword}" /logonpasswordchg:no\r\necho PASSWORD_CHANGED_OK`;
+    // Step 3: Create the Run Command — use base64-encoded PowerShell to avoid ALL
+    // command-line escaping issues with special chars in the password (@ ! $ # & etc.).
+    // OCI Run Command on Windows executes via PowerShell by default.
+    const b64pw = Buffer.from(newPassword, 'utf8').toString('base64');
+    // /logonpasswordchg:no clears the "must change password at next logon" flag so
+    // the admin-issued password is directly usable without forcing another RDP change.
+    const script = [
+      `$b=[System.Convert]::FromBase64String('${b64pw}')`,
+      `$p=[System.Text.Encoding]::UTF8.GetString($b)`,
+      `net user opc $p /logonpasswordchg:no`,
+      `Write-Output 'PASSWORD_CHANGED_OK'`,
+    ].join('\r\n');
 
     const createResponse = await this.computeInstanceAgentClient.createInstanceAgentCommand({
       createInstanceAgentCommandDetails: {
