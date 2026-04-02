@@ -754,17 +754,47 @@ export class VmSubscriptionService {
       this.logger.log(`🔐 New password generated (length: ${newPassword.length})`);
     }
 
-    // Step 7: Reset password via OCI Run Command
+    // Step 7: Retrieve admin SSH key for SSH-based fallback strategy
+    let adminPrivateKey: string | undefined;
+    try {
+      let adminKey = vm.system_ssh_key_id
+        ? await this.systemSshKeyService.getSystemKeyById(vm.system_ssh_key_id).catch(() => null)
+        : null;
+      if (!adminKey) adminKey = await this.systemSshKeyService.getActiveKey().catch(() => null);
+      if (adminKey) {
+        let rawKey = decryptPrivateKey(adminKey.private_key_encrypted);
+        if (rawKey.includes('BEGIN PRIVATE KEY')) {
+          try {
+            const keyObject = crypto.createPrivateKey(rawKey);
+            rawKey = keyObject.export({ type: 'pkcs1', format: 'pem' }).toString();
+          } catch {}
+        }
+        if (!rawKey.endsWith('\n')) rawKey += '\n';
+        adminPrivateKey = rawKey;
+      }
+    } catch (keyErr: any) {
+      this.logger.warn(`⚠️ Could not retrieve admin SSH key for fallback: ${keyErr.message}`);
+    }
+
+    // Step 8: Reset password via available strategies (WinRM → OCI Run Command → SSH)
     this.logger.log(`🚀 Sending OCI Run Command to instance ${vm.instance_id}...`);
     try {
-      await this.ociService.runWindowsPasswordReset(vm.instance_id, vm.compartment_id, newPassword);
-      this.logger.log(`✅ Password changed successfully via OCI Run Command`);
+      await this.ociService.runWindowsPasswordReset(
+        vm.instance_id,
+        vm.compartment_id,
+        newPassword,
+        vm.subnet_id ?? undefined,
+        vm.public_ip ?? undefined,
+        vm.windows_initial_password ?? undefined,
+        adminPrivateKey,
+      );
+      this.logger.log(`✅ Password changed successfully`);
     } catch (runCmdError) {
-      this.logger.error(`❌ OCI Run Command failed: ${runCmdError.message}`);
+      this.logger.error(`❌ Password reset failed: ${runCmdError.message}`);
       throw new BadRequestException(`Failed to reset Windows password: ${runCmdError.message}`);
     }
 
-    // Step 8: Update password in database
+    // Step 9: Update password in database
     this.logger.log(`💾 Saving new password to database...`);
     await this.vmInstanceRepo.update(vm.id, {
       windows_initial_password: newPassword,

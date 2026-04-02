@@ -40,7 +40,9 @@ for scheme, port, transport, auth_user in SESSION_ATTEMPTS:
             read_timeout_sec=35,
         )
 
-        r = s.run_cmd('net', ['user', username, new_password])
+        # /logonpasswordchg:no clears the "must change password at next logon" Windows flag
+        # so the admin-issued password is directly usable without forcing another RDP change.
+        r = s.run_cmd('net', ['user', username, new_password, '/logonpasswordchg:no'])
         result = {
             'exitCode': r.status_code,
             'stdout': r.std_out.decode('utf-8', errors='replace').strip(),
