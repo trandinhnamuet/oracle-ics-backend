@@ -5,7 +5,7 @@ import * as oci from 'oci-sdk';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { spawnSync } from 'child_process';
+import { spawn } from 'child_process';
 
 @Injectable()
 export class OciService {
@@ -2602,13 +2602,12 @@ chmod 600 ~/.ssh/authorized_keys`;
       this.logger.log(`⏭️ WinRM skipped: ${!subnetId ? 'no subnet' : !publicIp ? 'no public IP' : 'no current password in DB'}`);
     }
 
-    // ── Strategy 2: OCI Run Command (up to 8 minutes) ──
-    // Windows Oracle Cloud Agent sometimes takes 3-5+ minutes after first boot to
-    // fully initialise the Run Command plugin execution context. Commands arrive as
-    // VISIBLE/ACCEPTED but don't advance to IN_PROGRESS until the agent is ready.
-    this.logger.log(`📡 Strategy 2: OCI Run Command (timeout 8 min)...`);
+    // ── Strategy 2: OCI Run Command (up to 2 minutes) ──
+    // If the command stays VISIBLE/ACCEPTED for 2 min the Oracle Cloud Agent
+    // on this VM is broken — polling longer never helps in practice.
+    this.logger.log(`📡 Strategy 2: OCI Run Command (timeout 2 min)...`);
     try {
-      await this.tryRunCommandPasswordReset(instanceId, compartmentId, newPassword, 480_000);
+      await this.tryRunCommandPasswordReset(instanceId, compartmentId, newPassword, 120_000);
       this.logger.log(`✅ Password changed via OCI Run Command`);
       return;
     } catch (runCmdErr: any) {
@@ -2626,22 +2625,6 @@ chmod 600 ~/.ssh/authorized_keys`;
       } catch (sshErr: any) {
         this.logger.warn(`⚠️ SSH key-based reset failed: ${sshErr.message}`);
       }
-    }
-
-    // ── Strategy 4: SOFTRESET VM → wait for reboot → retry OCI Run Command ──
-    // As a last resort, soft-reboot the VM. This restarts the Oracle Cloud Agent
-    // cleanly, which resolves cases where the agent was stuck in a non-executing state.
-    this.logger.log(`🔄 Strategy 4: SOFTRESET VM then retry OCI Run Command...`);
-    try {
-      await this.restartInstance(instanceId);
-      this.logger.log(`✅ SOFTRESET issued — waiting for VM to reboot (~4 min)...`);
-      await this.waitForInstanceRunning(instanceId, 480_000);
-      this.logger.log(`✅ VM is RUNNING after reboot — retrying OCI Run Command...`);
-      await this.tryRunCommandPasswordReset(instanceId, compartmentId, newPassword, 300_000);
-      this.logger.log(`✅ Password changed via OCI Run Command (post-reboot)`);
-      return;
-    } catch (softrResetErr: any) {
-      this.logger.warn(`⚠️ SOFTRESET + retry failed: ${softrResetErr.message}`);
     }
 
     throw new Error('All remote password change methods exhausted — manual intervention required.');
@@ -2697,7 +2680,7 @@ chmod 600 ~/.ssh/authorized_keys`;
     instanceId: string,
     compartmentId: string,
     newPassword: string,
-    maxWaitMs: number = 480_000,
+    maxWaitMs: number = 120_000,
   ): Promise<void> {
     // Step 1: Enable Run Command plugin
     try {
@@ -2800,7 +2783,7 @@ chmod 600 ~/.ssh/authorized_keys`;
       }
     }
 
-    throw new Error('OCI Run Command timed out (2 min). Agent not processing commands.');
+    throw new Error(`OCI Run Command timed out (${maxWaitMs / 60000} min). Agent not processing commands.`);
   }
 
   /**
@@ -3052,6 +3035,7 @@ chmod 600 ~/.ssh/authorized_keys`;
   /**
    * Change Windows password via WinRM using the pywinrm helper script.
    * Passes credentials via stdin for security.
+   * Uses async spawn (non-blocking) to avoid locking the Node.js event loop.
    */
   private async changePasswordViaWinrm(
     publicIp: string,
@@ -3072,39 +3056,56 @@ chmod 600 ~/.ssh/authorized_keys`;
       newPassword,
     });
 
-    const result = spawnSync('python3', [scriptPath], {
-      input,
-      timeout: 60000,
-      encoding: 'utf-8',
+    const TIMEOUT_MS = 90_000;
+
+    const { stdout, stderr, exitCode } = await new Promise<{ stdout: string; stderr: string; exitCode: number | null }>((resolve, reject) => {
+      const proc = spawn('python3', [scriptPath]);
+      let stdoutBuf = '';
+      let stderrBuf = '';
+
+      proc.stdout.on('data', (d: Buffer) => { stdoutBuf += d.toString(); });
+      proc.stderr.on('data', (d: Buffer) => { stderrBuf += d.toString(); });
+
+      proc.stdin.write(input);
+      proc.stdin.end();
+
+      const timer = setTimeout(() => {
+        proc.kill('SIGKILL');
+        reject(new Error(`WinRM process timed out after ${TIMEOUT_MS / 1000}s`));
+      }, TIMEOUT_MS);
+
+      proc.on('close', (code) => {
+        clearTimeout(timer);
+        resolve({ stdout: stdoutBuf, stderr: stderrBuf, exitCode: code });
+      });
+
+      proc.on('error', (err) => {
+        clearTimeout(timer);
+        reject(new Error(`WinRM process error: ${err.message}`));
+      });
     });
 
-    if (result.error) {
-      throw new Error(`WinRM process error: ${result.error.message}`);
-    }
+    this.logger.log(`📊 WinRM exit code: ${exitCode}`);
+    if (stdout) this.logger.log(`📋 WinRM output: ${stdout.trim()}`);
+    if (stderr) this.logger.warn(`⚠️ WinRM stderr: ${stderr.trim()}`);
 
-    this.logger.log(`📊 WinRM exit code: ${result.status}`);
-    if (result.stdout) this.logger.log(`📋 WinRM output: ${result.stdout.trim()}`);
-    if (result.stderr) this.logger.warn(`⚠️ WinRM stderr: ${result.stderr.trim()}`);
-
-    if (result.status !== 0) {
+    if (exitCode !== 0) {
       let errorMsg = 'WinRM password change failed';
       let isPasswordRejected = false;
       try {
-        const parsed = JSON.parse(result.stdout);
-        const stderr: string = parsed.stderr || '';
-        errorMsg = stderr || parsed.error || errorMsg;
+        const parsed = JSON.parse(stdout);
+        const stderrParsed: string = parsed.stderr || '';
+        errorMsg = stderrParsed || parsed.error || errorMsg;
         // Detect Windows password policy rejection (NET HELPMSG 2245)
         if (
-          stderr.toLowerCase().includes('password policy') ||
-          stderr.toLowerCase().includes('does not meet') ||
-          stderr.toLowerCase().includes('2245')
+          stderrParsed.toLowerCase().includes('password policy') ||
+          stderrParsed.toLowerCase().includes('does not meet') ||
+          stderrParsed.toLowerCase().includes('2245')
         ) {
           isPasswordRejected = true;
         }
       } catch { /* ignore parse error */ }
       if (isPasswordRejected) {
-        // Throw BadRequestException so the caller can surface it to the user
-        // without falling through to other strategies (which would also fail)
         throw new BadRequestException(
           `Windows rejected the new password: ${errorMsg.trim()}. ` +
           `Please choose a password with at least 8 characters containing uppercase, lowercase, digits, and special characters.`
