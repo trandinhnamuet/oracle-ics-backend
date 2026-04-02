@@ -1045,18 +1045,17 @@ runcmd:
           '# ===== IMMEDIATE SETUP (runs during cloudbase-init UserDataPlugin) =====',
           '# NOTE: cloudbase-init runs: UserDataPlugin → SetUserPasswordPlugin',
           '# SetUserPasswordPlugin sets the "must change password at next logon" flag.',
-          '# Try to clear it now — cloudbase-init may override it, so we also clear it',
-          '# again in the deferred process below (after cloudbase-init finishes).',
-          'try { net user opc /logonpasswordchg:no } catch {}',
+          '# The "must change password at next logon" flag is intentionally PRESERVED.',
+          '# cloudbase-init SetUserPasswordPlugin sets it — we do NOT clear it here so',
+          '# Windows forces the user to change the initial password on their first RDP login.',
+          '# Our password reset API uses OCI Run Command / SSH (which bypass Windows credential',
+          '# auth) and clears the flag there using /logonpasswordchg:no after a successful reset.',
           '',
           '# ===== DEFERRED WinRM RECONFIGURATION =====',
-          '# Start a background process that waits 5 minutes, then:',
-          '# 1. Clears "must change password" flag (CRITICAL — without this WinRM NTLM auth',
-          '#    refuses ALL logins even with correct credentials).',
-          '# 2. Re-runs winrm quickconfig and restarts WinRM service.',
-          '# This runs AFTER cloudbase-init SetUserPasswordPlugin finishes, ensuring our',
-          '# /logonpasswordchg:no is not overridden by cloudbase-init.',
-          "Start-Process -FilePath 'powershell.exe' -ArgumentList '-ExecutionPolicy Bypass -Command \"Start-Sleep 300; net user opc /logonpasswordchg:no; cmd /c winrm quickconfig -force 2>$null; Set-Item -Path WSMan:\\localhost\\Service\\Auth\\Basic -Value $true -Force; Set-Item -Path WSMan:\\localhost\\Service\\AllowUnencrypted -Value $true -Force; Restart-Service WinRM -Force -ErrorAction SilentlyContinue\"' -WindowStyle Hidden",
+          '# Start a background process that waits 5 minutes, then re-runs WinRM setup.',
+          '# We do NOT clear the must-change-password flag here — it stays active until the',
+          '# user changes the password (via RDP first login or via our reset API).',
+          "Start-Process -FilePath 'powershell.exe' -ArgumentList '-ExecutionPolicy Bypass -Command \"Start-Sleep 300; cmd /c winrm quickconfig -force 2>$null; Set-Item -Path WSMan:\\localhost\\Service\\Auth\\Basic -Value $true -Force; Set-Item -Path WSMan:\\localhost\\Service\\AllowUnencrypted -Value $true -Force; Restart-Service WinRM -Force -ErrorAction SilentlyContinue\"' -WindowStyle Hidden",
           '',
           '# ===== WinRM HTTP SETUP =====',
           '# Enable & start WinRM service first',
@@ -2554,8 +2553,10 @@ chmod 600 ~/.ssh/authorized_keys`;
     publicIp?: string,
     currentPassword?: string,
     adminPrivateKey?: string,
+    passwordInitialized: boolean = false,
   ): Promise<void> {
     this.logger.log(`🚀 Starting Windows password reset on instance: ${instanceId}`);
+    this.logger.log(`🔑 Password initialized (WinRM eligible): ${passwordInitialized}`);
 
     // If subnetId is missing from DB record, look it up live from OCI so that
     // WinRM (Strategy 1) and SSH (Strategy 3) can open the required firewall ports.
@@ -2575,7 +2576,11 @@ chmod 600 ~/.ssh/authorized_keys`;
     }
 
     // ── Strategy 1: WinRM (primary — uses current password from DB) ──
-    if (subnetId && publicIp && currentPassword) {
+    // Skipped when passwordInitialized=false because the "must change password at next logon"
+    // flag is still active on new VMs, causing WinRM NTLM auth to reject ALL credentials.
+    // OCI Run Command (Strategy 2) and SSH (Strategy 3) do not use Windows credential auth
+    // and work normally even with the flag active.
+    if (passwordInitialized && subnetId && publicIp && currentPassword) {
       this.logger.log(`🔐 Strategy 1: WinRM password reset (primary)...`);
       const secListId = await this.getSecurityListIdForSubnet(subnetId);
       await this.ensureWinrmPortOpen(secListId);
@@ -2602,7 +2607,11 @@ chmod 600 ~/.ssh/authorized_keys`;
         }
       }
     } else {
-      this.logger.log(`⏭️ WinRM skipped: ${!subnetId ? 'no subnet' : !publicIp ? 'no public IP' : 'no current password in DB'}`);
+      if (!passwordInitialized) {
+        this.logger.log(`⏭️ WinRM skipped: password not yet initialized (must-change flag may be active)`);
+      } else {
+        this.logger.log(`⏭️ WinRM skipped: ${!subnetId ? 'no subnet' : !publicIp ? 'no public IP' : 'no current password in DB'}`);
+      }
     }
 
     // ── Strategy 2: OCI Run Command (up to 2 minutes) ──

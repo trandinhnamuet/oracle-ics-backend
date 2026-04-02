@@ -842,7 +842,11 @@ export class VmSubscriptionService {
     }
 
     // Step 8: Reset password via available strategies (WinRM → OCI Run Command → SSH)
-    this.logger.log(`🚀 Sending OCI Run Command to instance ${vm.instance_id}...`);
+    // WinRM is only tried when passwordInitialized=true (flag "must change password" has been
+    // cleared). For new VMs (initialized=false) we skip WinRM and go straight to OCI RC / SSH
+    // since those strategies do not require Windows credential auth.
+    const passwordInitialized = vm.windows_password_initialized ?? false;
+    this.logger.log(`🚀 Sending password reset to instance ${vm.instance_id} (initialized: ${passwordInitialized})...`);
     try {
       await this.ociService.runWindowsPasswordReset(
         vm.instance_id,
@@ -852,19 +856,29 @@ export class VmSubscriptionService {
         vm.public_ip ?? undefined,
         vm.windows_initial_password ?? undefined,
         adminPrivateKey,
+        passwordInitialized,
       );
       this.logger.log(`✅ Password changed successfully`);
     } catch (runCmdError) {
       this.logger.error(`❌ Password reset failed: ${runCmdError.message}`);
+      const isNotInitialized = !passwordInitialized;
+      if (isNotInitialized) {
+        throw new BadRequestException(
+          `Mật khẩu ban đầu vẫn chưa được thay đổi lần nào. ` +
+          `Vui lòng đăng nhập qua RDP với mật khẩu ban đầu (Windows sẽ yêu cầu bạn đặt mật khẩu mới), ` +
+          `sau đó thử dùng tính năng reset mật khẩu này.`
+        );
+      }
       throw new BadRequestException(`Failed to reset Windows password: ${runCmdError.message}`);
     }
 
-    // Step 9: Update password in database
+    // Step 9: Update password in database and mark as initialized
     this.logger.log(`💾 Saving new password to database...`);
     await this.vmInstanceRepo.update(vm.id, {
       windows_initial_password: newPassword,
+      windows_password_initialized: true,
     });
-    this.logger.log(`✅ Password saved to database`);
+    this.logger.log(`✅ Password saved to database, windows_password_initialized = true`);
 
     this.logger.log('========================================');
     this.logger.log(`🎉 WINDOWS PASSWORD RESET COMPLETE`);

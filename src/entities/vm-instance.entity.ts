@@ -78,6 +78,14 @@ export class VmInstance {
   @Column({ type: 'text', nullable: true })
   windows_initial_password: string;
 
+  /**
+   * Tracks whether the Windows VM password has ever been reset via our API.
+   * false = initial password may still be active ("must change at next logon" flag may be set).
+   * true  = at least one successful API reset has been done; WinRM NTLM auth should work.
+   */
+  @Column({ type: 'boolean', default: false, nullable: true })
+  windows_password_initialized: boolean;
+
   @Column({ type: 'int', nullable: true })
   system_ssh_key_id: number | null;
 
