@@ -1031,8 +1031,11 @@ runcmd:
         // 1. New-NetFirewallRule must be on ONE line (no backtick continuation).
         // 2. Admin SSH users need keys at C:\ProgramData\ssh\administrators_authorized_keys + ICACLS.
         // 3. WinRM basic auth + HTTP listener so port-5985 fallback works.
-        // 4. Clear "must change password at next login" flag (CRITICAL for WinRM NTLM auth —
-        //    OCI sets this flag by default; WinRM NTLM refuses even correct credentials when set).
+        // 4. "Must change password at next login" flag is intentionally PRESERVED.
+        //    cloudbase-init SetUserPasswordPlugin sets it by default; we no longer clear it
+        //    so users are forced to change the initial password on their first RDP session.
+        //    NOTE: WinRM NTLM will refuse auth while this flag is active — use OCI Run Command
+        //    or SSH strategies for the first password reset instead.
         // 5. Create WinRM HTTP listener explicitly (otherwise port 5985 never listens).
         // IMPORTANT: Each step has its own try-catch so one failure doesn't skip the rest.
         //            WinRM setup comes FIRST (before OpenSSH) — it's required for password reset.
@@ -1041,19 +1044,16 @@ runcmd:
           '',
           '# ===== IMMEDIATE SETUP (runs during cloudbase-init UserDataPlugin) =====',
           '# NOTE: cloudbase-init runs: UserDataPlugin → SetUserPasswordPlugin',
-          '# So this script runs BEFORE OCI sets the password. Any changes to the',
-          '# "must change password" flag here will be OVERRIDDEN by SetUserPasswordPlugin.',
+          '# SetUserPasswordPlugin sets the "must change password at next logon" flag',
+          '# by default — we intentionally preserve this so the user is forced to',
+          '# change the initial password when they first log in via RDP.',
           '',
-          '# Try to clear "must change password" flag now (may be overridden later)',
-          'try { net user opc /logonpasswordchg:no } catch {}',
-          '',
-          '# ===== DEFERRED FIX (CRITICAL) =====',
-          '# Start a background process that waits 5 minutes, then:',
-          '# 1. Clears the "must change password at next logon" flag',
-          '# 2. Re-runs winrm quickconfig and restarts WinRM service',
-          '# This runs AFTER cloudbase-init SetUserPasswordPlugin finishes,',
-          '# ensuring our changes are NOT overridden.',
-          "Start-Process -FilePath 'powershell.exe' -ArgumentList '-ExecutionPolicy Bypass -Command \"Start-Sleep 300; net user opc /logonpasswordchg:no; cmd /c winrm quickconfig -force 2>$null; Set-Item -Path WSMan:\\localhost\\Service\\Auth\\Basic -Value $true -Force; Set-Item -Path WSMan:\\localhost\\Service\\AllowUnencrypted -Value $true -Force; Restart-Service WinRM -Force -ErrorAction SilentlyContinue\"' -WindowStyle Hidden",
+          '# ===== DEFERRED WinRM RECONFIGURATION =====',
+          '# Start a background process that waits 5 minutes, then re-runs WinRM setup.',
+          '# This runs AFTER cloudbase-init SetUserPasswordPlugin finishes so WinRM',
+          '# picks up the final configuration. We do NOT clear the logonpasswordchg flag',
+          '# here — the user must change their password on first RDP login.',
+          "Start-Process -FilePath 'powershell.exe' -ArgumentList '-ExecutionPolicy Bypass -Command \"Start-Sleep 300; cmd /c winrm quickconfig -force 2>$null; Set-Item -Path WSMan:\\localhost\\Service\\Auth\\Basic -Value $true -Force; Set-Item -Path WSMan:\\localhost\\Service\\AllowUnencrypted -Value $true -Force; Restart-Service WinRM -Force -ErrorAction SilentlyContinue\"' -WindowStyle Hidden",
           '',
           '# ===== WinRM HTTP SETUP =====',
           '# Enable & start WinRM service first',
