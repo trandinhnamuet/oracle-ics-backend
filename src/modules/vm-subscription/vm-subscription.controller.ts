@@ -112,11 +112,12 @@ export class VmSubscriptionController {
   }
 
   /**
-   * Reset Windows VM password via SSH
+   * Start an async Windows password reset job.
    * POST /vm-subscription/:subscriptionId/reset-windows-password
+   * Returns 202 Accepted with { jobId }. Poll the status endpoint for the result.
    */
   @Post(':subscriptionId/reset-windows-password')
-  @HttpCode(HttpStatus.OK)
+  @HttpCode(HttpStatus.ACCEPTED)
   async resetWindowsPassword(
     @Request() req,
     @Param('subscriptionId') subscriptionId: string,
@@ -129,7 +130,29 @@ export class VmSubscriptionController {
     console.log('====================================================\n');
 
     const userId = req.user.id;
-    return this.vmSubscriptionService.resetWindowsPassword(subscriptionId, userId, body?.newPassword);
+    const jobId = this.vmSubscriptionService.startResetWindowsPasswordAsync(
+      subscriptionId,
+      userId,
+      body?.newPassword,
+    );
+    return { jobId };
+  }
+
+  /**
+   * Poll the status of an async Windows password reset job.
+   * GET /vm-subscription/:subscriptionId/reset-windows-password-status/:jobId
+   */
+  @Get(':subscriptionId/reset-windows-password-status/:jobId')
+  async getResetWindowsPasswordStatus(
+    @Request() req,
+    @Param('subscriptionId') subscriptionId: string,
+    @Param('jobId') jobId: string,
+  ) {
+    const job = this.vmSubscriptionService.getResetPasswordJobStatus(subscriptionId, jobId);
+    if (!job) {
+      return { status: 'not_found' };
+    }
+    return job;
   }
 
   /**
