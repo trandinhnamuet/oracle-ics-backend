@@ -2550,6 +2550,23 @@ chmod 600 ~/.ssh/authorized_keys`;
   ): Promise<void> {
     this.logger.log(`🚀 Starting Windows password reset on instance: ${instanceId}`);
 
+    // If subnetId is missing from DB record, look it up live from OCI so that
+    // WinRM (Strategy 1) and SSH (Strategy 3) can open the required firewall ports.
+    if (!subnetId) {
+      try {
+        const vnicAttachments = await this.getVnicAttachments(compartmentId, instanceId);
+        if (vnicAttachments.length > 0 && vnicAttachments[0].vnicId) {
+          const vnic = await this.getVnic(vnicAttachments[0].vnicId);
+          if ((vnic as any).subnetId) {
+            subnetId = (vnic as any).subnetId;
+            this.logger.log(`🔍 Resolved subnetId from OCI VNIC lookup: ${subnetId}`);
+          }
+        }
+      } catch (lookupErr: any) {
+        this.logger.warn(`⚠️ Could not resolve subnetId from OCI: ${lookupErr.message}`);
+      }
+    }
+
     // ── Strategy 1: WinRM (primary — uses current password from DB) ──
     if (subnetId && publicIp && currentPassword) {
       this.logger.log(`🔐 Strategy 1: WinRM password reset (primary)...`);
@@ -2691,7 +2708,9 @@ chmod 600 ~/.ssh/authorized_keys`;
 
     // Step 3: Create the Run Command
     const escapedPassword = newPassword.replace(/"/g, '""');
-    const script = `net user opc "${escapedPassword}"\r\necho PASSWORD_CHANGED_OK`;
+    // /logonpasswordchg:no clears the "must change password at next logon" flag so the
+    // admin-issued password is directly usable without forcing another RDP change.
+    const script = `net user opc "${escapedPassword}" /logonpasswordchg:no\r\necho PASSWORD_CHANGED_OK`;
 
     const createResponse = await this.computeInstanceAgentClient.createInstanceAgentCommand({
       createInstanceAgentCommandDetails: {
@@ -2799,7 +2818,9 @@ chmod 600 ~/.ssh/authorized_keys`;
         const psScript = [
           `$b=[System.Convert]::FromBase64String('${b64pw}')`,
           `$p=[System.Text.Encoding]::UTF8.GetString($b)`,
-          `net user opc $p`,
+          // /logonpasswordchg:no clears "must change at next logon" flag so the
+          // admin-issued password is directly usable without forcing another RDP change.
+          `net user opc $p /logonpasswordchg:no`,
         ].join(';');
 
         // Encode the whole script as UTF-16LE Base64 for -EncodedCommand
