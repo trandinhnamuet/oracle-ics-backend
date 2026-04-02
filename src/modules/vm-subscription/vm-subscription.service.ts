@@ -21,10 +21,23 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
+export interface ResetPasswordJob {
+  status: 'pending' | 'success' | 'failed';
+  subscriptionId: string;
+  newPassword?: string;
+  username?: string;
+  message?: string;
+  error?: string;
+  startedAt: Date;
+  completedAt?: Date;
+}
+
 @Injectable()
 export class VmSubscriptionService {
   private readonly logger = new Logger(VmSubscriptionService.name);
   private transporter: nodemailer.Transporter;
+  /** In-memory store for async password-reset jobs (single-process deployment) */
+  private readonly resetPasswordJobs = new Map<string, ResetPasswordJob>();
 
   constructor(
     @InjectRepository(Subscription)
@@ -682,6 +695,58 @@ export class VmSubscriptionService {
         `Failed to update SSH keys on VM: ${error.message || 'Unknown error'}`,
       );
     }
+  }
+
+  /**
+   * Start a password reset job asynchronously.
+   * Returns a jobId immediately (HTTP 202). The actual reset runs in the background.
+   * Use getResetPasswordJobStatus() to poll the result.
+   */
+  startResetWindowsPasswordAsync(
+    subscriptionId: string,
+    userId: number,
+    customPassword?: string,
+  ): string {
+    const jobId = crypto.randomUUID();
+    const job: ResetPasswordJob = {
+      status: 'pending',
+      subscriptionId,
+      startedAt: new Date(),
+    };
+    this.resetPasswordJobs.set(jobId, job);
+
+    // Run completely in background — do not await
+    this.resetWindowsPassword(subscriptionId, userId, customPassword)
+      .then(result => {
+        const existing = this.resetPasswordJobs.get(jobId);
+        if (existing) {
+          existing.status = 'success';
+          existing.newPassword = result.newPassword;
+          existing.username = result.username;
+          existing.message = result.message;
+          existing.completedAt = new Date();
+        }
+      })
+      .catch((err: Error) => {
+        const existing = this.resetPasswordJobs.get(jobId);
+        if (existing) {
+          existing.status = 'failed';
+          existing.error = err.message;
+          existing.completedAt = new Date();
+        }
+      });
+
+    // Clean up old jobs after 30 minutes to prevent memory leaks
+    setTimeout(() => this.resetPasswordJobs.delete(jobId), 30 * 60 * 1000);
+
+    return jobId;
+  }
+
+  /** Return the current status of an async password reset job. */
+  getResetPasswordJobStatus(subscriptionId: string, jobId: string): ResetPasswordJob | null {
+    const job = this.resetPasswordJobs.get(jobId);
+    if (!job || job.subscriptionId !== subscriptionId) return null;
+    return job;
   }
 
   /**
