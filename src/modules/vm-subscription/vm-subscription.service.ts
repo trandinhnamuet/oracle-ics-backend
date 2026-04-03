@@ -13,7 +13,10 @@ import { OciService } from '../oci/oci.service';
 import { encryptPrivateKey, decryptPrivateKey } from '../../utils/system-ssh-key.util';
 import { Subscription } from '../../entities/subscription.entity';
 import { VmInstance } from '../../entities/vm-instance.entity';
+import { User } from '../../entities/user.entity';
 import { ConfigureVmDto } from './dto';
+import { ActionOtpType } from './dto/send-action-otp.dto';
+import { ActionOtpTemplate } from '../email/templates/action-otp.template';
 import { VmActionType } from '../vm-provisioning/dto';
 import * as crypto from 'crypto';
 import * as nodemailer from 'nodemailer';
@@ -32,18 +35,28 @@ export interface ResetPasswordJob {
   completedAt?: Date;
 }
 
+interface ActionOtpRecord {
+  otp: string;
+  expiresAt: Date;
+  email: string;
+}
+
 @Injectable()
 export class VmSubscriptionService {
   private readonly logger = new Logger(VmSubscriptionService.name);
   private transporter: nodemailer.Transporter;
   /** In-memory store for async password-reset jobs (single-process deployment) */
   private readonly resetPasswordJobs = new Map<string, ResetPasswordJob>();
+  /** In-memory OTP store for SSH-key / password-reset confirmation (key = userId:subscriptionId:action) */
+  private readonly actionOtpStore = new Map<string, ActionOtpRecord>();
 
   constructor(
     @InjectRepository(Subscription)
     private readonly subscriptionRepo: Repository<Subscription>,
     @InjectRepository(VmInstance)
     private readonly vmInstanceRepo: Repository<VmInstance>,
+    @InjectRepository(User)
+    private readonly userRepo: Repository<User>,
     private readonly vmProvisioningService: VmProvisioningService,
     private readonly systemSshKeyService: SystemSshKeyService,
     private readonly ociService: OciService,
@@ -528,7 +541,10 @@ export class VmSubscriptionService {
   /**
    * Request new SSH key for subscription's VM
    */
-  async requestNewSshKey(subscriptionId: string, userId: number, email?: string, language?: string) {
+  async requestNewSshKey(subscriptionId: string, userId: number, email?: string, language?: string, otpCode?: string) {
+    // Verify OTP before performing any key operation
+    this.verifyActionOtpSync(subscriptionId, userId, 'request-key', otpCode);
+
     this.logger.log('========================================');
     this.logger.log(`🔑 REQUEST NEW SSH KEY`);
     this.logger.log(`📋 Subscription ID: ${subscriptionId}`);
@@ -698,6 +714,106 @@ export class VmSubscriptionService {
   }
 
   /**
+   * Send a one-time OTP to the user's email to confirm a sensitive VM action
+   * (SSH key request or Windows password reset).
+   * The OTP is stored in-memory and expires after 10 minutes.
+   */
+  async sendActionOtp(
+    subscriptionId: string,
+    userId: number,
+    action: ActionOtpType,
+    language?: string,
+  ): Promise<void> {
+    // Load subscription + user email
+    const subscription = await this.subscriptionRepo.findOne({
+      where: { id: subscriptionId, user_id: userId },
+    });
+    if (!subscription) {
+      throw new NotFoundException('Subscription not found');
+    }
+
+    const user = await this.userRepo.findOne({ where: { id: userId } });
+    if (!user?.email) {
+      throw new BadRequestException('User email not found');
+    }
+
+    const userName =
+      `${user.firstName || ''} ${user.lastName || ''}`.trim() || user.email;
+
+    // Generate 6-digit numeric OTP
+    const otp = Array.from({ length: 6 }, () => crypto.randomInt(0, 10)).join('');
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+    const key = `${userId}:${subscriptionId}:${action}`;
+    this.actionOtpStore.set(key, { otp, expiresAt, email: user.email });
+    // Auto-clean after TTL
+    setTimeout(() => this.actionOtpStore.delete(key), 10 * 60 * 1000);
+
+    // Render bilingual email
+    const isVi = this.isVietnameseLanguage(language);
+    const { subject, html } = ActionOtpTemplate.generate({
+      lang: isVi ? 'vi' : 'en',
+      userName,
+      otpCode: otp,
+      action,
+      expirationMinutes: 10,
+    });
+
+    await this.transporter.sendMail({
+      from: process.env.SMTP_FROM || 'noreply@oraclecloud.vn',
+      to: user.email,
+      subject,
+      html,
+    });
+
+    this.logger.log(
+      `📧 Action OTP sent to ${user.email} (action: ${action}, subscription: ${subscriptionId})`,
+    );
+  }
+
+  /**
+   * Verify an action OTP synchronously (checks in-memory store).
+   * Deletes the OTP on success (one-time use).
+   * Throws BadRequestException on any failure.
+   */
+  private verifyActionOtpSync(
+    subscriptionId: string,
+    userId: number,
+    action: ActionOtpType,
+    otpCode?: string,
+  ): void {
+    if (!otpCode?.trim()) {
+      throw new BadRequestException('OTP code is required. Please request an OTP first.');
+    }
+
+    const key = `${userId}:${subscriptionId}:${action}`;
+    const stored = this.actionOtpStore.get(key);
+
+    if (!stored) {
+      throw new BadRequestException(
+        'OTP not found or expired. Please request a new OTP.',
+      );
+    }
+
+    if (new Date() > stored.expiresAt) {
+      this.actionOtpStore.delete(key);
+      throw new BadRequestException(
+        'OTP has expired. Please request a new OTP.',
+      );
+    }
+
+    if (stored.otp !== otpCode.trim()) {
+      throw new BadRequestException(
+        'Invalid OTP code. Please check and try again.',
+      );
+    }
+
+    // One-time use — delete immediately after successful verification
+    this.actionOtpStore.delete(key);
+    this.logger.log(`✅ Action OTP verified for userId=${userId} action=${action}`);
+  }
+
+  /**
    * Start a password reset job asynchronously.
    * Returns a jobId immediately (HTTP 202). The actual reset runs in the background.
    * Use getResetPasswordJobStatus() to poll the result.
@@ -706,7 +822,11 @@ export class VmSubscriptionService {
     subscriptionId: string,
     userId: number,
     customPassword?: string,
+    otpCode?: string,
   ): string {
+    // Verify OTP synchronously BEFORE launching the background job
+    this.verifyActionOtpSync(subscriptionId, userId, 'reset-password', otpCode);
+
     const jobId = crypto.randomUUID();
     const job: ResetPasswordJob = {
       status: 'pending',
