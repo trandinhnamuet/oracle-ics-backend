@@ -1081,21 +1081,52 @@ runcmd:
           '} catch {}',
           'try { Restart-Service WinRM -Force -ErrorAction SilentlyContinue } catch {}',
           '',
-          '# ===== OpenSSH Server =====',
+          '# ===== OpenSSH Server (comprehensive setup) =====',
+          '# 1. Install capability if not present',
           'try {',
           '  $cap = Get-WindowsCapability -Online -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "OpenSSH.Server*" }',
           '  if ($cap -and $cap.State -ne "Installed") { Add-WindowsCapability -Online -Name $cap.Name -ErrorAction SilentlyContinue }',
+          '} catch {}',
+          '# 2. Generate SSH host keys if missing (sshd crashes on connect without these)',
+          'try {',
+          '  $sshdDir = "$env:ProgramData\\ssh"',
+          '  if (-not (Test-Path $sshdDir)) { New-Item -ItemType Directory -Path $sshdDir -Force | Out-Null }',
+          '  if (-not (Test-Path "$sshdDir\\ssh_host_rsa_key")) {',
+          '    $kgen = "$env:SystemRoot\\System32\\OpenSSH\\ssh-keygen.exe"',
+          '    if (Test-Path $kgen) { & $kgen -A -f "$sshdDir\\ssh_host" 2>$null } else { ssh-keygen -A 2>$null }',
+          '  }',
+          '} catch {}',
+          '# 3. Configure sshd_config: enable PubkeyAuthentication + Match block for Administrators',
+          'try {',
+          '  $sshdCfgPath = "$env:ProgramData\\ssh\\sshd_config"',
+          '  if (Test-Path $sshdCfgPath) {',
+          '    $cfg = [System.IO.File]::ReadAllText($sshdCfgPath)',
+          '    if ($cfg -notmatch "(?m)^PubkeyAuthentication yes") {',
+          '      $cfg = [regex]::Replace($cfg, "(?m)^#?\\s*PubkeyAuthentication.+", "PubkeyAuthentication yes")',
+          '      if ($cfg -notmatch "(?m)^PubkeyAuthentication") { $cfg = "PubkeyAuthentication yes`n" + $cfg }',
+          '    }',
+          '    if ($cfg -notmatch "administrators_authorized_keys") {',
+          '      $cfg = $cfg + "`nMatch Group administrators`n       AuthorizedKeysFile __PROGRAMDATA__/ssh/administrators_authorized_keys`n"',
+          '    }',
+          '    [System.IO.File]::WriteAllText($sshdCfgPath, $cfg)',
+          '  } else {',
+          '    [System.IO.File]::WriteAllText($sshdCfgPath, "PubkeyAuthentication yes`nMatch Group administrators`n       AuthorizedKeysFile __PROGRAMDATA__/ssh/administrators_authorized_keys`n")',
+          '  }',
+          '} catch {}',
+          '# 4. Start sshd service',
+          'try {',
           '  Set-Service -Name sshd -StartupType Automatic -ErrorAction SilentlyContinue',
           '  Start-Service sshd -ErrorAction SilentlyContinue',
           '} catch {}',
-          'try {',
-          '  if (-not (Get-NetFirewallRule -Name "OpenSSH-Server-In-TCP" -ErrorAction SilentlyContinue)) { New-NetFirewallRule -Name "OpenSSH-Server-In-TCP" -DisplayName "OpenSSH Server (sshd)" -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 }',
-          '} catch {}',
+          '# 5. Firewall: force-enable any existing port-22 rules + add a backup allow rule',
+          'try { Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object { $_.Enabled -eq $false -and ($_.DisplayName -like "*SSH*" -or $_.DisplayName -like "*sshd*" -or $_.Name -like "*SSH*") } | Set-NetFirewallRule -Enabled True -ErrorAction SilentlyContinue } catch {}',
+          'try { New-NetFirewallRule -Name "AllowSSH22-OCI" -DisplayName "Allow SSH Port 22 (OCI)" -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 -ErrorAction SilentlyContinue } catch {}',
           '',
           '# ===== Admin SSH keys (embedded directly — no timing dependency on cloudbase-init) =====',
           '# Decode the base64-embedded SSH public keys and write them to administrators_authorized_keys.',
           '# This runs during UserDataPlugin, BEFORE SshPublicKeysPlugin writes the user dir keys,',
           '# so we embed the keys directly rather than copying from the (not-yet-created) user dir.',
+          '# Windows OpenSSH requires strict permissions on this file (SYSTEM + Administrators only).',
           'try {',
           `  $adminKeysB64 = '${embeddedSshKeysB64}'`,
           '  $adminKeysContent = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($adminKeysB64))',
@@ -1103,10 +1134,18 @@ runcmd:
           '  $adminKeysFile = "$adminKeysDir\\administrators_authorized_keys"',
           '  if (-not (Test-Path $adminKeysDir)) { New-Item -ItemType Directory -Path $adminKeysDir -Force | Out-Null }',
           '  [System.IO.File]::WriteAllText($adminKeysFile, $adminKeysContent)',
+          '  # Windows OpenSSH rejects authorized_keys with overly-permissive ACLs.',
+          '  # Remove all inherited ACEs first, then explicitly grant only SYSTEM + Administrators.',
           '  icacls $adminKeysFile /inheritance:r | Out-Null',
-          '  icacls $adminKeysFile /grant "NT AUTHORITY\\SYSTEM:(F)" | Out-Null',
-          '  icacls $adminKeysFile /grant "BUILTIN\\Administrators:(F)" | Out-Null',
+          '  icacls $adminKeysFile /grant:r "NT AUTHORITY\\SYSTEM:(F)" | Out-Null',
+          '  icacls $adminKeysFile /grant:r "BUILTIN\\Administrators:(F)" | Out-Null',
+          '} catch {}',
+          '# 6. Restart sshd to pick up config + authorized keys changes, then verify',
+          'try {',
           '  Restart-Service sshd -Force -ErrorAction SilentlyContinue',
+          '  Start-Sleep 2',
+          '  $sshdSvc = Get-Service sshd -ErrorAction SilentlyContinue',
+          '  if ($sshdSvc -and $sshdSvc.Status -ne "Running") { Start-Service sshd -ErrorAction SilentlyContinue }',
           '} catch {}',
         ].join('\n');
         metadata.user_data = Buffer.from(windowsSetupScript).toString('base64');
@@ -2831,63 +2870,77 @@ chmod 600 ~/.ssh/authorized_keys`;
       this.logger.log(`⏳ Waiting 15s for port 22 security list rule to propagate...`);
       await new Promise(r => setTimeout(r, 15_000));
 
-      this.logger.log(`🔌 Connecting via SSH to ${publicIp}:22 as opc...`);
+      const b64pw = Buffer.from(newPassword, 'utf8').toString('base64');
+      const psScript = [
+        `$b=[System.Convert]::FromBase64String('${b64pw}')`,
+        `$p=[System.Text.Encoding]::UTF8.GetString($b)`,
+        `net user opc $p /logonpasswordchg:no`,
+      ].join(';');
+      const encodedCmd = Buffer.from(psScript, 'utf16le').toString('base64');
+      const sshCommand = `powershell.exe -NonInteractive -NoProfile -EncodedCommand ${encodedCmd}`;
 
-      await new Promise<void>((resolve, reject) => {
-        // Build PowerShell script that decodes the base64 password, then calls net user
-        // Using base64 avoids shell string escaping issues with $, !, @, #, etc.
-        const b64pw = Buffer.from(newPassword, 'utf8').toString('base64');
-        // Single quotes around the Base64 literal prevent PowerShell from treating
-        // the Base64 padding `=` character as an assignment operator in some contexts.
-        const psScript = [
-          `$b=[System.Convert]::FromBase64String('${b64pw}')`,
-          `$p=[System.Text.Encoding]::UTF8.GetString($b)`,
-          // /logonpasswordchg:no clears "must change at next logon" flag so the
-          // admin-issued password is directly usable without forcing another RDP change.
-          `net user opc $p /logonpasswordchg:no`,
-        ].join(';');
+      const maxAttempts = 3;
+      let lastError: Error = new Error('SSH attempts exhausted');
 
-        // Encode the whole script as UTF-16LE Base64 for -EncodedCommand
-        // This works whether the SSH default shell is cmd.exe or PowerShell
-        const encodedCmd = Buffer.from(psScript, 'utf16le').toString('base64');
-        const sshCommand = `powershell.exe -NonInteractive -NoProfile -EncodedCommand ${encodedCmd}`;
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        if (attempt > 1) {
+          this.logger.log(`⏳ SSH retry ${attempt}/${maxAttempts} — waiting 30s for sshd to be ready...`);
+          await new Promise(r => setTimeout(r, 30_000));
+        }
 
-        import('ssh2').then(({ Client }) => {
-          const conn = new Client();
-          let stdout = '';
-          let stderr = '';
+        this.logger.log(`🔌 Connecting via SSH to ${publicIp}:22 as opc (attempt ${attempt}/${maxAttempts})...`);
 
-          conn.on('ready', () => {
-            this.logger.log(`✅ SSH connected — running password change command`);
-            conn.exec(sshCommand, (err, stream) => {
-              if (err) { conn.end(); return reject(new Error(`SSH exec error: ${err.message}`)); }
-              stream.on('data', (d: Buffer) => { stdout += d.toString(); });
-              stream.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
-              stream.on('close', (code: number) => {
-                conn.end();
-                this.logger.log(`📊 SSH command exit code: ${code}`);
-                if (stdout.trim()) this.logger.log(`📋 stdout: ${stdout.trim()}`);
-                if (stderr.trim()) this.logger.warn(`⚠️ stderr: ${stderr.trim()}`);
-                if (code !== 0) {
-                  reject(new Error(`PowerShell net user failed (exit ${code}): ${stderr.trim() || stdout.trim()}`));
-                } else {
-                  resolve();
-                }
+        try {
+          await new Promise<void>((resolve, reject) => {
+            import('ssh2').then(({ Client }) => {
+              const conn = new Client();
+              let stdout = '';
+              let stderr = '';
+
+              conn.on('ready', () => {
+                this.logger.log(`✅ SSH connected — running password change command`);
+                conn.exec(sshCommand, (err, stream) => {
+                  if (err) { conn.end(); return reject(new Error(`SSH exec error: ${err.message}`)); }
+                  stream.on('data', (d: Buffer) => { stdout += d.toString(); });
+                  stream.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
+                  stream.on('close', (code: number) => {
+                    conn.end();
+                    this.logger.log(`📊 SSH command exit code: ${code}`);
+                    if (stdout.trim()) this.logger.log(`📋 stdout: ${stdout.trim()}`);
+                    if (stderr.trim()) this.logger.warn(`⚠️ stderr: ${stderr.trim()}`);
+                    if (code !== 0) {
+                      reject(new Error(`PowerShell net user failed (exit ${code}): ${stderr.trim() || stdout.trim()}`));
+                    } else {
+                      resolve();
+                    }
+                  });
+                });
               });
-            });
+
+              conn.on('error', (err) => {
+                conn.end();
+                reject(new Error(`SSH connection error: ${err.message}`));
+              });
+
+              conn.connect({
+                host: publicIp,
+                port: 22,
+                username: 'opc',
+                privateKey: Buffer.from(adminPrivateKey, 'utf8'),
+                readyTimeout: 90_000,
+              });
+            }).catch(reject);
           });
 
-          conn.on('error', (err) => reject(new Error(`SSH connection error: ${err.message}`)));
+          // Success — exit the retry loop
+          return;
+        } catch (err: any) {
+          lastError = err;
+          this.logger.warn(`⚠️ SSH attempt ${attempt}/${maxAttempts} failed: ${err.message}`);
+        }
+      }
 
-          conn.connect({
-            host: publicIp,
-            port: 22,
-            username: 'opc',
-            privateKey: Buffer.from(adminPrivateKey, 'utf8'),
-            readyTimeout: 120_000,
-          });
-        }).catch(reject);
-      });
+      throw lastError;
     } finally {
       try {
         await this.removeSshPort(securityListId);
