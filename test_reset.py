@@ -6,16 +6,16 @@ import json
 HOST = "14.224.205.40"
 USER = "icsadmin"
 PASSWORD = "ics2025.,"
-SUB_ID = "b8491dd8-d832-4537-978b-1185bd92dc25"
-# Subscription from the reported error:
-SUB_ID_PROD = "5e7f1603-8b9f-42cb-90ab-f713a093634e"
+SUB_ID = "07e1530e-30ad-42d2-9a40-4f891f23282b"  # user 7, no VM yet (test)
+SUB_ID_WIN = "01361cc9-9ee9-4d46-bb58-10a89ae5fa4f"   # user 7, VM 45 (Windows)
+TOKEN_USER_ID = 7  # user 7 (minhtuan90959095@gmail.com)
 
 ssh = paramiko.SSHClient()
 ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 ssh.connect(HOST, username=USER, password=PASSWORD, timeout=30)
 
 # Generate token
-token_cmd = """cd ~/web/oracle/oracle-ics-backend && node -e 'const j=require("jsonwebtoken");console.log(j.sign({sub:73,email:"test@test.com"},"jwt-secret-key-42jfwj2k",{expiresIn:"1h"}));'"""
+token_cmd = f"""cd ~/web/oracle/oracle-ics-backend && node -e 'const j=require("jsonwebtoken");console.log(j.sign({{sub:{TOKEN_USER_ID},email:"minhtuan90959095@gmail.com"}},"jwt-secret-key-42jfwj2k",{{expiresIn:"2h"}}));'"""
 stdin, stdout, stderr = ssh.exec_command(token_cmd, timeout=30)
 token = stdout.read().decode().strip()
 err = stderr.read().decode().strip()
