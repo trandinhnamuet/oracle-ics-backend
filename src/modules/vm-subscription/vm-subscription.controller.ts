@@ -13,7 +13,7 @@ import {
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../../auth/jwt-auth.guard';
 import { VmSubscriptionService } from './vm-subscription.service';
-import { ConfigureVmDto, RequestNewKeyDto, ResetWindowsPasswordDto } from './dto';
+import { ConfigureVmDto, RequestNewKeyDto, ResetWindowsPasswordDto, SendActionOtpDto } from './dto';
 import { VmActionDto } from '../vm-provisioning/dto';
 
 @Controller('vm-subscription')
@@ -57,6 +57,30 @@ export class VmSubscriptionController {
   }
 
   /**
+   * Send an OTP to the user's email to confirm a sensitive VM action.
+   * POST /vm-subscription/:subscriptionId/send-action-otp
+   * Body: { action: 'request-key' | 'reset-password' }
+   * The language of the OTP email follows the Accept-Language header.
+   */
+  @Post(':subscriptionId/send-action-otp')
+  @HttpCode(HttpStatus.OK)
+  async sendActionOtp(
+    @Request() req,
+    @Param('subscriptionId') subscriptionId: string,
+    @Body() body: SendActionOtpDto,
+    @Headers('accept-language') acceptLanguage?: string,
+  ) {
+    const userId = req.user.id;
+    await this.vmSubscriptionService.sendActionOtp(
+      subscriptionId,
+      userId,
+      body.action,
+      acceptLanguage,
+    );
+    return { success: true, message: 'OTP has been sent to your email.' };
+  }
+
+  /**
    * Request new SSH key for subscription's VM
    * POST /vm-subscription/:subscriptionId/request-key
    */
@@ -79,6 +103,7 @@ export class VmSubscriptionController {
       userId,
       requestNewKeyDto.email,
       acceptLanguage,
+      requestNewKeyDto.otpCode,
     );
   }
 
@@ -114,6 +139,7 @@ export class VmSubscriptionController {
   /**
    * Start an async Windows password reset job.
    * POST /vm-subscription/:subscriptionId/reset-windows-password
+   * Body: { otpCode: string, newPassword?: string }
    * Returns 202 Accepted with { jobId }. Poll the status endpoint for the result.
    */
   @Post(':subscriptionId/reset-windows-password')
@@ -134,6 +160,7 @@ export class VmSubscriptionController {
       subscriptionId,
       userId,
       body?.newPassword,
+      body?.otpCode,
     );
     return { jobId };
   }

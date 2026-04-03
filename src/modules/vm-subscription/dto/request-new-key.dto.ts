@@ -1,4 +1,4 @@
-import { IsEmail, IsOptional, IsString, ValidateIf } from 'class-validator';
+import { IsEmail, IsNotEmpty, IsOptional, IsString, ValidateIf } from 'class-validator';
 
 export class RequestNewKeyDto {
   @IsOptional()
@@ -6,4 +6,8 @@ export class RequestNewKeyDto {
   @ValidateIf((o) => o.email !== '' && o.email !== null && o.email !== undefined)
   @IsEmail({}, { message: 'Invalid email format' })
   email?: string;
+
+  @IsString()
+  @IsNotEmpty({ message: 'OTP code is required' })
+  otpCode: string;
 }

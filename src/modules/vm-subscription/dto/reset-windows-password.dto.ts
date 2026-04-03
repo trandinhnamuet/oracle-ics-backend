@@ -1,4 +1,4 @@
-import { IsOptional, IsString, MinLength, MaxLength, registerDecorator, ValidationOptions, ValidationArguments } from 'class-validator';
+import { IsNotEmpty, IsOptional, IsString, MinLength, MaxLength, registerDecorator, ValidationOptions, ValidationArguments } from 'class-validator';
 
 function IsWindowsPasswordCompliant(validationOptions?: ValidationOptions) {
   return function (object: object, propertyName: string) {
@@ -43,4 +43,8 @@ export class ResetWindowsPasswordDto {
   @MaxLength(127, { message: 'Password must not exceed 127 characters' })
   @IsWindowsPasswordCompliant()
   newPassword?: string;
+
+  @IsString()
+  @IsNotEmpty({ message: 'OTP code is required' })
+  otpCode: string;
 }
