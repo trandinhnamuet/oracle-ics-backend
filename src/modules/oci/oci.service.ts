@@ -1039,6 +1039,13 @@ runcmd:
         // 5. Create WinRM HTTP listener explicitly (otherwise port 5985 never listens).
         // IMPORTANT: Each step has its own try-catch so one failure doesn't skip the rest.
         //            WinRM setup comes FIRST (before OpenSSH) — it's required for password reset.
+        // Base64-encode the SSH public keys so we can embed them safely in a PowerShell
+        // script regardless of special characters in key comments.
+        // These are embedded DIRECTLY in the script so we don't depend on cloudbase-init's
+        // SshPublicKeys plugin (which runs AFTER UserDataPlugin and writes authorized_keys
+        // to the user's home dir — too late for our UserDataPlugin script to copy).
+        const embeddedSshKeysB64 = Buffer.from(sshPublicKeys.join('\n'), 'utf8').toString('base64');
+
         const windowsSetupScript = [
           '#ps1_sysnative',
           '',
@@ -1048,20 +1055,17 @@ runcmd:
           '# The "must change password at next logon" flag is intentionally PRESERVED.',
           '# cloudbase-init SetUserPasswordPlugin sets it — we do NOT clear it here so',
           '# Windows forces the user to change the initial password on their first RDP login.',
-          '# Our password reset API uses OCI Run Command / SSH (which bypass Windows credential',
-          '# auth) and clears the flag there using /logonpasswordchg:no after a successful reset.',
+          '# Our password reset API uses SSH (which bypasses Windows credential auth) and',
+          '# clears the flag using /logonpasswordchg:no after a successful reset.',
           '',
           '# ===== DEFERRED WinRM RECONFIGURATION =====',
-          '# Start a background process that waits 5 minutes, then re-runs WinRM setup.',
-          '# We do NOT clear the must-change-password flag here — it stays active until the',
-          '# user changes the password (via RDP first login or via our reset API).',
-          "Start-Process -FilePath 'powershell.exe' -ArgumentList '-ExecutionPolicy Bypass -Command \"Start-Sleep 300; cmd /c winrm quickconfig -force 2>$null; Set-Item -Path WSMan:\\localhost\\Service\\Auth\\Basic -Value $true -Force; Set-Item -Path WSMan:\\localhost\\Service\\AllowUnencrypted -Value $true -Force; Restart-Service WinRM -Force -ErrorAction SilentlyContinue\"' -WindowStyle Hidden",
+          '# Start a background process that waits 5 minutes, then reconfigures WinRM + SSH.',
+          '# We do NOT clear the must-change-password flag here.',
+          "Start-Process -FilePath 'powershell.exe' -ArgumentList '-ExecutionPolicy Bypass -Command \"Start-Sleep 300; cmd /c winrm quickconfig -force 2>$null; Set-Item -Path WSMan:\\localhost\\Service\\Auth\\Basic -Value $true -Force; Set-Item -Path WSMan:\\localhost\\Service\\AllowUnencrypted -Value $true -Force; Restart-Service WinRM -Force -ErrorAction SilentlyContinue; if (Test-Path C:\\Users\\opc\\.ssh\\authorized_keys) { Copy-Item C:\\Users\\opc\\.ssh\\authorized_keys C:\\ProgramData\\ssh\\administrators_authorized_keys -Force; icacls C:\\ProgramData\\ssh\\administrators_authorized_keys /inheritance:r; icacls C:\\ProgramData\\ssh\\administrators_authorized_keys /grant *S-1-5-18:(F); icacls C:\\ProgramData\\ssh\\administrators_authorized_keys /grant *S-1-5-32-544:(F); Restart-Service sshd -Force -ErrorAction SilentlyContinue }\"' -WindowStyle Hidden",
           '',
           '# ===== WinRM HTTP SETUP =====',
-          '# Enable & start WinRM service first',
           'try { Set-Service WinRM -StartupType Automatic -ErrorAction SilentlyContinue } catch {}',
           'try { Start-Service WinRM -ErrorAction SilentlyContinue } catch {}',
-          '# Use winrm quickconfig to auto-configure everything (listener, firewall, etc.)',
           'try { cmd /c "winrm quickconfig -force" 2>$null } catch {}',
           'try {',
           '  Set-Item -Path WSMan:\\localhost\\Service\\Auth\\Basic -Value $true -Force',
@@ -1075,39 +1079,34 @@ runcmd:
           'try {',
           '  if (-not (Get-NetFirewallRule -Name "WinRM-HTTP-In-TCP" -ErrorAction SilentlyContinue)) { New-NetFirewallRule -Name "WinRM-HTTP-In-TCP" -DisplayName "WinRM HTTP (5985)" -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 5985 }',
           '} catch {}',
-          '# Restart WinRM to pick up all config changes',
           'try { Restart-Service WinRM -Force -ErrorAction SilentlyContinue } catch {}',
           '',
-          '# ===== OpenSSH Server (optional) =====',
+          '# ===== OpenSSH Server =====',
           'try {',
           '  $cap = Get-WindowsCapability -Online -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "OpenSSH.Server*" }',
           '  if ($cap -and $cap.State -ne "Installed") { Add-WindowsCapability -Online -Name $cap.Name -ErrorAction SilentlyContinue }',
-          '  $svc = Get-Service -Name sshd -ErrorAction SilentlyContinue',
-          '  if ($svc) {',
-          '    Set-Service -Name sshd -StartupType Automatic -ErrorAction SilentlyContinue',
-          '    if ($svc.Status -ne "Running") {',
-          '      Start-Service sshd -ErrorAction SilentlyContinue',
-          '      Start-Sleep 3',
-          '      if ((Get-Service sshd -ErrorAction SilentlyContinue).Status -ne "Running") { Start-Service sshd -ErrorAction SilentlyContinue }',
-          '    }',
-          '  }',
+          '  Set-Service -Name sshd -StartupType Automatic -ErrorAction SilentlyContinue',
+          '  Start-Service sshd -ErrorAction SilentlyContinue',
           '} catch {}',
           'try {',
           '  if (-not (Get-NetFirewallRule -Name "OpenSSH-Server-In-TCP" -ErrorAction SilentlyContinue)) { New-NetFirewallRule -Name "OpenSSH-Server-In-TCP" -DisplayName "OpenSSH Server (sshd)" -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 }',
           '} catch {}',
           '',
-          '# ===== Admin SSH keys =====',
+          '# ===== Admin SSH keys (embedded directly — no timing dependency on cloudbase-init) =====',
+          '# Decode the base64-embedded SSH public keys and write them to administrators_authorized_keys.',
+          '# This runs during UserDataPlugin, BEFORE SshPublicKeysPlugin writes the user dir keys,',
+          '# so we embed the keys directly rather than copying from the (not-yet-created) user dir.',
           'try {',
+          `  $adminKeysB64 = '${embeddedSshKeysB64}'`,
+          '  $adminKeysContent = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($adminKeysB64))',
           '  $adminKeysDir = "C:\\ProgramData\\ssh"',
           '  $adminKeysFile = "$adminKeysDir\\administrators_authorized_keys"',
-          '  $userKeysFile = "C:\\Users\\opc\\.ssh\\authorized_keys"',
           '  if (-not (Test-Path $adminKeysDir)) { New-Item -ItemType Directory -Path $adminKeysDir -Force | Out-Null }',
-          '  if (Test-Path $userKeysFile) {',
-          '    Copy-Item $userKeysFile $adminKeysFile -Force',
-          '    icacls $adminKeysFile /inheritance:r | Out-Null',
-          '    icacls $adminKeysFile /grant "NT AUTHORITY\\SYSTEM:(F)" | Out-Null',
-          '    icacls $adminKeysFile /grant "BUILTIN\\Administrators:(F)" | Out-Null',
-          '  }',
+          '  [System.IO.File]::WriteAllText($adminKeysFile, $adminKeysContent)',
+          '  icacls $adminKeysFile /inheritance:r | Out-Null',
+          '  icacls $adminKeysFile /grant "NT AUTHORITY\\SYSTEM:(F)" | Out-Null',
+          '  icacls $adminKeysFile /grant "BUILTIN\\Administrators:(F)" | Out-Null',
+          '  Restart-Service sshd -Force -ErrorAction SilentlyContinue',
           '} catch {}',
         ].join('\n');
         metadata.user_data = Buffer.from(windowsSetupScript).toString('base64');
@@ -2885,7 +2884,7 @@ chmod 600 ~/.ssh/authorized_keys`;
             port: 22,
             username: 'opc',
             privateKey: Buffer.from(adminPrivateKey, 'utf8'),
-            readyTimeout: 60_000,
+            readyTimeout: 120_000,
           });
         }).catch(reject);
       });
