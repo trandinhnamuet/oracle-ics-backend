@@ -594,6 +594,7 @@ export class OciController {
   async getInstanceMetrics(
     @Param('instanceId') instanceId: string,
     @Query('timeRange') timeRange: string = '1h',
+    @Query('startDate') startDate?: string,
   ) {
     try {
       const endTime = new Date();
@@ -612,6 +613,13 @@ export class OciController {
           break;
         case '7d':
           startTime.setDate(startTime.getDate() - 7);
+          break;
+        case 'all':
+          if (startDate) {
+            startTime = new Date(startDate);
+          } else {
+            startTime.setDate(startTime.getDate() - 90);
+          }
           break;
         default:
           startTime.setHours(startTime.getHours() - 1);
