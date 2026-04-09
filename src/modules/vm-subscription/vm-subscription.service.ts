@@ -39,6 +39,7 @@ interface ActionOtpRecord {
   otp: string;
   expiresAt: Date;
   email: string;
+  sentAt: Date;
 }
 
 @Injectable()
@@ -740,12 +741,25 @@ export class VmSubscriptionService {
     const userName =
       `${user.firstName || ''} ${user.lastName || ''}`.trim() || user.email;
 
+    const key = `${userId}:${subscriptionId}:${action}`;
+
+    // Enforce 60-second cooldown between OTP sends
+    const existing = this.actionOtpStore.get(key);
+    if (existing) {
+      const secondsSinceSent = (Date.now() - existing.sentAt.getTime()) / 1000;
+      if (secondsSinceSent < 60) {
+        const remaining = Math.ceil(60 - secondsSinceSent);
+        throw new BadRequestException(
+          `Please wait ${remaining} seconds before requesting a new OTP.`,
+        );
+      }
+    }
+
     // Generate 6-digit numeric OTP
     const otp = Array.from({ length: 6 }, () => crypto.randomInt(0, 10)).join('');
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
-    const key = `${userId}:${subscriptionId}:${action}`;
-    this.actionOtpStore.set(key, { otp, expiresAt, email: user.email });
+    this.actionOtpStore.set(key, { otp, expiresAt, email: user.email, sentAt: new Date() });
     // Auto-clean after TTL
     setTimeout(() => this.actionOtpStore.delete(key), 10 * 60 * 1000);
 
