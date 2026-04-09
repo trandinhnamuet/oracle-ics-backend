@@ -2045,17 +2045,38 @@ chmod 600 ~/.ssh/authorized_keys`;
       );
       this.logger.log(`Found ${vmInstances.length} VM instances to delete in compartment ${compartmentId}`);
 
-      // === STEP 1: Delete child records (logs and related data) ===
-      
-      // Delete bandwidth_monthly_snapshots for VMs in this compartment
-      const deletedBandwidthLogs = await queryRunner.query(
-        `DELETE FROM oracle.bandwidth_monthly_snapshots
-         WHERE vm_instance_id IN (
-           SELECT id FROM oracle.vm_instances WHERE compartment_id = $1
-         ) RETURNING id`,
+      // === STEP 1: Preserve bandwidth snapshots for billing audit ===
+      // Instead of deleting snapshots, we backfill compartment_id (so queries still
+      // work after vm_instances is gone) and then NULL-out vm_instance_id.
+      // This preserves historical bandwidth data for admin bandwidth reports.
+
+      // 1a. Backfill compartment_id on existing snapshots (may be missing on older rows)
+      const backfilledSnaps = await queryRunner.query(
+        `UPDATE oracle.bandwidth_monthly_snapshots bms
+         SET compartment_id = vi.compartment_id
+         FROM oracle.vm_instances vi
+         WHERE bms.vm_instance_id = vi.id
+           AND vi.compartment_id = $1
+           AND bms.compartment_id IS NULL
+         RETURNING bms.id`,
         [compartmentId]
       );
-      this.logger.log(`✅ Deleted ${deletedBandwidthLogs.length} bandwidth snapshot records`);
+      this.logger.log(`✅ Backfilled compartment_id on ${backfilledSnaps.length} snapshot records`);
+
+      // 1b. Detach snapshots from the soon-to-be-deleted vm_instances rows
+      //     (set vm_instance_id = NULL rather than deleting, preserving billing data)
+      const detachedSnaps = await queryRunner.query(
+        `UPDATE oracle.bandwidth_monthly_snapshots
+         SET vm_instance_id = NULL
+         WHERE vm_instance_id IN (
+           SELECT id FROM oracle.vm_instances WHERE compartment_id = $1
+         )
+         RETURNING id`,
+        [compartmentId]
+      );
+      this.logger.log(`✅ Detached ${detachedSnaps.length} bandwidth snapshot records (preserved for audit)`);
+
+      // === STEP 2: Delete other child records (logs) ===
 
       // Delete vm_actions_log for VMs in this compartment
       const deletedActionLogs = await queryRunner.query(
@@ -2078,7 +2099,7 @@ chmod 600 ~/.ssh/authorized_keys`;
       );
       this.logger.log(`✅ Deleted ${deletedSubscriptionLogs.length} subscription log records`);
 
-      // === STEP 2: Update subscriptions to remove vm_instance_id reference ===
+      // === STEP 3: Update subscriptions to remove vm_instance_id reference ===
       const updatedSubscriptions = await queryRunner.query(
         `UPDATE oracle.subscriptions 
          SET vm_instance_id = NULL, configuration_status = 'deleted'
@@ -2089,7 +2110,7 @@ chmod 600 ~/.ssh/authorized_keys`;
       );
       this.logger.log(`✅ Updated ${updatedSubscriptions.length} subscription records to remove VM reference`);
 
-      // === STEP 3: Delete compartment_accounts (IAM users in compartment) ===
+      // === STEP 4: Delete compartment_accounts (IAM users in compartment) ===
       if (userCompartmentIds.length > 0) {
         const deletedCompartmentAccounts = await queryRunner.query(
           `DELETE FROM oracle.compartment_accounts 
@@ -2099,21 +2120,21 @@ chmod 600 ~/.ssh/authorized_keys`;
         this.logger.log(`✅ Deleted ${deletedCompartmentAccounts.length} compartment account records`);
       }
 
-      // === STEP 4: Delete VM instances ===
+      // === STEP 5: Delete VM instances ===
       await queryRunner.query(
         `DELETE FROM oracle.vm_instances WHERE compartment_id = $1`,
         [compartmentId]
       );
       this.logger.log(`✅ Deleted ${vmInstances.length} VM instance records`);
 
-      // === STEP 5: Delete VCN resources ===
+      // === STEP 6: Delete VCN resources ===
       const deletedVcns = await queryRunner.query(
         `DELETE FROM oracle.vcn_resources WHERE compartment_id = $1 RETURNING id`,
         [compartmentId]
       );
       this.logger.log(`✅ Deleted ${deletedVcns.length} VCN resource records`);
 
-      // === STEP 6: Delete user_compartments (main compartment record) ===
+      // === STEP 7: Delete user_compartments (main compartment record) ===
       const deletedCompartments = await queryRunner.query(
         `DELETE FROM oracle.user_compartments WHERE compartment_id = $1 RETURNING id`,
         [compartmentId]
@@ -2125,14 +2146,13 @@ chmod 600 ~/.ssh/authorized_keys`;
       
       // Summary log
       this.logger.log(`📊 Cleanup Summary:
-        - Bandwidth Logs: ${deletedBandwidthLogs.length}
-        - VM Action Logs: ${deletedActionLogs.length}
-        - Subscription Logs: ${deletedSubscriptionLogs.length}
+        - Bandwidth Snapshots Preserved (detached): ${detachedSnaps.length}
+        - VM Action Logs Deleted: ${deletedActionLogs.length}
+        - Subscription Logs Deleted: ${deletedSubscriptionLogs.length}
         - Subscriptions Updated: ${updatedSubscriptions.length}
-        - Compartment Accounts: ${userCompartmentIds.length > 0 ? await queryRunner.query(`SELECT COUNT(*) FROM oracle.compartment_accounts WHERE compartment_id = ANY($1::int[])`, [userCompartmentIds]).then(r => r[0].count) : 0}
-        - VM Instances: ${vmInstances.length}
-        - VCN Resources: ${deletedVcns.length}
-        - User Compartments: ${deletedCompartments.length}
+        - VM Instances Deleted: ${vmInstances.length}
+        - VCN Resources Deleted: ${deletedVcns.length}
+        - User Compartments Deleted: ${deletedCompartments.length}
       `);
     } catch (error) {
       await queryRunner.rollbackTransaction();
@@ -2309,6 +2329,112 @@ chmod 600 ~/.ssh/authorized_keys`;
 
   // One-time flag: discover available metrics on first call
   private _ociMetricsDiscoveredRegion: string | null = null;
+
+  /**
+   * Query bandwidth grouped by VNIC (resourceId) for an entire compartment.
+   *
+   * Returns a map: vnicId → { bytesOut, bytesIn }
+   *
+   * This is used to detect bandwidth from DELETED VMs — after a VM is terminated
+   * its VNIC metrics still exist in OCI Monitoring for 90 days, but the vm_instances
+   * DB record may have been deleted.  By querying at compartment level (no resourceId
+   * filter) and comparing against known active VNIC IDs we can isolate deleted-VM data.
+   *
+   * @param compartmentId  OCI compartment OCID (e.g. user compartment)
+   * @param startTime
+   * @param endTime
+   */
+  async getCompartmentAllVnicsBandwidth(
+    compartmentId: string,
+    startTime: Date,
+    endTime: Date,
+  ): Promise<{ [vnicId: string]: { bytesOut: number; bytesIn: number } }> {
+    const result: { [vnicId: string]: { bytesOut: number; bytesIn: number } } = {};
+
+    // Use both the compartment directly and tenancy+subtree as fallback
+    const tenancyId = await this.getTenancyId();
+
+    const runGroupBy = async (
+      cid: string,
+      metricName: string,
+      inSubtree: boolean,
+    ): Promise<{ [vnicId: string]: number } | null> => {
+      // groupBy(resourceId) returns one item per VNIC in the compartment
+      const query = `${metricName}[1h].groupBy(resourceId).sum()`;
+      try {
+        // Use monitoring client without region override — relies on home region
+        // (compartment-level queries without a known VNIC OCID)
+        const monitoring = this.getMonitoringClient(undefined);
+        const resp = await monitoring.summarizeMetricsData({
+          compartmentId: cid,
+          summarizeMetricsDataDetails: {
+            namespace: 'oci_vcn',
+            query,
+            startTime,
+            endTime,
+            resolution: '1h',
+          },
+          compartmentIdInSubtree: inSubtree,
+        });
+        const items: any[] = resp.items || [];
+        if (items.length === 0) return null;
+        const map: { [vnicId: string]: number } = {};
+        for (const item of items) {
+          const vnicId: string = item.dimensions?.resourceId || item.metadata?.resourceId;
+          if (!vnicId) continue;
+          let total = 0;
+          for (const dp of item.aggregatedDatapoints || []) total += dp.value || 0;
+          map[vnicId] = (map[vnicId] || 0) + total;
+        }
+        return map;
+      } catch (err: any) {
+        this.logger.warn(
+          `[BW-COMP-GROUPBY] ${metricName} cid=${cid} subtree=${inSubtree}: ${err.message}`,
+        );
+        return null;
+      }
+    };
+
+    const egressCandidates = ['VnicBytesOut', 'VnicBytesTransmitted'];
+    const ingressCandidates = ['VnicBytesIn', 'VnicBytesReceived'];
+
+    // --- Egress ---
+    let egressMap: { [vnicId: string]: number } | null = null;
+    for (const metric of egressCandidates) {
+      egressMap = await runGroupBy(compartmentId, metric, false);
+      if (egressMap) break;
+      egressMap = await runGroupBy(tenancyId, metric, true);
+      if (egressMap) break;
+    }
+
+    // --- Ingress ---
+    let ingressMap: { [vnicId: string]: number } | null = null;
+    for (const metric of ingressCandidates) {
+      ingressMap = await runGroupBy(compartmentId, metric, false);
+      if (ingressMap) break;
+      ingressMap = await runGroupBy(tenancyId, metric, true);
+      if (ingressMap) break;
+    }
+
+    // Merge into result
+    const allVnicIds = new Set([
+      ...Object.keys(egressMap || {}),
+      ...Object.keys(ingressMap || {}),
+    ]);
+    for (const vnicId of allVnicIds) {
+      result[vnicId] = {
+        bytesOut: egressMap?.[vnicId] || 0,
+        bytesIn: ingressMap?.[vnicId] || 0,
+      };
+    }
+
+    this.logger.log(
+      `[BW-COMP-GROUPBY] compartment=${compartmentId} → ${allVnicIds.size} VNICs with data`,
+    );
+    return result;
+  }
+
+
 
   /**
    * Chạy một lần duy nhất — gọi listMetrics để tìm metric name thật sự
