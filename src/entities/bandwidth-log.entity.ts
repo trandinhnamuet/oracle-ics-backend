@@ -29,6 +29,10 @@ export class BandwidthSnapshot {
   @Column({ type: 'varchar', length: 255 })
   instance_name: string;
 
+  /** OCI Compartment OCID — kept even after vm_instances record is deleted */
+  @Column({ type: 'varchar', length: 500, nullable: true })
+  compartment_id: string | null;
+
   @Column({ type: 'integer' })
   user_id: number;
 
