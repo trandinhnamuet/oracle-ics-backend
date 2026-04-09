@@ -797,29 +797,35 @@ export class VmSubscriptionService {
     otpCode?: string,
   ): void {
     if (!otpCode?.trim()) {
-      throw new BadRequestException('OTP code is required. Please request an OTP first.');
+      throw new BadRequestException({
+        message: 'OTP code is required',
+        i18nKey: 'resetPassword.otpRequired',
+      });
     }
 
     const key = `${userId}:${subscriptionId}:${action}`;
     const stored = this.actionOtpStore.get(key);
 
     if (!stored) {
-      throw new BadRequestException(
-        'OTP not found or expired. Please request a new OTP.',
-      );
+      throw new BadRequestException({
+        message: 'OTP not found or expired',
+        i18nKey: 'resetPassword.otpNotFound',
+      });
     }
 
     if (new Date() > stored.expiresAt) {
       this.actionOtpStore.delete(key);
-      throw new BadRequestException(
-        'OTP has expired. Please request a new OTP.',
-      );
+      throw new BadRequestException({
+        message: 'OTP has expired',
+        i18nKey: 'resetPassword.otpExpired',
+      });
     }
 
     if (stored.otp !== otpCode.trim()) {
-      throw new BadRequestException(
-        'Invalid OTP code. Please check and try again.',
-      );
+      throw new BadRequestException({
+        message: 'Invalid OTP code',
+        i18nKey: 'resetPassword.otpInvalid',
+      });
     }
 
     // One-time use — delete immediately after successful verification
