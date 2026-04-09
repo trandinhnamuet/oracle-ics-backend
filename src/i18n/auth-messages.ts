@@ -54,8 +54,7 @@ const messages: Record<Lang, DeepMessages> = {
       sessionExpired: 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.',
     },
     forgotPassword: {
-      notFound:
-        'Nếu email của bạn tồn tại trong hệ thống, bạn sẽ nhận được OTP đặt lại mật khẩu.',
+      notFound: 'Tài khoản chưa được đăng ký. Vui lòng kiểm tra lại email.',
       success: 'OTP đặt lại mật khẩu đã được gửi đến email của bạn.',
     },
     verifyResetOtp: {
@@ -131,8 +130,7 @@ const messages: Record<Lang, DeepMessages> = {
       sessionExpired: 'Session has expired. Please login again.',
     },
     forgotPassword: {
-      notFound:
-        'If your email exists in our system, you will receive a password reset OTP.',
+      notFound: 'This email is not registered. Please check and try again.',
       success: 'Password reset OTP has been sent to your email.',
     },
     verifyResetOtp: {
@@ -208,8 +206,7 @@ const messages: Record<Lang, DeepMessages> = {
       sessionExpired: 'セッションの有効期限が切れました。再度ログインしてください。',
     },
     forgotPassword: {
-      notFound:
-        'お使いのメールアドレスがシステムに存在する場合、パスワードリセット用のOTPをお送りします。',
+      notFound: 'このメールアドレスは登録されていません。ご確認の上、再度お試しください。',
       success: 'パスワードリセット用のOTPをメールアドレスに送信しました。',
     },
     verifyResetOtp: {
@@ -284,8 +281,7 @@ const messages: Record<Lang, DeepMessages> = {
       sessionExpired: '세션이 만료되었습니다. 다시 로그인해 주세요.',
     },
     forgotPassword: {
-      notFound:
-        '이메일이 시스템에 존재하는 경우 비밀번호 재설정 OTP를 전송해 드립니다.',
+      notFound: '등록되지 않은 이메일입니다. 다시 확인해 주세요.',
       success: '비밀번호 재설정 OTP가 이메일로 전송되었습니다.',
     },
     verifyResetOtp: {
@@ -360,8 +356,7 @@ const messages: Record<Lang, DeepMessages> = {
       sessionExpired: '会话已过期。请重新登录。',
     },
     forgotPassword: {
-      notFound:
-        '如果您的邮箱存在于我们的系统中，您将收到密码重置OTP。',
+      notFound: '该邮箱尚未注册，请检查后重试。',
       success: '密码重置OTP已发送至您的邮箱。',
     },
     verifyResetOtp: {

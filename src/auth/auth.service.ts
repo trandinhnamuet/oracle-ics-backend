@@ -768,11 +768,7 @@ export class AuthService {
     // Find user
     const user = await this.userRepository.findOne({ where: { email } });
     if (!user) {
-      // Don't reveal if user exists or not for security
-      return {
-        message: t('forgotPassword.notFound', lang),
-        success: true,
-      };
+      throw new BadRequestException(t('forgotPassword.notFound', lang));
     }
 
     // Generate 6-digit OTP
