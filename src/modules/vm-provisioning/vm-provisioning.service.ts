@@ -1318,18 +1318,23 @@ export class VmProvisioningService {
     vmInfo: any,
     windowsCredentials: { username: string; password: string },
     subscription: any,
+    language: string = 'vi',
   ) {
     this.logger.log('📧 [Background] ========== SENDING WINDOWS EMAIL ==========');
     this.logger.log(`📧 To: ${email}`);
     this.logger.log(`📧 VM: ${vmInfo.name}`);
     this.logger.log(`📧 IP: ${vmInfo.publicIp}`);
     this.logger.log(`📧 Username: ${windowsCredentials.username}`);
-    
-    const subject = `🪟 Windows VM Access Credentials - ${vmInfo.name || 'Your VM'}`;
+
+    const isVi = (language || '').trim().toLowerCase().startsWith('vi');
+
+    const subject = isVi
+      ? `🪟 Thông tin truy cập Windows VM - ${vmInfo.name || 'VM của bạn'}`
+      : `🪟 Windows VM Access Credentials - ${vmInfo.name || 'Your VM'}`;
     
     const htmlContent = `
       <!DOCTYPE html>
-      <html>
+      <html lang="${isVi ? 'vi' : 'en'}">
         <head>
           <style>
             body {
@@ -1433,83 +1438,83 @@ export class VmProvisioningService {
         <body>
           <div class="container">
             <div class="header">
-              <h1>🪟 Windows VM Access Credentials</h1>
-              <p>Your Windows Server is ready to use!</p>
+              <h1>🪟 ${isVi ? 'Thông tin truy cập Windows VM' : 'Windows VM Access Credentials'}</h1>
+              <p>${isVi ? 'Máy chủ Windows của bạn đã sẵn sàng!' : 'Your Windows Server is ready to use!'}</p>
             </div>
 
             <div class="content">
-              <h2>VM Information</h2>
+              <h2>${isVi ? 'Thông tin VM' : 'VM Information'}</h2>
               <div class="vm-details">
-                <p><strong>VM Name:</strong> ${vmInfo.name || 'N/A'}</p>
-                <p><strong>Public IP:</strong> <code>${vmInfo.publicIp || 'Retrieving...'}</code></p>
-                <p><strong>Operating System:</strong> ${vmInfo.operatingSystem || 'Windows Server'}</p>
-                <p><strong>Status:</strong> ${vmInfo.status || 'RUNNING'}</p>
+                <p><strong>${isVi ? 'Tên VM' : 'VM Name'}:</strong> ${vmInfo.name || 'N/A'}</p>
+                <p><strong>${isVi ? 'IP Công khai' : 'Public IP'}:</strong> <code>${vmInfo.publicIp || (isVi ? 'Đang lấy...' : 'Retrieving...')}</code></p>
+                <p><strong>${isVi ? 'Hệ điều hành' : 'Operating System'}:</strong> ${vmInfo.operatingSystem || 'Windows Server'}</p>
+                <p><strong>${isVi ? 'Trạng thái' : 'Status'}:</strong> ${vmInfo.status || 'RUNNING'}</p>
               </div>
 
               <div class="credentials-box">
-                <h3>⚠️ Thông tin bảo mật quan trọng</h3>
-                <p><strong>🔐 Vì lý do bảo mật, mật khẩu sẽ không hiển thị tại đây.</strong></p>
-                <p style="margin-top: 10px;">Mật khẩu máy chủ đã được hiển thị <strong>1 lần duy nhất</strong> trên nền tảng khi tạo máy ảo. Vui lòng kiểm tra trang quản lý VM để xem mật khẩu.</p>
+                <h3>⚠️ ${isVi ? 'Thông tin bảo mật quan trọng' : 'Important Security Notice'}</h3>
+                <p><strong>🔐 ${isVi ? 'Vì lý do bảo mật, mật khẩu sẽ không hiển thị tại đây.' : 'For security reasons, the password will not be shown here.'}</strong></p>
+                <p style="margin-top: 10px;">${isVi ? 'Mật khẩu máy chủ đã được hiển thị <strong>1 lần duy nhất</strong> trên nền tảng khi tạo máy ảo. Vui lòng kiểm tra trang quản lý VM để xem mật khẩu.' : 'The server password was shown <strong>only once</strong> on the platform when the VM was created. Please check the VM management page to view the password.'}</p>
               </div>
 
-              <h3>🔑 Windows Credentials:</h3>
-              <p><strong>Username:</strong> <code>${windowsCredentials.username}</code></p>
+              <h3>🔑 ${isVi ? 'Thông tin đăng nhập Windows' : 'Windows Credentials'}:</h3>
+              <p><strong>${isVi ? 'Tên đăng nhập' : 'Username'}:</strong> <code>${windowsCredentials.username}</code></p>
               <div class="info-box">
-                <p>Mật khẩu không được gửi qua email vì lý do bảo mật. Vui lòng đăng nhập vào nền tảng để xem mật khẩu trong trang quản lý VM.</p>
+                <p>${isVi ? 'Mật khẩu không được gửi qua email vì lý do bảo mật. Vui lòng đăng nhập vào nền tảng để xem mật khẩu trong trang quản lý VM.' : 'The password is not sent via email for security reasons. Please log in to the platform to view the password on the VM management page.'}</p>
               </div>
 
-              <h3>📝 How to Connect:</h3>
-              
-              <h4>Option 1: Windows Remote Desktop (Recommended)</h4>
-              <p><strong>On Windows:</strong></p>
+              <h3>📝 ${isVi ? 'Cách kết nối' : 'How to Connect'}:</h3>
+
+              <h4>${isVi ? 'Cách 1: Windows Remote Desktop (Khuyến nghị)' : 'Option 1: Windows Remote Desktop (Recommended)'}</h4>
+              <p><strong>${isVi ? 'Trên Windows:' : 'On Windows:'}</strong></p>
               <ol>
-                <li>Press <code>Win + R</code> and type <code>mstsc</code></li>
-                <li>Enter your VM's IP address: <code>${vmInfo.publicIp || 'YOUR_VM_IP'}</code></li>
-                <li>Click "Connect"</li>
-                <li>When prompted, enter the username and password above</li>
+                <li>${isVi ? 'Nhấn <code>Win + R</code> và gõ <code>mstsc</code>' : 'Press <code>Win + R</code> and type <code>mstsc</code>'}</li>
+                <li>${isVi ? `Nhập địa chỉ IP của VM: <code>${vmInfo.publicIp || 'YOUR_VM_IP'}</code>` : `Enter your VM's IP address: <code>${vmInfo.publicIp || 'YOUR_VM_IP'}</code>`}</li>
+                <li>${isVi ? 'Nhấn "Connect"' : 'Click "Connect"'}</li>
+                <li>${isVi ? 'Nhập tên đăng nhập và mật khẩu khi được yêu cầu' : 'When prompted, enter the username and password above'}</li>
               </ol>
 
-              <h4>Option 2: From Mac</h4>
+              <h4>${isVi ? 'Cách 2: Từ Mac' : 'Option 2: From Mac'}</h4>
               <ol>
-                <li>Download "Microsoft Remote Desktop" from Mac App Store</li>
-                <li>Click "+ Add PC"</li>
-                <li>Enter PC Name: <code>${vmInfo.publicIp || 'YOUR_VM_IP'}</code></li>
-                <li>Enter credentials when connecting</li>
+                <li>${isVi ? 'Tải "Microsoft Remote Desktop" từ Mac App Store' : 'Download "Microsoft Remote Desktop" from Mac App Store'}</li>
+                <li>${isVi ? 'Nhấn "+ Add PC"' : 'Click "+ Add PC"'}</li>
+                <li>${isVi ? `Nhập PC Name: <code>${vmInfo.publicIp || 'YOUR_VM_IP'}</code>` : `Enter PC Name: <code>${vmInfo.publicIp || 'YOUR_VM_IP'}</code>`}</li>
+                <li>${isVi ? 'Nhập thông tin đăng nhập khi kết nối' : 'Enter credentials when connecting'}</li>
               </ol>
 
-              <h3>🔐 First Login Recommendations:</h3>
+              <h3>🔐 ${isVi ? 'Khuyến nghị khi đăng nhập lần đầu' : 'First Login Recommendations'}:</h3>
               <div class="info-box">
-                <h4>After your first login, we recommend:</h4>
+                <h4>${isVi ? 'Sau khi đăng nhập lần đầu, chúng tôi khuyến nghị:' : 'After your first login, we recommend:'}</h4>
                 <ol>
-                  <li><strong>Change your password immediately</strong> for security</li>
-                  <li><strong>Update Windows:</strong> Run Windows Update to get latest security patches</li>
-                  <li><strong>Configure Windows Firewall:</strong> Set up appropriate firewall rules</li>
-                  <li><strong>Enable automatic updates:</strong> Keep your system secure</li>
+                  <li><strong>${isVi ? 'Đổi mật khẩu ngay lập tức' : 'Change your password immediately'}</strong> ${isVi ? 'để đảm bảo bảo mật' : 'for security'}</li>
+                  <li><strong>${isVi ? 'Cập nhật Windows:' : 'Update Windows:'}</strong> ${isVi ? 'Chạy Windows Update để cài bản vá bảo mật mới nhất' : 'Run Windows Update to get latest security patches'}</li>
+                  <li><strong>${isVi ? 'Cấu hình Windows Firewall:' : 'Configure Windows Firewall:'}</strong> ${isVi ? 'Thiết lập các quy tắc tường lửa phù hợp' : 'Set up appropriate firewall rules'}</li>
+                  <li><strong>${isVi ? 'Bật cập nhật tự động:' : 'Enable automatic updates:'}</strong> ${isVi ? 'Giữ hệ thống luôn bảo mật' : 'Keep your system secure'}</li>
                 </ol>
               </div>
 
               <div class="warning">
-                <h3>🔒 Security Best Practices</h3>
+                <h3>🔒 ${isVi ? 'Các biện pháp bảo mật tốt nhất' : 'Security Best Practices'}</h3>
                 <ul>
-                  <li>Change the default password immediately after first login</li>
-                  <li>Never share your credentials with anyone</li>
-                  <li>Use strong passwords with a mix of letters, numbers, and symbols</li>
-                  <li>Enable Windows Defender and keep it updated</li>
-                  <li>Regularly backup your data</li>
-                  <li>Keep Windows updated with latest security patches</li>
+                  <li>${isVi ? 'Đổi mật khẩu mặc định ngay sau lần đăng nhập đầu tiên' : 'Change the default password immediately after first login'}</li>
+                  <li>${isVi ? 'Không bao giờ chia sẻ thông tin đăng nhập với bất kỳ ai' : 'Never share your credentials with anyone'}</li>
+                  <li>${isVi ? 'Dùng mật khẩu mạnh với sự kết hợp của chữ, số và ký tự đặc biệt' : 'Use strong passwords with a mix of letters, numbers, and symbols'}</li>
+                  <li>${isVi ? 'Bật Windows Defender và giữ nó cập nhật' : 'Enable Windows Defender and keep it updated'}</li>
+                  <li>${isVi ? 'Thường xuyên sao lưu dữ liệu' : 'Regularly backup your data'}</li>
+                  <li>${isVi ? 'Cập nhật Windows với các bản vá bảo mật mới nhất' : 'Keep Windows updated with latest security patches'}</li>
                 </ul>
               </div>
 
-              <h3>📊 VM Management</h3>
-              <p>You can manage your VM (start, stop, restart) from your dashboard:</p>
+              <h3>📊 ${isVi ? 'Quản lý VM' : 'VM Management'}</h3>
+              <p>${isVi ? 'Bạn có thể quản lý VM (bật, tắt, khởi động lại) từ bảng điều khiển:' : 'You can manage your VM (start, stop, restart) from your dashboard:'}</p>
               <a href="https://oraclecloud.vn/package-management/${subscription.id}" class="button">
-                Manage Your VM
+                ${isVi ? 'Quản lý VM của bạn' : 'Manage Your VM'}
               </a>
             </div>
 
             <div class="footer">
               <p>© 2026 Oracle Cloud Management Platform</p>
-              <p>If you have any questions, please contact support@oraclecloud.vn</p>
+              <p>${isVi ? 'Nếu bạn có câu hỏi, vui lòng liên hệ support@oraclecloud.vn' : 'If you have any questions, please contact support@oraclecloud.vn'}</p>
             </div>
           </div>
         </body>
