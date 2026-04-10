@@ -1,4 +1,6 @@
-import { IsEmail, IsNotEmpty, MinLength, IsString, Length, IsOptional } from 'class-validator';
+import { IsEmail, IsNotEmpty, MinLength, IsString, Length, IsOptional, Matches } from 'class-validator';
+
+const PASSWORD_REGEX = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^a-zA-Z0-9]).{8,}$/;
 
 export class LoginDto {
   @IsEmail()
@@ -21,7 +23,8 @@ export class RegisterDto {
   email: string;
 
   @IsNotEmpty()
-  @MinLength(6)
+  @MinLength(8, { message: 'Password must be at least 8 characters' })
+  @Matches(PASSWORD_REGEX, { message: 'Password must contain uppercase, lowercase, digit and special character' })
   password: string;
 
   @IsNotEmpty()
@@ -76,6 +79,7 @@ export class ResetPasswordDto {
   otp: string;
 
   @IsNotEmpty()
-  @MinLength(6)
+  @MinLength(8, { message: 'Password must be at least 8 characters' })
+  @Matches(PASSWORD_REGEX, { message: 'Password must contain uppercase, lowercase, digit and special character' })
   newPassword: string;
 }
