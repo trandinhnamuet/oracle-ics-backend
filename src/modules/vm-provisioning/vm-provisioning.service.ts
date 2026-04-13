@@ -1326,8 +1326,10 @@ export class VmProvisioningService {
     this.logger.log(`📧 VM: ${vmInfo.name}`);
     this.logger.log(`📧 IP: ${vmInfo.publicIp}`);
     this.logger.log(`📧 Username: ${windowsCredentials.username}`);
+    this.logger.log(`📧 Language: ${language ?? 'undefined (default en)'}`);
 
     const isVi = (language || '').trim().toLowerCase().startsWith('vi');
+    this.logger.log(`📧 isVi: ${isVi}`);
 
     const subject = isVi
       ? `🪟 Thông tin truy cập Windows VM - ${vmInfo.name || 'VM của bạn'}`
