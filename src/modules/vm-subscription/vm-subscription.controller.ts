@@ -10,6 +10,7 @@ import {
   Headers,
   HttpStatus,
   HttpCode,
+  Logger,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../../auth/jwt-auth.guard';
 import { VmSubscriptionService } from './vm-subscription.service';
@@ -19,6 +20,7 @@ import { VmActionDto } from '../vm-provisioning/dto';
 @Controller('vm-subscription')
 @UseGuards(JwtAuthGuard)
 export class VmSubscriptionController {
+  private readonly logger = new Logger(VmSubscriptionController.name);
   constructor(private readonly vmSubscriptionService: VmSubscriptionService) {}
 
   /**
@@ -48,6 +50,7 @@ export class VmSubscriptionController {
     @Headers('accept-language') acceptLanguage?: string,
   ) {
     const userId = req.user.id;
+    this.logger.log(`[ConfigureVm] accept-language header: "${acceptLanguage ?? 'undefined'}"`);
     return this.vmSubscriptionService.configureSubscriptionVm(
       subscriptionId,
       userId,
