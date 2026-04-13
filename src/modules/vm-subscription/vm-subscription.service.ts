@@ -214,7 +214,7 @@ export class VmSubscriptionService {
           userSshPrivateKey: userSshKeyPair.privateKey,
           description: configureVmDto.description || `VM for subscription ${subscriptionId}`,
           subscriptionId: subscriptionId,
-        });
+        }, language);
       } else {
         // Create new VM for this subscription
         this.logger.log(`Creating new VM for subscription ${subscriptionId}`);
@@ -238,7 +238,7 @@ export class VmSubscriptionService {
           userSshPrivateKey: userSshKeyPair.privateKey, // Pass private key to be encrypted and saved
           description: configureVmDto.description || `VM for subscription ${subscriptionId}`,
           subscriptionId: subscriptionId,
-        });
+        }, language);
       }
 
       // Step 3: Update subscription with VM info

@@ -71,7 +71,7 @@ export class VmProvisioningService {
    * Provision a new VM for a user
    * This includes: creating/retrieving compartment, VCN, subnet, and launching the instance
    */
-  async provisionVm(userId: number, createVmDto: CreateVmDto): Promise<any> {
+  async provisionVm(userId: number, createVmDto: CreateVmDto, language?: string): Promise<any> {
     this.logger.log(`Starting VM provisioning for user ${userId}`);
 
     try {
@@ -412,7 +412,7 @@ export class VmProvisioningService {
           
           // Schedule async background job with subscription ID for email sending
           const subscriptionId = savedVm.subscription_id;
-          this.scheduleWindowsPasswordRetrieval(savedVm.id, ociInstance.id, subscriptionId).catch(error => {
+          this.scheduleWindowsPasswordRetrieval(savedVm.id, ociInstance.id, subscriptionId, language).catch(error => {
             this.logger.error(`❌ Background password retrieval failed for VM ${savedVm.id}:`, error.message);
           });
         } else {
@@ -1088,7 +1088,7 @@ export class VmProvisioningService {
    * Schedule background job to retrieve Windows password
    * This runs asynchronously to avoid blocking the API response
    */
-  private async scheduleWindowsPasswordRetrieval(vmId: number, instanceId: string, subscriptionId: string): Promise<void> {
+  private async scheduleWindowsPasswordRetrieval(vmId: number, instanceId: string, subscriptionId: string, language?: string): Promise<void> {
     this.logger.log(`🔄 [Background] Starting Windows password retrieval for VM ${vmId}, Subscription ${subscriptionId}`);
     
     try {
@@ -1186,6 +1186,7 @@ export class VmProvisioningService {
                     password: credentials.password,
                   },
                   subscription,
+                  language,
                 );
 
                 this.logger.log(`✅ [Background] Windows credentials email sent successfully`);
@@ -1318,7 +1319,7 @@ export class VmProvisioningService {
     vmInfo: any,
     windowsCredentials: { username: string; password: string },
     subscription: any,
-    language: string = 'vi',
+    language?: string,
   ) {
     this.logger.log('📧 [Background] ========== SENDING WINDOWS EMAIL ==========');
     this.logger.log(`📧 To: ${email}`);
