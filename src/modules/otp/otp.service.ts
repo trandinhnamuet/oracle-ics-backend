@@ -12,12 +12,54 @@ export class OtpService {
   private readonly OTP_EXPIRY_MINUTES = 10;
   private readonly MAX_ATTEMPTS = 5;
   private readonly RESEND_COOLDOWN_SECONDS = 30;
+  private readonly HOURLY_LIMIT = 6;
+  private readonly HOURLY_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+
+  /** Sliding-window store: email -> array of send timestamps (ms) */
+  private readonly hourlySendStore = new Map<string, number[]>();
 
   constructor(
     @InjectRepository(EmailVerification)
     private emailVerificationRepository: Repository<EmailVerification>,
     private emailService: EmailService,
   ) {}
+
+  /**
+   * Enforce a shared hourly send limit (HOURLY_LIMIT per email across all OTP types).
+   * Uses a sliding-window approach: timestamps older than 1 hour are evicted on each call.
+   * Throws BadRequestException when the limit is exceeded.
+   */
+  checkAndRecordHourlySend(email: string): void {
+    const now = Date.now();
+    const windowStart = now - this.HOURLY_WINDOW_MS;
+
+    // Evict timestamps outside the window
+    const existing = (this.hourlySendStore.get(email) ?? []).filter(t => t > windowStart);
+
+    if (existing.length >= this.HOURLY_LIMIT) {
+      // Earliest timestamp in window; user must wait until it ages out
+      const oldestInWindow = Math.min(...existing);
+      const waitMs = oldestInWindow + this.HOURLY_WINDOW_MS - now;
+      const waitMinutes = Math.ceil(waitMs / 60_000);
+      throw new BadRequestException(
+        `Hourly OTP limit reached. Please wait ${waitMinutes} minute${waitMinutes !== 1 ? 's' : ''} before requesting again.`,
+      );
+    }
+
+    // Record this send and persist updated list
+    existing.push(now);
+    this.hourlySendStore.set(email, existing);
+
+    // Auto-cleanup: remove entry after window expires (no lingering memory)
+    setTimeout(() => {
+      const remaining = (this.hourlySendStore.get(email) ?? []).filter(t => t > Date.now() - this.HOURLY_WINDOW_MS);
+      if (remaining.length === 0) {
+        this.hourlySendStore.delete(email);
+      } else {
+        this.hourlySendStore.set(email, remaining);
+      }
+    }, this.HOURLY_WINDOW_MS);
+  }
 
   /**
    * Generate 6-digit OTP
@@ -33,6 +75,9 @@ export class OtpService {
     try {
       const now = new Date();
       const expiresAt = new Date(now.getTime() + this.OTP_EXPIRY_MINUTES * 60 * 1000);
+
+      // Enforce shared hourly limit before any DB/email work
+      this.checkAndRecordHourlySend(email);
 
       // Check existing record
       const existing = await this.emailVerificationRepository.findOne({
