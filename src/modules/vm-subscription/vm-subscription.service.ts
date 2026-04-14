@@ -1013,13 +1013,13 @@ export class VmSubscriptionService {
       throw new BadRequestException(`Failed to reset Windows password: ${runCmdError.message}`);
     }
 
-    // Step 9: Update password in database and mark as initialized
-    this.logger.log(`💾 Saving new password to database...`);
+    // Step 9: Mark VM as initialized (do NOT overwrite windows_initial_password —
+    // the original initial password must remain visible in the RDP Credentials section)
+    this.logger.log(`💾 Marking VM as password-initialized in database...`);
     await this.vmInstanceRepo.update(vm.id, {
-      windows_initial_password: newPassword,
       windows_password_initialized: true,
     });
-    this.logger.log(`✅ Password saved to database, windows_password_initialized = true`);
+    this.logger.log(`✅ Database updated, windows_password_initialized = true (initial password preserved)`);
 
     this.logger.log('========================================');
     this.logger.log(`🎉 WINDOWS PASSWORD RESET COMPLETE`);
