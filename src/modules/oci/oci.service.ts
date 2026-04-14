@@ -1105,6 +1105,11 @@ runcmd:
           '      $cfg = [regex]::Replace($cfg, "(?m)^#?\\s*PubkeyAuthentication.+", "PubkeyAuthentication yes")',
           '      if ($cfg -notmatch "(?m)^PubkeyAuthentication") { $cfg = "PubkeyAuthentication yes`n" + $cfg }',
           '    }',
+          '    # Enable PasswordAuthentication so SSH password fallback works for password reset',
+          '    if ($cfg -notmatch "(?m)^PasswordAuthentication yes") {',
+          '      $cfg = [regex]::Replace($cfg, "(?m)^#?\\s*PasswordAuthentication.+", "PasswordAuthentication yes")',
+          '      if ($cfg -notmatch "(?m)^PasswordAuthentication") { $cfg = "PasswordAuthentication yes`n" + $cfg }',
+          '    }',
           '    # Uncomment any commented-out admin authorized keys lines (Win 2019/2022 default)',
           `    $cfg = $cfg -replace "(?m)^#\\s*(Match Group administrators)", '$1'`,
           `    $cfg = $cfg -replace "(?m)^#\\s*(\\s*AuthorizedKeysFile\\s+__PROGRAMDATA__)", '$1'`,
@@ -3053,12 +3058,20 @@ chmod 600 ~/.ssh/authorized_keys`;
                 reject(new Error(`SSH connection error: ${err.message}`));
               });
 
+              // Handle keyboard-interactive auth (Windows sshd may only offer this instead of password)
+              if (currentPassword) {
+                conn.on('keyboard-interactive', (_name, _instructions, _lang, prompts, finish) => {
+                  this.logger.log(`🔑 SSH keyboard-interactive auth: ${prompts.length} prompt(s)`);
+                  finish([currentPassword]);
+                });
+              }
+
               conn.connect({
                 host: publicIp,
                 port: 22,
                 username: 'opc',
                 privateKey: Buffer.from(adminPrivateKey, 'utf8'),
-                ...(currentPassword ? { password: currentPassword } : {}),
+                ...(currentPassword ? { password: currentPassword, tryKeyboard: true } : {}),
                 readyTimeout: 90_000,
                 algorithms: {
                   serverHostKey: ['rsa-sha2-512', 'rsa-sha2-256', 'ssh-rsa', 'ecdsa-sha2-nistp256', 'ecdsa-sha2-nistp384', 'ssh-ed25519'],
