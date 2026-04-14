@@ -1047,7 +1047,16 @@ runcmd:
         const embeddedSshKeysB64 = Buffer.from(sshPublicKeys.join('\n'), 'utf8').toString('base64');
 
         const windowsSetupScript = [
-          '#ps1_sysnative',
+          '#ps1',
+          '',
+          '# Force errors to be non-terminating so the script continues on failures.',
+          '$ErrorActionPreference = "Continue"',
+          '',
+          '# Enable TLS 1.2 (required on Win 2016 where default is TLS 1.0)',
+          '[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12',
+          '',
+          '# Log setup progress to a file for diagnostics',
+          'Start-Transcript -Path C:\\oci-userdata-setup.log -Append -ErrorAction SilentlyContinue',
           '',
           '# ===== IMMEDIATE SETUP (runs during cloudbase-init UserDataPlugin) =====',
           '# NOTE: cloudbase-init runs: UserDataPlugin → SetUserPasswordPlugin',
@@ -1063,10 +1072,10 @@ runcmd:
           '# 1. Clears the "must change password" flag (set by SetUserPasswordPlugin)',
           '# 2. Reconfigures WinRM',
           '# 3. Copies authorized_keys to administrators_authorized_keys (backup)',
-          "Start-Process -FilePath 'powershell.exe' -ArgumentList '-ExecutionPolicy Bypass -Command \"Start-Sleep 300; net user opc /logonpasswordchg:no; cmd /c winrm quickconfig -force 2>$null; Set-Item -Path WSMan:\\localhost\\Service\\Auth\\Basic -Value $true -Force; Set-Item -Path WSMan:\\localhost\\Service\\AllowUnencrypted -Value $true -Force; Restart-Service WinRM -Force -ErrorAction SilentlyContinue; if (Test-Path C:\\Users\\opc\\.ssh\\authorized_keys) { Copy-Item C:\\Users\\opc\\.ssh\\authorized_keys C:\\ProgramData\\ssh\\administrators_authorized_keys -Force; icacls C:\\ProgramData\\ssh\\administrators_authorized_keys /inheritance:r; icacls C:\\ProgramData\\ssh\\administrators_authorized_keys /grant *S-1-5-18:(F); icacls C:\\ProgramData\\ssh\\administrators_authorized_keys /grant *S-1-5-32-544:(F); Restart-Service sshd -Force -ErrorAction SilentlyContinue }\"' -WindowStyle Hidden",
+          "try { Start-Process -FilePath 'powershell.exe' -ArgumentList '-ExecutionPolicy Bypass -Command \"Start-Sleep 300; net user opc /logonpasswordchg:no; cmd /c winrm quickconfig -force 2>$null; Set-Item -Path WSMan:\\localhost\\Service\\Auth\\Basic -Value $true -Force; Set-Item -Path WSMan:\\localhost\\Service\\AllowUnencrypted -Value $true -Force; Restart-Service WinRM -Force -ErrorAction SilentlyContinue; if (Test-Path C:\\Users\\opc\\.ssh\\authorized_keys) { Copy-Item C:\\Users\\opc\\.ssh\\authorized_keys C:\\ProgramData\\ssh\\administrators_authorized_keys -Force; icacls C:\\ProgramData\\ssh\\administrators_authorized_keys /inheritance:r; icacls C:\\ProgramData\\ssh\\administrators_authorized_keys /grant *S-1-5-18:(F); icacls C:\\ProgramData\\ssh\\administrators_authorized_keys /grant *S-1-5-32-544:(F); Restart-Service sshd -Force -ErrorAction SilentlyContinue }\"' -WindowStyle Hidden } catch {}",
           '# Quick deferred task: clear "must change password" flag after 30s (SetUserPasswordPlugin',
           '# typically finishes within seconds of UserDataPlugin). Retry at 60s and 120s for safety.',
-          "Start-Process -FilePath 'powershell.exe' -ArgumentList '-ExecutionPolicy Bypass -Command \"Start-Sleep 30; net user opc /logonpasswordchg:no; Start-Sleep 30; net user opc /logonpasswordchg:no; Start-Sleep 60; net user opc /logonpasswordchg:no\"' -WindowStyle Hidden",
+          "try { Start-Process -FilePath 'powershell.exe' -ArgumentList '-ExecutionPolicy Bypass -Command \"Start-Sleep 30; net user opc /logonpasswordchg:no; Start-Sleep 30; net user opc /logonpasswordchg:no; Start-Sleep 60; net user opc /logonpasswordchg:no\"' -WindowStyle Hidden } catch {}",
           '',
           '# ===== WinRM HTTP SETUP =====',
           'try { Set-Service WinRM -StartupType Automatic -ErrorAction SilentlyContinue } catch {}',
@@ -1106,7 +1115,7 @@ runcmd:
           '      $extractPath = "$env:TEMP\\OpenSSH-Extract"',
           '      [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12',
           '      (New-Object System.Net.WebClient).DownloadFile($url, $zipPath)',
-          '      Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force',
+          '      try { Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force } catch { Add-Type -Assembly System.IO.Compression.FileSystem -ErrorAction SilentlyContinue; [System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $extractPath) }',
           '      $srcDir = Get-ChildItem $extractPath -Directory | Select-Object -First 1',
           '      $destDir = "$env:ProgramFiles\\OpenSSH"',
           '      if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }',
@@ -1203,6 +1212,9 @@ runcmd:
           '  $sshdSvc = Get-Service sshd -ErrorAction SilentlyContinue',
           '  if ($sshdSvc -and $sshdSvc.Status -ne "Running") { Start-Service sshd -ErrorAction SilentlyContinue }',
           '} catch {}',
+          '',
+          '# Stop transcript log',
+          'Stop-Transcript -ErrorAction SilentlyContinue',
         ].join('\n');
         metadata.user_data = Buffer.from(windowsSetupScript).toString('base64');
         this.logger.log(`🪟 Windows VM: Sending SSH keys + OpenSSH Server setup script`);
@@ -2796,11 +2808,10 @@ chmod 600 ~/.ssh/authorized_keys`;
     }
 
     // ── Strategy 1: WinRM (primary — uses current password from DB) ──
-    // Skipped when passwordInitialized=false because the "must change password at next logon"
-    // flag is still active on new VMs, causing WinRM NTLM auth to reject ALL credentials.
-    // OCI Run Command (Strategy 2) and SSH (Strategy 3) do not use Windows credential auth
-    // and work normally even with the flag active.
-    if (passwordInitialized && subnetId && publicIp && currentPassword) {
+    // Always attempt WinRM when we have the required info.
+    // OCI Windows images (including 2016) have WinRM HTTPS enabled by default on port 5986.
+    // The initial password from OCI credential retrieval works with NTLM auth.
+    if (subnetId && publicIp && currentPassword) {
       this.logger.log(`🔐 Strategy 1: WinRM password reset (primary)...`);
       const secListId = await this.getSecurityListIdForSubnet(subnetId);
       await this.ensureWinrmPortOpen(secListId);
@@ -2827,11 +2838,7 @@ chmod 600 ~/.ssh/authorized_keys`;
         }
       }
     } else {
-      if (!passwordInitialized) {
-        this.logger.log(`⏭️ WinRM skipped: password not yet initialized (must-change flag may be active)`);
-      } else {
-        this.logger.log(`⏭️ WinRM skipped: ${!subnetId ? 'no subnet' : !publicIp ? 'no public IP' : 'no current password in DB'}`);
-      }
+      this.logger.log(`⏭️ WinRM skipped: ${!subnetId ? 'no subnet' : !publicIp ? 'no public IP' : 'no current password in DB'}`);
     }
 
     // ── Strategy 2: OCI Run Command (up to 2 minutes) ──
