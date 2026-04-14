@@ -766,6 +766,7 @@ export class VmSubscriptionService {
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
     this.actionOtpStore.set(key, { otp, expiresAt, email: user.email, sentAt: new Date() });
+    this.logger.log(`DEBUG_OTP: otp=${otp} key=${key}`);
     // Auto-clean after TTL
     setTimeout(() => this.actionOtpStore.delete(key), 10 * 60 * 1000);
 
