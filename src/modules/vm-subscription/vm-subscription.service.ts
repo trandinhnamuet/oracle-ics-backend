@@ -17,6 +17,7 @@ import { User } from '../../entities/user.entity';
 import { ConfigureVmDto } from './dto';
 import { ActionOtpType } from './dto/send-action-otp.dto';
 import { ActionOtpTemplate } from '../email/templates/action-otp.template';
+import { OtpService } from '../otp/otp.service';
 import { VmActionType } from '../vm-provisioning/dto';
 import * as crypto from 'crypto';
 import * as nodemailer from 'nodemailer';
@@ -61,6 +62,7 @@ export class VmSubscriptionService {
     private readonly vmProvisioningService: VmProvisioningService,
     private readonly systemSshKeyService: SystemSshKeyService,
     private readonly ociService: OciService,
+    private readonly otpService: OtpService,
   ) {
     // Initialize email transporter
     const smtpPort = parseInt(process.env.SMTP_PORT || '587');
@@ -741,6 +743,9 @@ export class VmSubscriptionService {
 
     const userName =
       `${user.firstName || ''} ${user.lastName || ''}`.trim() || user.email;
+
+    // Enforce shared hourly limit (6 OTPs per hour across all OTP types)
+    this.otpService.checkAndRecordHourlySend(user.email);
 
     const key = `${userId}:${subscriptionId}:${action}`;
 

@@ -8,6 +8,7 @@ import { User } from '../../entities/user.entity';
 import { VmProvisioningModule } from '../vm-provisioning/vm-provisioning.module';
 import { SystemSshKeyModule } from '../system-ssh-key/system-ssh-key.module';
 import { OciModule } from '../oci/oci.module';
+import { OtpModule } from '../otp/otp.module';
 
 @Module({
   imports: [
@@ -15,6 +16,7 @@ import { OciModule } from '../oci/oci.module';
     VmProvisioningModule,
     SystemSshKeyModule,
     OciModule,
+    OtpModule,
   ],
   controllers: [VmSubscriptionController],
   providers: [VmSubscriptionService],
