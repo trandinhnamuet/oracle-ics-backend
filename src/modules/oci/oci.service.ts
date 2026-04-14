@@ -2814,10 +2814,12 @@ chmod 600 ~/.ssh/authorized_keys`;
     if (subnetId && publicIp && currentPassword) {
       this.logger.log(`🔐 Strategy 1: WinRM password reset (primary)...`);
       const secListId = await this.getSecurityListIdForSubnet(subnetId);
-      await this.ensureWinrmPortOpen(secListId);
+      const portsAdded = await this.ensureWinrmPortOpen(secListId);
       try {
-        this.logger.log(`⏳ Waiting 15s for WinRM security list propagation...`);
-        await new Promise(resolve => setTimeout(resolve, 15_000));
+        if (portsAdded) {
+          this.logger.log(`⏳ Waiting 15s for WinRM security list propagation...`);
+          await new Promise(resolve => setTimeout(resolve, 15_000));
+        }
 
         await this.changePasswordViaWinrm(publicIp, currentPassword, newPassword);
         this.logger.log(`✅ Password changed via WinRM`);
@@ -2830,13 +2832,8 @@ chmod 600 ~/.ssh/authorized_keys`;
           throw winrmErr;
         }
         this.logger.warn(`⚠️ WinRM strategy failed: ${winrmErr.message}`);
-      } finally {
-        try {
-          await this.removeWinrmPort(secListId);
-        } catch (cleanErr: any) {
-          this.logger.warn(`⚠️ Failed to remove WinRM port rule: ${cleanErr.message}`);
-        }
       }
+      // Note: WinRM ports (5985+5986) are intentionally kept open for future resets.
     } else {
       this.logger.log(`⏭️ WinRM skipped: ${!subnetId ? 'no subnet' : !publicIp ? 'no public IP' : 'no current password in DB'}`);
     }
@@ -3223,7 +3220,7 @@ chmod 600 ~/.ssh/authorized_keys`;
    * Temporarily open WinRM ports (5985 HTTP + 5986 HTTPS) in a security list.
    * Port 5985 is needed for basic-auth fallback; 5986 for NTLM.
    */
-  private async ensureWinrmPortOpen(securityListId: string): Promise<void> {
+  private async ensureWinrmPortOpen(securityListId: string): Promise<boolean> {
     this.logger.log(`🔓 Opening WinRM ports 5985+5986 in security list: ${securityListId}`);
 
     const securityList = await this.getSecurityList(securityListId);
@@ -3244,20 +3241,20 @@ chmod 600 ~/.ssh/authorized_keys`;
       rulesToAdd.push({
         source: '0.0.0.0/0', protocol: '6', isStateless: false,
         tcpOptions: { destinationPortRange: { min: 5985, max: 5985 } },
-        description: 'WinRM HTTP (temporary for password reset)',
+        description: 'WinRM HTTP for password reset',
       });
     }
     if (!has5986) {
       rulesToAdd.push({
         source: '0.0.0.0/0', protocol: '6', isStateless: false,
         tcpOptions: { destinationPortRange: { min: 5986, max: 5986 } },
-        description: 'WinRM HTTPS (temporary for password reset)',
+        description: 'WinRM HTTPS for password reset',
       });
     }
 
     if (rulesToAdd.length === 0) {
       this.logger.log('✅ WinRM ports 5985+5986 already open');
-      return;
+      return false;
     }
 
     await this.virtualNetworkClient.updateSecurityList({
@@ -3269,6 +3266,7 @@ chmod 600 ~/.ssh/authorized_keys`;
     });
 
     this.logger.log('✅ WinRM ports 5985+5986 opened');
+    return true;
   }
 
   /**
