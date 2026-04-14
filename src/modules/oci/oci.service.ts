@@ -1105,7 +1105,11 @@ runcmd:
           '      $cfg = [regex]::Replace($cfg, "(?m)^#?\\s*PubkeyAuthentication.+", "PubkeyAuthentication yes")',
           '      if ($cfg -notmatch "(?m)^PubkeyAuthentication") { $cfg = "PubkeyAuthentication yes`n" + $cfg }',
           '    }',
-          '    if ($cfg -notmatch "administrators_authorized_keys") {',
+          '    # Uncomment any commented-out admin authorized keys lines (Win 2019/2022 default)',
+          `    $cfg = $cfg -replace "(?m)^#\\s*(Match Group administrators)", '$1'`,
+          `    $cfg = $cfg -replace "(?m)^#\\s*(\\s*AuthorizedKeysFile\\s+__PROGRAMDATA__)", '$1'`,
+          '    # Add the block if not present at all (uncommented)',
+          '    if ($cfg -notmatch "(?m)^Match Group administrators") {',
           '      $cfg = $cfg + "`nMatch Group administrators`n       AuthorizedKeysFile __PROGRAMDATA__/ssh/administrators_authorized_keys`n"',
           '    }',
           '    [System.IO.File]::WriteAllText($sshdCfgPath, $cfg)',
@@ -2795,7 +2799,7 @@ chmod 600 ~/.ssh/authorized_keys`;
       this.logger.log(`🔑 Strategy 3: SSH key-based password reset...`);
       const securityListId = await this.getSecurityListIdForSubnet(subnetId);
       try {
-        await this.changeWindowsPasswordViaSshKey(publicIp, adminPrivateKey, newPassword, securityListId);
+        await this.changeWindowsPasswordViaSshKey(publicIp, adminPrivateKey, newPassword, securityListId, currentPassword);
         this.logger.log(`✅ Password changed via SSH + admin key`);
         return;
       } catch (sshErr: any) {
@@ -2987,6 +2991,7 @@ chmod 600 ~/.ssh/authorized_keys`;
     adminPrivateKey: string,
     newPassword: string,
     securityListId: string,
+    currentPassword?: string,
   ): Promise<void> {
     this.logger.log(`🔑 Opening SSH port 22 in security list: ${securityListId}`);
     await this.ensureSshPortOpen(securityListId);
@@ -3053,7 +3058,11 @@ chmod 600 ~/.ssh/authorized_keys`;
                 port: 22,
                 username: 'opc',
                 privateKey: Buffer.from(adminPrivateKey, 'utf8'),
+                ...(currentPassword ? { password: currentPassword } : {}),
                 readyTimeout: 90_000,
+                algorithms: {
+                  serverHostKey: ['rsa-sha2-512', 'rsa-sha2-256', 'ssh-rsa', 'ecdsa-sha2-nistp256', 'ecdsa-sha2-nistp384', 'ssh-ed25519'],
+                },
               });
             }).catch(reject);
           });
