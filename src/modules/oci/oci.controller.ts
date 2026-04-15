@@ -685,30 +685,19 @@ export class OciController {
 
   /**
    * Format metrics data for charts.
-   * Floors each timestamp to the resolution boundary so that OCI's internal
-   * agent-start alignment (e.g. :30) is normalised to clean clock ticks.
-   * resolution: '1m' | '5m' | '1h'
+   * OCI now returns epoch-aligned timestamps when [1m] MQL interval + resolution
+   * param are used together, so no timestamp manipulation is needed here.
    */
-  private formatMetricsData(metrics: any[], resolution: string = '1h'): any[] {
+  private formatMetricsData(metrics: any[], _resolution: string = '1h'): any[] {
     if (!metrics || metrics.length === 0) return [];
 
     const formatted: any[] = [];
     for (const metric of metrics) {
       if (metric.aggregatedDatapoints) {
         for (const datapoint of metric.aggregatedDatapoints) {
-          const d = new Date(datapoint.timestamp);
-          // Floor to resolution boundary so chart labels are always clean
-          if (resolution === '1h') {
-            d.setMinutes(0, 0, 0);
-          } else if (resolution === '5m') {
-            d.setMinutes(Math.floor(d.getMinutes() / 5) * 5, 0, 0);
-          } else {
-            // 1m
-            d.setSeconds(0, 0);
-          }
           formatted.push({
             // Trả về ISO string UTC — frontend sẽ tự convert sang múi giờ browser
-            time: d.toISOString(),
+            time: new Date(datapoint.timestamp).toISOString(),
             value: datapoint.value || 0,
           });
         }
