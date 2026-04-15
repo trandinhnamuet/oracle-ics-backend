@@ -7,6 +7,7 @@ Required: pip3 install pywinrm
 """
 import sys
 import json
+import base64
 import winrm
 
 data = json.loads(sys.stdin.read())
@@ -26,6 +27,19 @@ SESSION_ATTEMPTS = [
     ('http',  5985, 'basic', username),
 ]
 
+# Base64-encode the new password so it can be safely embedded in a PowerShell
+# script without cmd.exe metacharacter issues (& | > < % ! etc.)
+pw_b64 = base64.b64encode(new_password.encode('utf-8')).decode('ascii')
+
+# PowerShell script that decodes the password and runs "net user".
+# /logonpasswordchg:no clears the "must change password at next logon" flag
+# so the admin-issued password is directly usable without forcing an RDP change.
+ps_script = (
+    f"$b=[Convert]::FromBase64String('{pw_b64}');"
+    f"$p=[Text.Encoding]::UTF8.GetString($b);"
+    f"net user {username} $p /logonpasswordchg:no"
+)
+
 last_error = None
 attempt_errors = []
 
@@ -40,9 +54,9 @@ for scheme, port, transport, auth_user in SESSION_ATTEMPTS:
             read_timeout_sec=35,
         )
 
-        # /logonpasswordchg:no clears the "must change password at next logon" Windows flag
-        # so the admin-issued password is directly usable without forcing another RDP change.
-        r = s.run_cmd('net', ['user', username, new_password, '/logonpasswordchg:no'])
+        # Use run_ps (PowerShell) instead of run_cmd (cmd.exe) to avoid
+        # command-line escaping issues with special characters in passwords.
+        r = s.run_ps(ps_script)
         result = {
             'exitCode': r.status_code,
             'stdout': r.std_out.decode('utf-8', errors='replace').strip(),

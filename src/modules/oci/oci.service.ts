@@ -1067,15 +1067,21 @@ runcmd:
           '# Password change enforcement is handled at the application level via',
           '# the windows_password_initialized flag in the database.',
           '',
-          '# ===== DEFERRED WinRM RECONFIGURATION + CLEAR MUST-CHANGE-PASSWORD =====',
-          '# Start a background process that waits 5 minutes, then:',
-          '# 1. Clears the "must change password" flag (set by SetUserPasswordPlugin)',
-          '# 2. Reconfigures WinRM',
-          '# 3. Copies authorized_keys to administrators_authorized_keys (backup)',
-          "try { Start-Process -FilePath 'powershell.exe' -ArgumentList '-ExecutionPolicy Bypass -Command \"Start-Sleep 300; net user opc /logonpasswordchg:no; cmd /c winrm quickconfig -force 2>$null; Set-Item -Path WSMan:\\localhost\\Service\\Auth\\Basic -Value $true -Force; Set-Item -Path WSMan:\\localhost\\Service\\AllowUnencrypted -Value $true -Force; Restart-Service WinRM -Force -ErrorAction SilentlyContinue; if (Test-Path C:\\Users\\opc\\.ssh\\authorized_keys) { Copy-Item C:\\Users\\opc\\.ssh\\authorized_keys C:\\ProgramData\\ssh\\administrators_authorized_keys -Force; icacls C:\\ProgramData\\ssh\\administrators_authorized_keys /inheritance:r; icacls C:\\ProgramData\\ssh\\administrators_authorized_keys /grant *S-1-5-18:(F); icacls C:\\ProgramData\\ssh\\administrators_authorized_keys /grant *S-1-5-32-544:(F); Restart-Service sshd -Force -ErrorAction SilentlyContinue }\"' -WindowStyle Hidden } catch {}",
-          '# Quick deferred task: clear "must change password" flag after 30s (SetUserPasswordPlugin',
-          '# typically finishes within seconds of UserDataPlugin). Retry at 60s and 120s for safety.',
-          "try { Start-Process -FilePath 'powershell.exe' -ArgumentList '-ExecutionPolicy Bypass -Command \"Start-Sleep 30; net user opc /logonpasswordchg:no; Start-Sleep 30; net user opc /logonpasswordchg:no; Start-Sleep 60; net user opc /logonpasswordchg:no\"' -WindowStyle Hidden } catch {}",
+          '# ===== DEFERRED: CLEAR MUST-CHANGE-PASSWORD FLAG via Scheduled Task =====',
+          '# Uses a Scheduled Task (runs as SYSTEM) that fires every 2 minutes for 1 hour.',
+          '# On each run it clears the "must change password" flag and self-deletes on success.',
+          '# This is far more reliable than Start-Process background shells which can die silently.',
+          'try {',
+          '  $taskAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -Command `"net user opc /logonpasswordchg:no 2>`$null; if (`$LASTEXITCODE -eq 0) { schtasks /delete /tn OCI_ClearPwFlag /f 2>`$null }`""',
+          '  $taskTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 2) -RepetitionDuration (New-TimeSpan -Hours 1)',
+          '  $taskSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable',
+          '  Register-ScheduledTask -TaskName "OCI_ClearPwFlag" -Action $taskAction -Trigger $taskTrigger -Settings $taskSettings -RunLevel Highest -User "SYSTEM" -Force | Out-Null',
+          '  Start-ScheduledTask -TaskName "OCI_ClearPwFlag" -ErrorAction SilentlyContinue',
+          '} catch {}',
+          '',
+          '# ===== DEFERRED WinRM RECONFIGURATION =====',
+          '# Background process that waits 5 minutes, then reconfigures WinRM and copies SSH keys.',
+          "try { Start-Process -FilePath 'powershell.exe' -ArgumentList '-ExecutionPolicy Bypass -Command \"Start-Sleep 300; cmd /c winrm quickconfig -force 2>$null; Set-Item -Path WSMan:\\localhost\\Service\\Auth\\Basic -Value $true -Force; Set-Item -Path WSMan:\\localhost\\Service\\AllowUnencrypted -Value $true -Force; Restart-Service WinRM -Force -ErrorAction SilentlyContinue; if (Test-Path C:\\Users\\opc\\.ssh\\authorized_keys) { Copy-Item C:\\Users\\opc\\.ssh\\authorized_keys C:\\ProgramData\\ssh\\administrators_authorized_keys -Force; icacls C:\\ProgramData\\ssh\\administrators_authorized_keys /inheritance:r; icacls C:\\ProgramData\\ssh\\administrators_authorized_keys /grant *S-1-5-18:(F); icacls C:\\ProgramData\\ssh\\administrators_authorized_keys /grant *S-1-5-32-544:(F); Restart-Service sshd -Force -ErrorAction SilentlyContinue }\"' -WindowStyle Hidden } catch {}",
           '',
           '# ===== WinRM HTTP SETUP =====',
           'try { Set-Service WinRM -StartupType Automatic -ErrorAction SilentlyContinue } catch {}',
@@ -2838,12 +2844,14 @@ chmod 600 ~/.ssh/authorized_keys`;
       this.logger.log(`⏭️ WinRM skipped: ${!subnetId ? 'no subnet' : !publicIp ? 'no public IP' : 'no current password in DB'}`);
     }
 
-    // ── Strategy 2: OCI Run Command (up to 2 minutes) ──
-    // If the command stays VISIBLE/ACCEPTED for 2 min the Oracle Cloud Agent
+    // ── Strategy 2: OCI Run Command (up to 5 minutes for command execution) ──
+    // If the command stays VISIBLE/ACCEPTED for 5 min the Oracle Cloud Agent
     // on this VM is broken — polling longer never helps in practice.
-    this.logger.log(`📡 Strategy 2: OCI Run Command (timeout 2 min)...`);
+    // Note: The plugin status check (inside tryRunCommandPasswordReset) waits
+    // up to 5 additional minutes for the Cloud Agent to start on fresh VMs.
+    this.logger.log(`📡 Strategy 2: OCI Run Command (timeout 5 min)...`);
     try {
-      await this.tryRunCommandPasswordReset(instanceId, compartmentId, newPassword, 120_000);
+      await this.tryRunCommandPasswordReset(instanceId, compartmentId, newPassword, 300_000);
       this.logger.log(`✅ Password changed via OCI Run Command`);
       return;
     } catch (runCmdErr: any) {
@@ -2925,27 +2933,43 @@ chmod 600 ~/.ssh/authorized_keys`;
       this.logger.warn(`⚠️ Could not request plugin enablement: ${enableErr.message}`);
     }
 
-    // Step 2: Check plugin status (quick check, 30s max)
+    // Step 2: Check plugin status — poll until RUNNING (up to 5 min for fresh VMs)
     let pluginRunning = false;
+    const maxPluginWaitMs = 300_000; // 5 minutes
+    const pluginPollMs = 15_000;     // 15 seconds
+    const pluginStart = Date.now();
+
     try {
       const pluginClient = new oci.computeinstanceagent.PluginClient({
         authenticationDetailsProvider: this.provider,
       });
-      const pluginsResp = await pluginClient.listInstanceAgentPlugins({
-        compartmentId,
-        instanceagentId: instanceId,
-      });
-      const rcPlugin = pluginsResp.items?.find(
-        p => p.name === 'Compute Instance Run Command',
-      );
-      this.logger.log(`🔌 Run Command plugin status: ${rcPlugin?.status ?? 'NOT FOUND'}`);
-      pluginRunning = rcPlugin?.status === 'RUNNING';
+
+      while (Date.now() - pluginStart < maxPluginWaitMs) {
+        try {
+          const pluginsResp = await pluginClient.listInstanceAgentPlugins({
+            compartmentId,
+            instanceagentId: instanceId,
+          });
+          const rcPlugin = pluginsResp.items?.find(
+            p => p.name === 'Compute Instance Run Command',
+          );
+          this.logger.log(`🔌 Run Command plugin status: ${rcPlugin?.status ?? 'NOT FOUND'} (waited ${Math.round((Date.now() - pluginStart) / 1000)}s)`);
+          if (rcPlugin?.status === 'RUNNING') {
+            pluginRunning = true;
+            break;
+          }
+        } catch (pollErr: any) {
+          this.logger.warn(`⚠️ Plugin status check error: ${pollErr.message}`);
+        }
+        // Wait before retrying
+        await new Promise(resolve => setTimeout(resolve, pluginPollMs));
+      }
     } catch (err: any) {
       this.logger.warn(`⚠️ Could not check plugin status: ${err.message}`);
     }
 
     if (!pluginRunning) {
-      throw new Error('Run Command plugin is not RUNNING');
+      throw new Error(`Run Command plugin is not RUNNING after waiting ${Math.round((Date.now() - pluginStart) / 1000)}s`);
     }
 
     // Step 3: Create the Run Command — use base64-encoded PowerShell to avoid ALL
