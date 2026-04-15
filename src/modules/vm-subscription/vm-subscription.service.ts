@@ -1847,7 +1847,23 @@ net user ${windowsCredentials.username} *</div>
         }
       }
 
-      // Step 4a: Delete bandwidth_logs first (FK NOT NULL constraint prevents SET NULL cascade)
+      // Step 4a: Preserve bandwidth_monthly_snapshots before deleting VM
+      // Set compartment_id on existing snapshots so they remain queryable after VM is removed
+      try {
+        if (vmInstance.compartment_id) {
+          await this.vmInstanceRepo.manager.query(
+            `UPDATE oracle.bandwidth_monthly_snapshots
+             SET compartment_id = $1
+             WHERE vm_instance_id = $2 AND compartment_id IS NULL`,
+            [vmInstance.compartment_id, vmInstance.id],
+          );
+          this.logger.log(`✅ Preserved bandwidth snapshot compartment_id for VM ${vmInstance.id}`);
+        }
+      } catch (snapError) {
+        this.logger.warn(`Failed to preserve bandwidth snapshots: ${snapError.message}`);
+      }
+
+      // Step 4b: Delete bandwidth_logs first (FK NOT NULL constraint prevents SET NULL cascade)
       try {
         await this.vmInstanceRepo.manager.query(
           'DELETE FROM oracle.bandwidth_logs WHERE vm_instance_id = $1',
@@ -1858,7 +1874,7 @@ net user ${windowsCredentials.username} *</div>
         this.logger.warn(`Failed to delete bandwidth_logs: ${bwError.message}`);
       }
 
-      // Step 4b: Delete VM from database
+      // Step 4c: Delete VM from database
       await this.vmInstanceRepo.remove(vmInstance);
       this.logger.log(`✅ VM instance deleted from database`);
     }
