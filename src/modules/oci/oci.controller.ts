@@ -604,15 +604,23 @@ export class OciController {
       switch (timeRange) {
         case '1h':
           startTime.setHours(startTime.getHours() - 1);
+          // resolution = 1m → floor to the minute
+          startTime.setSeconds(0, 0);
           break;
         case '6h':
           startTime.setHours(startTime.getHours() - 6);
+          // resolution = 5m → floor to the nearest 5-min boundary
+          startTime.setMinutes(Math.floor(startTime.getMinutes() / 5) * 5, 0, 0);
           break;
         case '24h':
           startTime.setHours(startTime.getHours() - 24);
+          // resolution = 1h → floor to the hour
+          startTime.setMinutes(0, 0, 0);
           break;
         case '7d':
           startTime.setDate(startTime.getDate() - 7);
+          // resolution = 1h → floor to the hour
+          startTime.setMinutes(0, 0, 0);
           break;
         case 'all':
           if (startDate) {
@@ -620,9 +628,12 @@ export class OciController {
           } else {
             startTime.setDate(startTime.getDate() - 90);
           }
+          // resolution = 1h → floor to the hour
+          startTime.setMinutes(0, 0, 0);
           break;
         default:
           startTime.setHours(startTime.getHours() - 1);
+          startTime.setSeconds(0, 0);
       }
 
       const [cpu, memory, networkIn, networkOut, diskRead, diskWrite] =
