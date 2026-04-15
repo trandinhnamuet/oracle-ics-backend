@@ -2603,8 +2603,11 @@ chmod 600 ~/.ssh/authorized_keys`;
       const timeRangeHours = (endTime.getTime() - startTime.getTime()) / (1000 * 60 * 60);
       
       // Determine resolution based on time range.
-      // The `resolution` API parameter controls bucket size AND epoch alignment,
-      // so returned timestamps will be at clean clock boundaries (:00, :05, :00…).
+      // OCI constraint: time_range / interval must not exceed ~1000 data points.
+      // We match the MQL interval to the resolution so the same window is used for
+      // aggregation and bucketing. Epoch alignment is ensured by the caller passing
+      // an epoch-floored startTime (e.g. 07:00:00Z), which causes OCI to align all
+      // returned bucket timestamps to clean clock boundaries (:00, :05, …).
       let resolution: string;
       if (timeRangeHours <= 1) {
         resolution = '1m';
@@ -2614,16 +2617,13 @@ chmod 600 ~/.ssh/authorized_keys`;
         resolution = '1h';
       }
 
-      // Use [1m] raw interval in MQL so OCI computes statistics from raw 1-minute
-      // data points. Combined with the `resolution` API parameter (which aligns
-      // returned buckets to epoch boundaries), this ensures data points land on
-      // clean clock ticks (08:00, 09:00 …) rather than the agent-start offset
-      // (e.g. 08:30) that results from using a larger MQL window like [1h].
       const summarizeMetricsDataRequest: oci.monitoring.requests.SummarizeMetricsDataRequest = {
         compartmentId: compartmentId,
         summarizeMetricsDataDetails: {
           namespace: 'oci_computeagent',
-          query: `${metricName}[1m]{resourceId = "${instanceId}"}.mean()`,
+          // MQL interval matches resolution so OCI aggregation window = bucket size.
+          // Epoch alignment comes from the epoch-floored startTime in the controller.
+          query: `${metricName}[${resolution}]{resourceId = "${instanceId}"}.mean()`,
           startTime: startTime,
           endTime: endTime,
           resolution: resolution,
