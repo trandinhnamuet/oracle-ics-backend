@@ -861,7 +861,23 @@ export class SubscriptionService {
             this.logger.warn(`Failed to delete VM action logs: ${logError.message}`);
           }
 
-          // 1c. Delete bandwidth_logs records (to avoid foreign key constraint)
+          // 1c. Preserve bandwidth_monthly_snapshots before deleting VM
+          // Set compartment_id so snapshots remain queryable after VM is removed
+          try {
+            if (vmInstance.compartment_id) {
+              await this.dataSource.query(
+                `UPDATE oracle.bandwidth_monthly_snapshots
+                 SET compartment_id = $1
+                 WHERE vm_instance_id = $2 AND compartment_id IS NULL`,
+                [vmInstance.compartment_id, vmInstance.id],
+              );
+              this.logger.log(`✅ Preserved bandwidth snapshot compartment_id for VM ${vmInstance.id}`);
+            }
+          } catch (snapError) {
+            this.logger.warn(`Failed to preserve bandwidth snapshots: ${snapError.message}`);
+          }
+
+          // 1d. Delete bandwidth_logs records (to avoid foreign key constraint)
           try {
             const deletedBandwidth = await this.dataSource.query(
               'DELETE FROM oracle.bandwidth_logs WHERE vm_instance_id = $1',
@@ -872,7 +888,7 @@ export class SubscriptionService {
             this.logger.warn(`Failed to delete bandwidth logs: ${bandwidthError.message}`);
           }
 
-          // 1d. Delete VM instance record from database
+          // 1e. Delete VM instance record from database
           await this.vmInstanceRepository.remove(vmInstance);
           this.logger.log(`✅ VM instance deleted from database`);
         } else {
