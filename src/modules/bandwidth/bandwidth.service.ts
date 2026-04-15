@@ -419,6 +419,13 @@ export class BandwidthService {
       (summary.totalIngressTB + totalDeletedIngressTB).toFixed(6),
     );
 
+    // Ensure every compartment has deletedVmsSummary (even if 0)
+    for (const [, group] of compartmentMap) {
+      if (!group.deletedVmsSummary) {
+        group.deletedVmsSummary = { count: 0, egressTB: 0, ingressTB: 0, dataSource: 'archived' as const };
+      }
+    }
+
     const compartments = Array.from(compartmentMap.values()).sort((a, b) => {
       const aTotal = a.egressTB + (a.deletedVmsSummary?.egressTB || 0);
       const bTotal = b.egressTB + (b.deletedVmsSummary?.egressTB || 0);

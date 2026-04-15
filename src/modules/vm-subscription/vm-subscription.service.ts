@@ -10,6 +10,7 @@ import { In, Repository } from 'typeorm';
 import { VmProvisioningService } from '../vm-provisioning/vm-provisioning.service';
 import { SystemSshKeyService } from '../system-ssh-key/system-ssh-key.service';
 import { OciService } from '../oci/oci.service';
+import { BandwidthService } from '../bandwidth/bandwidth.service';
 import { encryptPrivateKey, decryptPrivateKey } from '../../utils/system-ssh-key.util';
 import { Subscription } from '../../entities/subscription.entity';
 import { VmInstance } from '../../entities/vm-instance.entity';
@@ -63,6 +64,7 @@ export class VmSubscriptionService {
     private readonly systemSshKeyService: SystemSshKeyService,
     private readonly ociService: OciService,
     private readonly otpService: OtpService,
+    private readonly bandwidthService: BandwidthService,
   ) {
     // Initialize email transporter
     const smtpPort = parseInt(process.env.SMTP_PORT || '587');
@@ -1847,7 +1849,18 @@ net user ${windowsCredentials.username} *</div>
         }
       }
 
-      // Step 4a: Preserve bandwidth_monthly_snapshots before deleting VM
+      // Step 4a: Archive current month's bandwidth before deleting VM
+      // This creates a snapshot so the deleted-VM bandwidth query can find it
+      try {
+        const now = new Date();
+        const currentYearMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+        await this.bandwidthService.archiveMonthlyBandwidth(vmInstance, currentYearMonth);
+        this.logger.log(`✅ Archived bandwidth snapshot for VM ${vmInstance.id} / ${currentYearMonth}`);
+      } catch (archiveError) {
+        this.logger.warn(`Failed to archive bandwidth before delete: ${archiveError.message}`);
+      }
+
+      // Step 4b: Preserve bandwidth_monthly_snapshots before deleting VM
       // Set compartment_id on existing snapshots so they remain queryable after VM is removed
       try {
         if (vmInstance.compartment_id) {
@@ -1863,7 +1876,7 @@ net user ${windowsCredentials.username} *</div>
         this.logger.warn(`Failed to preserve bandwidth snapshots: ${snapError.message}`);
       }
 
-      // Step 4b: Delete bandwidth_logs first (FK NOT NULL constraint prevents SET NULL cascade)
+      // Step 4c: Delete bandwidth_logs first (FK NOT NULL constraint prevents SET NULL cascade)
       try {
         await this.vmInstanceRepo.manager.query(
           'DELETE FROM oracle.bandwidth_logs WHERE vm_instance_id = $1',

@@ -9,6 +9,7 @@ import { VmProvisioningModule } from '../vm-provisioning/vm-provisioning.module'
 import { SystemSshKeyModule } from '../system-ssh-key/system-ssh-key.module';
 import { OciModule } from '../oci/oci.module';
 import { OtpModule } from '../otp/otp.module';
+import { BandwidthModule } from '../bandwidth/bandwidth.module';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { OtpModule } from '../otp/otp.module';
     SystemSshKeyModule,
     OciModule,
     OtpModule,
+    BandwidthModule,
   ],
   controllers: [VmSubscriptionController],
   providers: [VmSubscriptionService],
