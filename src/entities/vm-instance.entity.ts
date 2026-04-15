@@ -78,6 +78,10 @@ export class VmInstance {
   @Column({ type: 'text', nullable: true })
   windows_initial_password: string;
 
+  /** Last successfully-set password (updated after each successful reset). */
+  @Column({ type: 'text', nullable: true })
+  windows_current_password: string;
+
   /**
    * Tracks whether the Windows VM password has ever been reset via our API.
    * false = initial password may still be active ("must change at next logon" flag may be set).

@@ -994,6 +994,8 @@ export class VmSubscriptionService {
     // WinRM is always tried first using the initial password from OCI credential retrieval.
     // OCI Windows images have WinRM HTTPS enabled by default on port 5986.
     const passwordInitialized = vm.windows_password_initialized ?? false;
+    // Use last successfully-set password if available, else fall back to initial password
+    const currentPassword = vm.windows_current_password ?? vm.windows_initial_password ?? undefined;
     this.logger.log(`🚀 Sending password reset to instance ${vm.instance_id} (initialized: ${passwordInitialized})...`);
     try {
       await this.ociService.runWindowsPasswordReset(
@@ -1002,7 +1004,7 @@ export class VmSubscriptionService {
         newPassword,
         vm.subnet_id ?? undefined,
         vm.public_ip ?? undefined,
-        vm.windows_initial_password ?? undefined,
+        currentPassword,
         adminPrivateKey,
         passwordInitialized,
       );
@@ -1012,13 +1014,13 @@ export class VmSubscriptionService {
       throw new BadRequestException(`Failed to reset Windows password: ${runCmdError.message}`);
     }
 
-    // Step 9: Mark VM as initialized (do NOT overwrite windows_initial_password —
-    // the original initial password must remain visible in the RDP Credentials section)
+    // Step 9: Mark VM as initialized and store the new password for future resets
     this.logger.log(`💾 Marking VM as password-initialized in database...`);
     await this.vmInstanceRepo.update(vm.id, {
       windows_password_initialized: true,
+      windows_current_password: newPassword,
     });
-    this.logger.log(`✅ Database updated, windows_password_initialized = true (initial password preserved)`);
+    this.logger.log(`✅ Database updated, windows_password_initialized = true, current password saved`);
 
     this.logger.log('========================================');
     this.logger.log(`🎉 WINDOWS PASSWORD RESET COMPLETE`);
