@@ -636,6 +636,10 @@ export class OciController {
           startTime.setSeconds(0, 0);
       }
 
+      // Determine resolution used for this time range (mirrors oci.service.ts logic)
+      const resolution =
+        timeRange === '1h' ? '1m' : timeRange === '6h' ? '5m' : '1h';
+
       const [cpu, memory, networkIn, networkOut, diskRead, diskWrite] =
         await Promise.all([
           this.ociService.getCpuUtilization(instanceId, startTime, endTime),
@@ -649,15 +653,15 @@ export class OciController {
       return {
         success: true,
         data: {
-          cpu: this.formatMetricsData(cpu),
-          memory: this.formatMetricsData(memory),
+          cpu: this.formatMetricsData(cpu, resolution),
+          memory: this.formatMetricsData(memory, resolution),
           network: {
-            in: this.formatMetricsData(networkIn),
-            out: this.formatMetricsData(networkOut),
+            in: this.formatMetricsData(networkIn, resolution),
+            out: this.formatMetricsData(networkOut, resolution),
           },
           disk: {
-            read: this.formatMetricsData(diskRead),
-            write: this.formatMetricsData(diskWrite),
+            read: this.formatMetricsData(diskRead, resolution),
+            write: this.formatMetricsData(diskWrite, resolution),
           },
         },
       };
@@ -680,18 +684,31 @@ export class OciController {
   }
 
   /**
-   * Format metrics data for charts
+   * Format metrics data for charts.
+   * Floors each timestamp to the resolution boundary so that OCI's internal
+   * agent-start alignment (e.g. :30) is normalised to clean clock ticks.
+   * resolution: '1m' | '5m' | '1h'
    */
-  private formatMetricsData(metrics: any[]): any[] {
+  private formatMetricsData(metrics: any[], resolution: string = '1h'): any[] {
     if (!metrics || metrics.length === 0) return [];
 
     const formatted: any[] = [];
     for (const metric of metrics) {
       if (metric.aggregatedDatapoints) {
         for (const datapoint of metric.aggregatedDatapoints) {
+          const d = new Date(datapoint.timestamp);
+          // Floor to resolution boundary so chart labels are always clean
+          if (resolution === '1h') {
+            d.setMinutes(0, 0, 0);
+          } else if (resolution === '5m') {
+            d.setMinutes(Math.floor(d.getMinutes() / 5) * 5, 0, 0);
+          } else {
+            // 1m
+            d.setSeconds(0, 0);
+          }
           formatted.push({
             // Trả về ISO string UTC — frontend sẽ tự convert sang múi giờ browser
-            time: new Date(datapoint.timestamp).toISOString(),
+            time: d.toISOString(),
             value: datapoint.value || 0,
           });
         }
