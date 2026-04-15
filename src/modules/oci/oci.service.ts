@@ -1058,25 +1058,23 @@ runcmd:
           '# Log setup progress to a file for diagnostics',
           'Start-Transcript -Path C:\\oci-userdata-setup.log -Append -ErrorAction SilentlyContinue',
           '',
-          '# ===== IMMEDIATE SETUP (runs during cloudbase-init UserDataPlugin) =====',
-          '# NOTE: cloudbase-init runs: UserDataPlugin → SetUserPasswordPlugin',
-          '# SetUserPasswordPlugin sets the "must change password at next logon" flag.',
-          '# IMPORTANT: Windows OpenSSH sshd calls LogonUserExExW after publickey auth,',
-          '# so the "must change password" flag blocks ALL auth methods including publickey.',
-          '# We clear this flag in the deferred process (after SetUserPasswordPlugin finishes).',
+          '# ===== CLEAR MUST-CHANGE-PASSWORD FLAG =====',
+          '# OCI sets "must change password at next logon" on the opc account BEFORE',
+          '# cloudbase-init runs (OCI only uses ConfigWinRMListenerPlugin + UserDataPlugin,',
+          '# there is NO SetUserPasswordPlugin). So the flag is ALREADY set when this',
+          '# UserDataPlugin script executes. We clear it immediately.',
+          '# This is critical: the flag blocks ALL remote auth (WinRM NTLM, SSH pubkey).',
           '# Password change enforcement is handled at the application level via',
           '# the windows_password_initialized flag in the database.',
+          'try { net user opc /logonpasswordchg:no 2>$null } catch {}',
           '',
-          '# ===== DEFERRED: CLEAR MUST-CHANGE-PASSWORD FLAG via Scheduled Task =====',
-          '# Uses a Scheduled Task (runs as SYSTEM) that fires every 2 minutes for 1 hour.',
-          '# On each run it clears the "must change password" flag and self-deletes on success.',
-          '# This is far more reliable than Start-Process background shells which can die silently.',
+          '# Scheduled Task as safety net — runs every 2 min for 1 hour in case the',
+          '# immediate clear above was somehow overridden or failed.',
           'try {',
           '  $taskAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -Command `"net user opc /logonpasswordchg:no 2>`$null; if (`$LASTEXITCODE -eq 0) { schtasks /delete /tn OCI_ClearPwFlag /f 2>`$null }`""',
-          '  $taskTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 2) -RepetitionDuration (New-TimeSpan -Hours 1)',
+          '  $taskTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) -RepetitionInterval (New-TimeSpan -Minutes 2) -RepetitionDuration (New-TimeSpan -Hours 1)',
           '  $taskSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable',
           '  Register-ScheduledTask -TaskName "OCI_ClearPwFlag" -Action $taskAction -Trigger $taskTrigger -Settings $taskSettings -RunLevel Highest -User "SYSTEM" -Force | Out-Null',
-          '  Start-ScheduledTask -TaskName "OCI_ClearPwFlag" -ErrorAction SilentlyContinue',
           '} catch {}',
           '',
           '# ===== DEFERRED WinRM RECONFIGURATION =====',
@@ -2821,37 +2819,58 @@ chmod 600 ~/.ssh/authorized_keys`;
       this.logger.log(`🔐 Strategy 1: WinRM password reset (primary)...`);
       const secListId = await this.getSecurityListIdForSubnet(subnetId);
       const portsAdded = await this.ensureWinrmPortOpen(secListId);
-      try {
-        if (portsAdded) {
-          this.logger.log(`⏳ Waiting 15s for WinRM security list propagation...`);
-          await new Promise(resolve => setTimeout(resolve, 15_000));
-        }
+      if (portsAdded) {
+        this.logger.log(`⏳ Waiting 15s for WinRM security list propagation...`);
+        await new Promise(resolve => setTimeout(resolve, 15_000));
+      }
 
-        await this.changePasswordViaWinrm(publicIp, currentPassword, newPassword);
-        this.logger.log(`✅ Password changed via WinRM`);
-        return;
-      } catch (winrmErr: any) {
-        // If Windows itself rejected the password (bad input), re-throw immediately
-        // — no point trying other strategies with the same password
-        if (winrmErr instanceof BadRequestException) {
-          this.logger.warn(`⚠️ WinRM: Windows rejected the password — propagating to caller`);
-          throw winrmErr;
+      // On fresh VMs (not yet initialized), OCI sets "must change password at
+      // next logon" which blocks WinRM NTLM auth.  Our userdata clears this flag
+      // immediately via `net user opc /logonpasswordchg:no`, plus a Scheduled Task
+      // as safety net (fires every 2 min for 1 hour).  We retry WinRM a few times
+      // to give the flag-clearing a chance in case of timing issues.
+      const winrmMaxAttempts = passwordInitialized ? 1 : 3;
+      const winrmRetryDelays = [0, 30_000, 45_000]; // total ~75s of retries
+
+      for (let attempt = 1; attempt <= winrmMaxAttempts; attempt++) {
+        try {
+          if (attempt > 1) {
+            this.logger.log(`⏳ WinRM retry ${attempt}/${winrmMaxAttempts} — waiting ${winrmRetryDelays[attempt - 1] / 1000}s for must-change-password flag to be cleared...`);
+            await new Promise(resolve => setTimeout(resolve, winrmRetryDelays[attempt - 1]));
+          }
+          await this.changePasswordViaWinrm(publicIp, currentPassword, newPassword);
+          this.logger.log(`✅ Password changed via WinRM (attempt ${attempt})`);
+          return;
+        } catch (winrmErr: any) {
+          // If Windows itself rejected the password (bad input), re-throw immediately
+          if (winrmErr instanceof BadRequestException) {
+            this.logger.warn(`⚠️ WinRM: Windows rejected the password — propagating to caller`);
+            throw winrmErr;
+          }
+          const isAuthError = winrmErr.message && (
+            winrmErr.message.toLowerCase().includes('credential') ||
+            winrmErr.message.toLowerCase().includes('rejected') ||
+            winrmErr.message.toLowerCase().includes('401') ||
+            winrmErr.message.toLowerCase().includes('auth')
+          );
+          if (!isAuthError || attempt === winrmMaxAttempts) {
+            this.logger.warn(`⚠️ WinRM strategy failed (attempt ${attempt}): ${winrmErr.message}`);
+            break;
+          }
+          this.logger.log(`🔄 WinRM auth failed (attempt ${attempt}) — likely must-change-password flag still active, will retry...`);
         }
-        this.logger.warn(`⚠️ WinRM strategy failed: ${winrmErr.message}`);
       }
       // Note: WinRM ports (5985+5986) are intentionally kept open for future resets.
     } else {
       this.logger.log(`⏭️ WinRM skipped: ${!subnetId ? 'no subnet' : !publicIp ? 'no public IP' : 'no current password in DB'}`);
     }
 
-    // ── Strategy 2: OCI Run Command (up to 5 minutes for command execution) ──
-    // If the command stays VISIBLE/ACCEPTED for 5 min the Oracle Cloud Agent
-    // on this VM is broken — polling longer never helps in practice.
-    // Note: The plugin status check (inside tryRunCommandPasswordReset) waits
-    // up to 5 additional minutes for the Cloud Agent to start on fresh VMs.
-    this.logger.log(`📡 Strategy 2: OCI Run Command (timeout 5 min)...`);
+    // ── Strategy 2: OCI Run Command (timeout 2 min) ──
+    // Reduced from 5 min because the Cloud Agent on most VMs is unreliable.
+    // If the command stays VISIBLE/ACCEPTED, polling longer never helps.
+    this.logger.log(`📡 Strategy 2: OCI Run Command (timeout 2 min)...`);
     try {
-      await this.tryRunCommandPasswordReset(instanceId, compartmentId, newPassword, 300_000);
+      await this.tryRunCommandPasswordReset(instanceId, compartmentId, newPassword, 120_000);
       this.logger.log(`✅ Password changed via OCI Run Command`);
       return;
     } catch (runCmdErr: any) {
@@ -2933,9 +2952,10 @@ chmod 600 ~/.ssh/authorized_keys`;
       this.logger.warn(`⚠️ Could not request plugin enablement: ${enableErr.message}`);
     }
 
-    // Step 2: Check plugin status — poll until RUNNING (up to 5 min for fresh VMs)
+    // Step 2: Check plugin status — poll until RUNNING (up to 1 min)
+    // Reduced from 5 min: if the Cloud Agent isn't running by now it won't start.
     let pluginRunning = false;
-    const maxPluginWaitMs = 300_000; // 5 minutes
+    const maxPluginWaitMs = 60_000;  // 1 minute
     const pluginPollMs = 15_000;     // 15 seconds
     const pluginStart = Date.now();
 

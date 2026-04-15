@@ -163,7 +163,7 @@ export class VmSubscriptionService {
 
     // Update configuration status to 'configuring'
     subscription.configuration_status = 'configuring';
-    await this.subscriptionRepo.save(subscription);
+    await this.subscriptionRepo.update(subscription.id, { configuration_status: 'configuring' });
 
     // Step 2: Check if VM already exists for THIS SPECIFIC SUBSCRIPTION
     let existingVm = await this.vmInstanceRepo.findOne({
@@ -199,11 +199,11 @@ export class VmSubscriptionService {
 
         // Step C: Clear subscription VM reference
         subscription.vm_instance_id = null;
-        await this.subscriptionRepo.save(subscription);
+        await this.subscriptionRepo.update(subscription.id, { vm_instance_id: null });
 
         // Step D: Provision new VM
         subscription.configuration_status = 'provisioning';
-        await this.subscriptionRepo.save(subscription);
+        await this.subscriptionRepo.update(subscription.id, { configuration_status: 'provisioning' });
 
         userSshKeyPair = this.generateSshKeyPair();
 
@@ -225,7 +225,7 @@ export class VmSubscriptionService {
 
         // Update status to provisioning
         subscription.configuration_status = 'provisioning';
-        await this.subscriptionRepo.save(subscription);
+        await this.subscriptionRepo.update(subscription.id, { configuration_status: 'provisioning' });
 
         // Generate SSH key pair for user
         userSshKeyPair = this.generateSshKeyPair();
@@ -251,7 +251,13 @@ export class VmSubscriptionService {
       subscription.configuration_status = 'active';
       subscription.last_configured_at = new Date();
       subscription.provisioning_error = null; // Clear any previous error
-      await this.subscriptionRepo.save(subscription);
+      await this.subscriptionRepo.update(subscription.id, {
+        vm_instance_id: vmResult.id,
+        status: 'active',
+        configuration_status: 'active',
+        last_configured_at: new Date(),
+        provisioning_error: null,
+      });
 
       // Step 3.5: Poll VM until it reaches RUNNING state
       this.logger.log(`⏳ Waiting for VM to reach RUNNING state...`);
@@ -378,7 +384,10 @@ export class VmSubscriptionService {
       try {
         subscription.configuration_status = 'failed';
         subscription.provisioning_error = error.message || 'Unknown error occurred';
-        await this.subscriptionRepo.save(subscription);
+        await this.subscriptionRepo.update(subscription.id, {
+          configuration_status: 'failed',
+          provisioning_error: error.message || 'Unknown error occurred',
+        });
       } catch (saveError) {
         this.logger.error('Failed to update subscription status:', saveError);
       }
