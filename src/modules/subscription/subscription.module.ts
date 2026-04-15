@@ -11,6 +11,7 @@ import { VmInstance } from '../../entities/vm-instance.entity';
 import { VmActionsLog } from '../../entities/vm-actions-log.entity';
 import { UserWalletModule } from '../user-wallet/user-wallet.module';
 import { OciModule } from '../oci/oci.module';
+import { BandwidthModule } from '../bandwidth/bandwidth.module';
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { OciModule } from '../oci/oci.module';
     ]),
     UserWalletModule,
     OciModule,
+    BandwidthModule,
   ],
   controllers: [SubscriptionController],
   providers: [SubscriptionService],
