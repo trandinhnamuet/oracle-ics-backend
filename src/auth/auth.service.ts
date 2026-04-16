@@ -15,6 +15,7 @@ import { CreateAdminLoginHistoryDto } from './dto/admin-login-history.dto';
 import { GeolocationUtil } from '../utils/geolocation.util';
 import { NotificationService } from '../modules/notification/notification.service';
 import { NotificationType } from '../entities/notification.entity';
+import { OtpService } from '../modules/otp/otp.service';
 
 interface JwtPayload {
   sub: string;
@@ -36,6 +37,7 @@ export class AuthService {
     private emailService: EmailService,
     private adminLoginHistoryService: AdminLoginHistoryService,
     private readonly notificationService: NotificationService,
+    private readonly otpService: OtpService,
   ) {}
 
   async register(registerDto: RegisterDto, lang: string = DEFAULT_LANG) {
@@ -194,6 +196,9 @@ export class AuthService {
       this.logger.warn(`Resend OTP failed: Email already verified - ${email}`);
       throw new BadRequestException(t('resendOtp.alreadyVerified', lang));
     }
+
+    // Enforce shared hourly OTP limit before generating/sending
+    this.otpService.checkAndRecordHourlySend(email);
 
     // Generate new OTP
     const otp = this.generateOtp();
@@ -573,7 +578,19 @@ export class AuthService {
     // Check if email is verified - if not, generate and send new OTP
     if (!user.isActive) {
       this.logger.log(`Login attempt with unverified account: ${email}`);
-      
+
+      // Enforce shared hourly OTP limit (silently skip send if limit hit — don't block login flow)
+      try {
+        this.otpService.checkAndRecordHourlySend(email);
+      } catch {
+        // Limit reached: return verification required without sending a new OTP
+        return {
+          requiresVerification: true,
+          email: user.email,
+          message: t('login.requiresVerification', lang, { email: user.email }),
+        };
+      }
+
       // Generate new OTP
       const otp = this.generateOtp();
       const otpExpiresAt = new Date();
@@ -770,6 +787,9 @@ export class AuthService {
     if (!user) {
       throw new BadRequestException(t('forgotPassword.notFound', lang));
     }
+
+    // Enforce shared hourly OTP limit before generating/sending
+    this.otpService.checkAndRecordHourlySend(email);
 
     // Generate 6-digit OTP
     const otp = this.generateOtp();
