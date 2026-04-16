@@ -2622,7 +2622,8 @@ chmod 600 ~/.ssh/authorized_keys`;
         summarizeMetricsDataDetails: {
           namespace: 'oci_computeagent',
           // MQL interval matches resolution so OCI aggregation window = bucket size.
-          // Epoch alignment comes from the epoch-floored startTime in the controller.
+          // Note: OCI aligns bucket timestamps to the monitoring agent's start time,
+          // not to epoch. Timestamps are floored to epoch boundaries in formatMetricsData.
           query: `${metricName}[${resolution}]{resourceId = "${instanceId}"}.mean()`,
           startTime: startTime,
           endTime: endTime,

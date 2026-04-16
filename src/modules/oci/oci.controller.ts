@@ -688,16 +688,32 @@ export class OciController {
    * OCI now returns epoch-aligned timestamps when [1m] MQL interval + resolution
    * param are used together, so no timestamp manipulation is needed here.
    */
-  private formatMetricsData(metrics: any[], _resolution: string = '1h'): any[] {
+  private formatMetricsData(metrics: any[], resolution: string = '1h'): any[] {
     if (!metrics || metrics.length === 0) return [];
 
     const formatted: any[] = [];
     for (const metric of metrics) {
       if (metric.aggregatedDatapoints) {
         for (const datapoint of metric.aggregatedDatapoints) {
+          // OCI aligns metric timestamps to the monitoring agent's start time, not to
+          // UTC epoch. We floor each timestamp to the nearest resolution boundary so
+          // the chart displays clean :00 / :05 / :00 tick marks regardless of when
+          // the agent started (e.g. :30 → :00 for 1h resolution).
+          const raw = new Date(datapoint.timestamp);
+          let floored: Date;
+          if (resolution === '1m') {
+            floored = new Date(raw);
+            floored.setUTCSeconds(0, 0);
+          } else if (resolution === '5m') {
+            floored = new Date(raw);
+            floored.setUTCMinutes(Math.floor(raw.getUTCMinutes() / 5) * 5, 0, 0);
+          } else {
+            // 1h and any other resolution — floor to UTC hour
+            floored = new Date(raw);
+            floored.setUTCMinutes(0, 0, 0);
+          }
           formatted.push({
-            // Trả về ISO string UTC — frontend sẽ tự convert sang múi giờ browser
-            time: new Date(datapoint.timestamp).toISOString(),
+            time: floored.toISOString(),
             value: datapoint.value || 0,
           });
         }
