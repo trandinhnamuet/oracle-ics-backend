@@ -14,6 +14,7 @@ import { EmailModule } from '../modules/email/email.module';
 import { AdminLoginHistory } from '../entities/admin-login-history.entity';
 import { AdminLoginHistoryService } from './admin-login-history.service';
 import { AdminLoginHistoryController } from './admin-login-history.controller';
+import { OtpModule } from '../modules/otp/otp.module';
 
 @Module({
   imports: [
@@ -29,6 +30,7 @@ import { AdminLoginHistoryController } from './admin-login-history.controller';
       inject: [ConfigService],
     }),
     EmailModule,
+    OtpModule,
   ],
   providers: [AuthService, JwtStrategy, GoogleStrategy, SessionCleanupService, AdminLoginHistoryService],
   controllers: [AuthController, AdminLoginHistoryController],
