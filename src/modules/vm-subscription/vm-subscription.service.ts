@@ -757,13 +757,13 @@ export class VmSubscriptionService {
 
     const key = `${userId}:${subscriptionId}:${action}`;
 
-    // Enforce 60-second cooldown between OTP sends (checked BEFORE hourly counter so rapid
+    // Enforce 30-second cooldown between OTP sends (checked BEFORE hourly counter so rapid
     // clicks on "resend" don't burn hourly quota without actually sending an email)
     const existing = this.actionOtpStore.get(key);
     if (existing) {
       const secondsSinceSent = (Date.now() - existing.sentAt.getTime()) / 1000;
-      if (secondsSinceSent < 60) {
-        const remaining = Math.ceil(60 - secondsSinceSent);
+      if (secondsSinceSent < 30) {
+        const remaining = Math.ceil(30 - secondsSinceSent);
         throw new BadRequestException(
           `Please wait ${remaining} seconds before requesting a new OTP.`,
         );
