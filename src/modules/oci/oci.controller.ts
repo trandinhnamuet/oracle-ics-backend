@@ -688,38 +688,86 @@ export class OciController {
    * OCI now returns epoch-aligned timestamps when [1m] MQL interval + resolution
    * param are used together, so no timestamp manipulation is needed here.
    */
+  /**
+   * Floor a Date to the nearest resolution boundary (UTC).
+   */
+  private floorToEpoch(date: Date, resolution: string): Date {
+    const d = new Date(date);
+    if (resolution === '1m') {
+      d.setUTCSeconds(0, 0);
+    } else if (resolution === '5m') {
+      d.setUTCMinutes(Math.floor(d.getUTCMinutes() / 5) * 5, 0, 0);
+    } else {
+      d.setUTCMinutes(0, 0, 0);
+    }
+    return d;
+  }
+
+  /**
+   * Convert OCI agent-aligned metric buckets to epoch-aligned data points.
+   *
+   * OCI oci_computeagent metrics are bucketed from the monitoring agent's start
+   * time, NOT from UTC epoch.  A VM that started at :30 produces buckets
+   * 00:30-01:30, 01:30-02:30, …  The OCI Console, however, displays
+   * epoch-aligned hours (01:00-02:00, 02:00-03:00, …).
+   *
+   * To match, we interpolate between adjacent agent buckets:
+   *   epoch_value(01:00) = (O/H)*agent_value(00:30) + ((H-O)/H)*agent_value(01:30)
+   * where O = agent offset (30 min) and H = bucket width (60 min).
+   *
+   * If timestamps are already epoch-aligned (offset < 1 s), data is returned
+   * as-is with floored timestamps.
+   */
   private formatMetricsData(metrics: any[], resolution: string = '1h'): any[] {
     if (!metrics || metrics.length === 0) return [];
 
-    const formatted: any[] = [];
+    // 1. Collect raw data points
+    const raw: Array<{ time: number; value: number }> = [];
     for (const metric of metrics) {
       if (metric.aggregatedDatapoints) {
-        for (const datapoint of metric.aggregatedDatapoints) {
-          // OCI aligns metric timestamps to the monitoring agent's start time, not to
-          // UTC epoch. We floor each timestamp to the nearest resolution boundary so
-          // the chart displays clean :00 / :05 / :00 tick marks regardless of when
-          // the agent started (e.g. :30 → :00 for 1h resolution).
-          const raw = new Date(datapoint.timestamp);
-          let floored: Date;
-          if (resolution === '1m') {
-            floored = new Date(raw);
-            floored.setUTCSeconds(0, 0);
-          } else if (resolution === '5m') {
-            floored = new Date(raw);
-            floored.setUTCMinutes(Math.floor(raw.getUTCMinutes() / 5) * 5, 0, 0);
-          } else {
-            // 1h and any other resolution — floor to UTC hour
-            floored = new Date(raw);
-            floored.setUTCMinutes(0, 0, 0);
-          }
-          formatted.push({
-            time: floored.toISOString(),
-            value: datapoint.value || 0,
+        for (const dp of metric.aggregatedDatapoints) {
+          raw.push({
+            time: new Date(dp.timestamp).getTime(),
+            value: dp.value || 0,
           });
         }
       }
     }
+    raw.sort((a, b) => a.time - b.time);
+    if (raw.length === 0) return [];
 
-    return formatted;
+    // 2. Resolution in ms
+    const resMs =
+      resolution === '1m' ? 60_000 : resolution === '5m' ? 300_000 : 3_600_000;
+
+    // 3. Detect agent offset from first timestamp
+    const offset = raw[0].time % resMs; // ms from epoch boundary
+
+    // Already epoch-aligned (offset negligible) → just floor & return
+    if (offset < 1000 || resMs - offset < 1000) {
+      return raw.map((p) => ({
+        time: this.floorToEpoch(new Date(p.time), resolution).toISOString(),
+        value: p.value,
+      }));
+    }
+
+    // 4. Interpolate consecutive agent buckets → epoch-aligned values
+    //    wPrev = portion of previous agent bucket that overlaps the epoch bucket
+    //    wCurr = portion of current agent bucket that overlaps the epoch bucket
+    const wPrev = offset / resMs;
+    const wCurr = 1 - wPrev;
+
+    const result: any[] = [];
+    for (let i = 0; i < raw.length - 1; i++) {
+      // The epoch time between agent[i] and agent[i+1]
+      const epochTime = this.floorToEpoch(new Date(raw[i + 1].time), resolution);
+      const value = wPrev * raw[i].value + wCurr * raw[i + 1].value;
+      result.push({
+        time: epochTime.toISOString(),
+        value,
+      });
+    }
+
+    return result;
   }
 }
