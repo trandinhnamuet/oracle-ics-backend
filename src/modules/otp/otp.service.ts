@@ -76,15 +76,13 @@ export class OtpService {
       const now = new Date();
       const expiresAt = new Date(now.getTime() + this.OTP_EXPIRY_MINUTES * 60 * 1000);
 
-      // Enforce shared hourly limit before any DB/email work
-      this.checkAndRecordHourlySend(email);
-
       // Check existing record
       const existing = await this.emailVerificationRepository.findOne({
         where: { email },
       });
 
-      // Check resend cooldown
+      // Check resend cooldown BEFORE hourly counter so rapid resend clicks don't
+      // burn the hourly quota without actually dispatching an email.
       if (existing && existing.lastResendAt) {
         const timeSinceLastResend = now.getTime() - existing.lastResendAt.getTime();
         const cooldownMs = this.RESEND_COOLDOWN_SECONDS * 1000;
@@ -94,6 +92,9 @@ export class OtpService {
           throw new BadRequestException(`Please wait ${remainingSeconds} seconds before requesting new OTP`);
         }
       }
+
+      // Enforce shared hourly limit only when we're about to send an actual email.
+      this.checkAndRecordHourlySend(email);
 
       const otpCode = this.generateOtp();
 

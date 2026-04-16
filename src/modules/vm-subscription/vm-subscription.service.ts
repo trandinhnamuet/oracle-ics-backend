@@ -755,12 +755,10 @@ export class VmSubscriptionService {
     const userName =
       `${user.firstName || ''} ${user.lastName || ''}`.trim() || user.email;
 
-    // Enforce shared hourly limit (6 OTPs per hour across all OTP types)
-    this.otpService.checkAndRecordHourlySend(user.email);
-
     const key = `${userId}:${subscriptionId}:${action}`;
 
-    // Enforce 60-second cooldown between OTP sends
+    // Enforce 60-second cooldown between OTP sends (checked BEFORE hourly counter so rapid
+    // clicks on "resend" don't burn hourly quota without actually sending an email)
     const existing = this.actionOtpStore.get(key);
     if (existing) {
       const secondsSinceSent = (Date.now() - existing.sentAt.getTime()) / 1000;
@@ -771,6 +769,10 @@ export class VmSubscriptionService {
         );
       }
     }
+
+    // Enforce shared hourly limit (6 OTPs per hour across all OTP types).
+    // Must come AFTER the cooldown check so only genuine sends consume the quota.
+    this.otpService.checkAndRecordHourlySend(user.email);
 
     // Generate 6-digit numeric OTP
     const otp = Array.from({ length: 6 }, () => crypto.randomInt(0, 10)).join('');
