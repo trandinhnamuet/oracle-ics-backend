@@ -1920,6 +1920,154 @@ chmod 600 ~/.ssh/authorized_keys`;
   }
 
   /**
+   * List security lists in a VCN
+   */
+  async listSecurityLists(compartmentId: string, vcnId: string) {
+    try {
+      const request: oci.core.requests.ListSecurityListsRequest = {
+        compartmentId: compartmentId,
+        vcnId: vcnId,
+      };
+      const response = await this.virtualNetworkClient.listSecurityLists(request);
+      return response.items;
+    } catch (error) {
+      this.logger.error('Error listing security lists:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Delete a security list
+   */
+  async deleteSecurityList(securityListId: string) {
+    try {
+      const request: oci.core.requests.DeleteSecurityListRequest = {
+        securityListId: securityListId,
+      };
+      await this.virtualNetworkClient.deleteSecurityList(request);
+      this.logger.log(`Deleted security list: ${securityListId}`);
+    } catch (error) {
+      this.logger.error('Error deleting security list:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Delete a non-default route table
+   */
+  async deleteRouteTable(rtId: string) {
+    try {
+      const request: oci.core.requests.DeleteRouteTableRequest = {
+        rtId: rtId,
+      };
+      await this.virtualNetworkClient.deleteRouteTable(request);
+      this.logger.log(`Deleted route table: ${rtId}`);
+    } catch (error) {
+      this.logger.error('Error deleting route table:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * List NAT gateways in a VCN
+   */
+  async listNatGateways(compartmentId: string, vcnId: string) {
+    try {
+      const request: oci.core.requests.ListNatGatewaysRequest = {
+        compartmentId: compartmentId,
+        vcnId: vcnId,
+      };
+      const response = await this.virtualNetworkClient.listNatGateways(request);
+      return response.items;
+    } catch (error) {
+      this.logger.error('Error listing NAT gateways:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Delete a NAT gateway
+   */
+  async deleteNatGateway(natGatewayId: string) {
+    try {
+      const request: oci.core.requests.DeleteNatGatewayRequest = {
+        natGatewayId: natGatewayId,
+      };
+      await this.virtualNetworkClient.deleteNatGateway(request);
+      this.logger.log(`Deleted NAT gateway: ${natGatewayId}`);
+    } catch (error) {
+      this.logger.error('Error deleting NAT gateway:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * List service gateways in a compartment
+   */
+  async listServiceGateways(compartmentId: string, vcnId: string) {
+    try {
+      const request: oci.core.requests.ListServiceGatewaysRequest = {
+        compartmentId: compartmentId,
+        vcnId: vcnId,
+      };
+      const response = await this.virtualNetworkClient.listServiceGateways(request);
+      return response.items;
+    } catch (error) {
+      this.logger.error('Error listing service gateways:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Delete a service gateway
+   */
+  async deleteServiceGateway(serviceGatewayId: string) {
+    try {
+      const request: oci.core.requests.DeleteServiceGatewayRequest = {
+        serviceGatewayId: serviceGatewayId,
+      };
+      await this.virtualNetworkClient.deleteServiceGateway(request);
+      this.logger.log(`Deleted service gateway: ${serviceGatewayId}`);
+    } catch (error) {
+      this.logger.error('Error deleting service gateway:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * List local peering gateways in a VCN
+   */
+  async listLocalPeeringGateways(compartmentId: string, vcnId: string) {
+    try {
+      const request: oci.core.requests.ListLocalPeeringGatewaysRequest = {
+        compartmentId: compartmentId,
+        vcnId: vcnId,
+      };
+      const response = await this.virtualNetworkClient.listLocalPeeringGateways(request);
+      return response.items;
+    } catch (error) {
+      this.logger.error('Error listing local peering gateways:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Delete a local peering gateway
+   */
+  async deleteLocalPeeringGateway(localPeeringGatewayId: string) {
+    try {
+      const request: oci.core.requests.DeleteLocalPeeringGatewayRequest = {
+        localPeeringGatewayId: localPeeringGatewayId,
+      };
+      await this.virtualNetworkClient.deleteLocalPeeringGateway(request);
+      this.logger.log(`Deleted local peering gateway: ${localPeeringGatewayId}`);
+    } catch (error) {
+      this.logger.error('Error deleting local peering gateway:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Delete a compartment
    * @param compartmentId - The OCID of the compartment
    */
@@ -1973,7 +2121,7 @@ chmod 600 ~/.ssh/authorized_keys`;
   }
 
   /**
-   * Delete compartment and all its resources
+   * Delete compartment and all its resources (runs in background)
    * @param compartmentName - The name of the compartment to delete
    */
   async deleteCompartmentWithResources(compartmentName: string) {
@@ -1993,17 +2141,23 @@ chmod 600 ~/.ssh/authorized_keys`;
       for (const instance of instances) {
         if (instance.lifecycleState !== 'TERMINATED' && instance.lifecycleState !== 'TERMINATING') {
           this.logger.log(`Terminating instance: ${instance.displayName} (${instance.id})`);
-          await this.terminateInstance(instance.id, false);
+          try {
+            await this.terminateInstance(instance.id, false);
+          } catch (err) {
+            this.logger.warn(`Failed to terminate instance ${instance.id}, continuing: ${err.message}`);
+          }
         }
       }
       
       // Step 3: Wait for instances to terminate
-      if (instances.length > 0) {
+      const activeInstances = instances.filter(
+        i => i.lifecycleState !== 'TERMINATED' && i.lifecycleState !== 'TERMINATING'
+      );
+      if (activeInstances.length > 0) {
         this.logger.log('Waiting for instances to terminate...');
-        await this.sleep(30000); // Wait 30 seconds
+        await this.sleep(15000); // Wait 15 seconds initially
         
-        // Check if instances are terminated
-        let maxRetries = 10;
+        let maxRetries = 20;
         while (maxRetries > 0) {
           const currentInstances = await this.listInstances(compartmentId);
           const runningInstances = currentInstances.filter(
@@ -2032,41 +2186,136 @@ chmod 600 ~/.ssh/authorized_keys`;
         const subnets = await this.listSubnets(compartmentId, vcn.id);
         for (const subnet of subnets) {
           this.logger.log(`Deleting subnet: ${subnet.displayName}`);
-          await this.deleteSubnet(subnet.id);
+          try {
+            await this.deleteSubnet(subnet.id);
+          } catch (err) {
+            this.logger.warn(`Failed to delete subnet ${subnet.id}: ${err.message}`);
+          }
         }
         
         // Wait for subnets to be deleted
-        await this.sleep(5000);
+        if (subnets.length > 0) {
+          await this.sleep(5000);
+        }
         
-        // Step 4.2: Clear route tables (remove references to Internet Gateways)
+        // Step 4.2: Clear route tables (remove references to gateways)
         this.logger.log('Clearing route tables...');
         const routeTables = await this.listRouteTables(compartmentId, vcn.id);
         for (const rt of routeTables) {
           this.logger.log(`Clearing route table: ${rt.displayName}`);
-          await this.clearRouteTable(rt.id);
+          try {
+            await this.clearRouteTable(rt.id);
+          } catch (err) {
+            this.logger.warn(`Failed to clear route table ${rt.id}: ${err.message}`);
+          }
         }
         
-        // Wait for route tables to be updated
-        await this.sleep(3000);
+        // Step 4.3: Delete non-default security lists
+        this.logger.log('Deleting security lists...');
+        try {
+          const securityLists = await this.listSecurityLists(compartmentId, vcn.id);
+          for (const sl of securityLists) {
+            // Default security list is deleted with the VCN, skip it
+            if (sl.displayName?.startsWith('Default Security List')) continue;
+            this.logger.log(`Deleting security list: ${sl.displayName}`);
+            try {
+              await this.deleteSecurityList(sl.id);
+            } catch (err) {
+              this.logger.warn(`Failed to delete security list ${sl.id}: ${err.message}`);
+            }
+          }
+        } catch (err) {
+          this.logger.warn(`Failed to list/delete security lists: ${err.message}`);
+        }
+
+        // Step 4.4: Delete non-default route tables
+        this.logger.log('Deleting non-default route tables...');
+        for (const rt of routeTables) {
+          if (rt.displayName?.startsWith('Default Route Table')) continue;
+          this.logger.log(`Deleting route table: ${rt.displayName}`);
+          try {
+            await this.deleteRouteTable(rt.id);
+          } catch (err) {
+            this.logger.warn(`Failed to delete route table ${rt.id}: ${err.message}`);
+          }
+        }
         
-        // Step 4.3: Now delete internet gateways (no longer referenced)
+        // Step 4.5: Delete internet gateways (no longer referenced by route tables)
         const igws = await this.listInternetGateways(compartmentId, vcn.id);
         for (const igw of igws) {
           this.logger.log(`Deleting Internet Gateway: ${igw.displayName}`);
-          await this.deleteInternetGateway(igw.id);
+          try {
+            await this.deleteInternetGateway(igw.id);
+          } catch (err) {
+            this.logger.warn(`Failed to delete IGW ${igw.id}: ${err.message}`);
+          }
+        }
+
+        // Step 4.6: Delete NAT gateways
+        this.logger.log('Deleting NAT gateways...');
+        try {
+          const natGateways = await this.listNatGateways(compartmentId, vcn.id);
+          for (const ng of natGateways) {
+            this.logger.log(`Deleting NAT Gateway: ${ng.displayName}`);
+            try {
+              await this.deleteNatGateway(ng.id);
+            } catch (err) {
+              this.logger.warn(`Failed to delete NAT Gateway ${ng.id}: ${err.message}`);
+            }
+          }
+        } catch (err) {
+          this.logger.warn(`Failed to list/delete NAT gateways: ${err.message}`);
+        }
+
+        // Step 4.7: Delete service gateways
+        this.logger.log('Deleting service gateways...');
+        try {
+          const serviceGateways = await this.listServiceGateways(compartmentId, vcn.id);
+          for (const sg of serviceGateways) {
+            this.logger.log(`Deleting Service Gateway: ${sg.displayName}`);
+            try {
+              await this.deleteServiceGateway(sg.id);
+            } catch (err) {
+              this.logger.warn(`Failed to delete Service Gateway ${sg.id}: ${err.message}`);
+            }
+          }
+        } catch (err) {
+          this.logger.warn(`Failed to list/delete service gateways: ${err.message}`);
+        }
+
+        // Step 4.8: Delete local peering gateways
+        this.logger.log('Deleting local peering gateways...');
+        try {
+          const lpgs = await this.listLocalPeeringGateways(compartmentId, vcn.id);
+          for (const lpg of lpgs) {
+            this.logger.log(`Deleting Local Peering Gateway: ${lpg.displayName}`);
+            try {
+              await this.deleteLocalPeeringGateway(lpg.id);
+            } catch (err) {
+              this.logger.warn(`Failed to delete LPG ${lpg.id}: ${err.message}`);
+            }
+          }
+        } catch (err) {
+          this.logger.warn(`Failed to list/delete local peering gateways: ${err.message}`);
         }
         
-        // Wait for IGWs to be deleted
+        // Wait for all sub-resources to be deleted
         await this.sleep(5000);
         
-        // Step 4.4: Delete VCN
+        // Step 4.9: Delete VCN
         this.logger.log(`Deleting VCN: ${vcn.displayName}`);
-        await this.deleteVcn(vcn.id);
+        try {
+          await this.deleteVcn(vcn.id);
+        } catch (err) {
+          this.logger.warn(`Failed to delete VCN ${vcn.id}: ${err.message}`);
+        }
       }
       
       // Step 5: Wait before deleting compartment
-      this.logger.log('Waiting before deleting compartment...');
-      await this.sleep(10000);
+      if (vcns.length > 0) {
+        this.logger.log('Waiting for VCN resources to finalize...');
+        await this.sleep(5000);
+      }
       
       // Step 6: Delete compartment
       this.logger.log(`Deleting compartment: ${compartmentName}`);
@@ -2844,11 +3093,17 @@ chmod 600 ~/.ssh/authorized_keys`;
             winrmErr.message.toLowerCase().includes('401') ||
             winrmErr.message.toLowerCase().includes('auth')
           );
-          if (!isAuthError || attempt === winrmMaxAttempts) {
+          if (attempt === winrmMaxAttempts) {
+            this.logger.warn(`⚠️ WinRM strategy failed (attempt ${attempt}/${winrmMaxAttempts}): ${winrmErr.message}`);
+            break;
+          }
+          // For non-initialized VMs, always retry: the must-change-password flag causes
+          // NTLM rejection → basic-auth timeout cascade, so error type is unreliable.
+          if (passwordInitialized && !isAuthError) {
             this.logger.warn(`⚠️ WinRM strategy failed (attempt ${attempt}): ${winrmErr.message}`);
             break;
           }
-          this.logger.log(`🔄 WinRM auth failed (attempt ${attempt}) — likely must-change-password flag still active, will retry...`);
+          this.logger.log(`🔄 WinRM failed (attempt ${attempt}/${winrmMaxAttempts}) — ${isAuthError ? 'auth rejected, must-change-password flag may still be active' : 'connection issue, will retry'} — retrying...`);
         }
       }
       // Note: WinRM ports (5985+5986) are intentionally kept open for future resets.
@@ -3402,6 +3657,18 @@ chmod 600 ~/.ssh/authorized_keys`;
           stderrParsed.toLowerCase().includes('2245')
         ) {
           isPasswordRejected = true;
+        }
+        // When the Python script tried multiple auth methods (NTLM, basic), the final
+        // error may be a timeout from the basic-auth fallback while the real issue was
+        // NTLM credential rejection (must-change-password flag). Surface the auth error
+        // so the retry loop in runWindowsPasswordReset correctly identifies it.
+        if (parsed.attempts && Array.isArray(parsed.attempts)) {
+          const hasCredentialRejection = parsed.attempts.some((a: any) =>
+            a.error && a.error.toLowerCase().includes('credentials were rejected'),
+          );
+          if (hasCredentialRejection && !errorMsg.toLowerCase().includes('rejected')) {
+            errorMsg = `the specified credentials were rejected by the server (fallback: ${errorMsg})`;
+          }
         }
       } catch { /* ignore parse error */ }
       if (isPasswordRejected) {

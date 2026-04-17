@@ -159,7 +159,7 @@ export class VmSubscriptionController {
     console.log('====================================================\n');
 
     const userId = req.user.id;
-    const jobId = this.vmSubscriptionService.startResetWindowsPasswordAsync(
+    const jobId = await this.vmSubscriptionService.startResetWindowsPasswordAsync(
       subscriptionId,
       userId,
       body?.newPassword,

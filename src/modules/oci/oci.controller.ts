@@ -561,28 +561,35 @@ export class OciController {
 
   /**
    * DELETE /oci/compartment/:compartmentName
-   * Delete a compartment and all its resources
+   * Delete a compartment and all its resources (async - returns immediately)
    * ⚠️ WARNING: This will permanently delete all instances, VCNs, and other resources!
    */
   @Delete('compartment/:compartmentName')
-  @HttpCode(HttpStatus.OK)
+  @HttpCode(HttpStatus.ACCEPTED)
   async deleteCompartment(@Param('compartmentName') compartmentName: string) {
     try {
       this.logger.warn(`⚠️  DELETING COMPARTMENT: ${compartmentName} and ALL resources inside`);
       
-      const result = await this.ociService.deleteCompartmentWithResources(compartmentName);
+      // Validate compartment exists before returning 202
+      const compartment = await this.ociService.findCompartmentByName(compartmentName);
+
+      // Fire-and-forget: start deletion in background, return immediately
+      this.ociService.deleteCompartmentWithResources(compartmentName).catch(error => {
+        this.logger.error(`Background deletion failed for compartment ${compartmentName}:`, error);
+      });
 
       return {
         success: true,
-        message: `Compartment "${compartmentName}" and all resources deleted successfully`,
-        data: result,
+        message: `Deletion of compartment "${compartmentName}" has been initiated. It may take a few minutes to complete.`,
+        data: {
+          compartmentName: compartment.name,
+          compartmentId: compartment.id,
+          status: 'DELETING',
+        },
       };
     } catch (error) {
       this.logger.error('Error in deleteCompartment:', error);
-      return {
-        success: false,
-        error: error.message,
-      };
+      throw error;
     }
   }
 
