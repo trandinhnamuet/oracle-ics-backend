@@ -54,6 +54,9 @@ export class AuthService {
     // Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
 
+    // Enforce shared hourly OTP limit before generating/sending (counts the registration OTP)
+    this.otpService.checkAndRecordHourlySend(email);
+
     // Generate 6-digit OTP
     const otp = this.generateOtp();
     const otpExpiresAt = new Date();
