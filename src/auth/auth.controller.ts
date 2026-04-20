@@ -1,6 +1,7 @@
 import { Controller, Post, Body, Res, UseGuards, Get, Req, Headers, Logger, UnauthorizedException, HttpCode, HttpStatus } from '@nestjs/common';
 import { Response, Request } from 'express';
 import { AuthGuard } from '@nestjs/passport';
+import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { ConfigService } from '@nestjs/config';
 import { LoginDto, RegisterDto, VerifyOtpDto, ResendOtpDto, ForgotPasswordDto, VerifyResetOtpDto, ResetPasswordDto } from './dto/auth.dto';
@@ -50,6 +51,7 @@ export class AuthController {
   }
 
   @Post('register')
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   async register(
     @Body() registerDto: RegisterDto,
     @Headers('accept-language') acceptLang?: string,
@@ -60,16 +62,18 @@ export class AuthController {
   }
 
   @Post('verify-otp')
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   async verifyOtp(
     @Body() verifyOtpDto: VerifyOtpDto,
     @Headers('accept-language') acceptLang?: string,
   ) {
     const lang = extractLang(acceptLang);
-    this.logger.log(`Verify OTP request: ${JSON.stringify(verifyOtpDto)}`);
+    this.logger.log(`Verify OTP request for email: ${verifyOtpDto.email}`);
     return await this.authService.verifyOtp(verifyOtpDto, lang);
   }
 
   @Post('resend-otp')
+  @Throttle({ default: { limit: 3, ttl: 60000 } })
   async resendOtp(
     @Body() resendOtpDto: ResendOtpDto,
     @Headers('accept-language') acceptLang?: string,
@@ -80,6 +84,7 @@ export class AuthController {
   }
 
   @Post('forgot-password')
+  @Throttle({ default: { limit: 3, ttl: 60000 } })
   async forgotPassword(
     @Body() forgotPasswordDto: ForgotPasswordDto,
     @Headers('accept-language') acceptLang?: string,
@@ -107,6 +112,7 @@ export class AuthController {
   }
 
   @Post('login')
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
   @HttpCode(HttpStatus.OK)
   async login(
     @Body() loginDto: LoginDto, 

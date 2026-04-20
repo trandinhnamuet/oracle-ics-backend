@@ -12,19 +12,20 @@ import { UserWalletService } from './user-wallet.service';
 import { CreateUserWalletDto } from './dto/create-user-wallet.dto';
 import { UpdateUserWalletDto } from './dto/update-user-wallet.dto';
 import { JwtAuthGuard } from '../../auth/jwt-auth.guard';
+import { AdminGuard } from '../../auth/admin.guard';
 
 @Controller('user-wallets')
 export class UserWalletController {
   constructor(private readonly userWalletService: UserWalletService) {}
 
   @Post()
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async create(@Body() createUserWalletDto: CreateUserWalletDto) {
     return await this.userWalletService.create(createUserWalletDto);
   }
 
   @Get()
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async findAll() {
     return await this.userWalletService.findAll();
   }
@@ -42,25 +43,25 @@ export class UserWalletController {
   }
 
   @Get('user/:userId')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async findByUserId(@Param('userId') userId: string) {
     return await this.userWalletService.findByUserId(parseInt(userId));
   }
 
   @Get('user/:userId/balance')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async getUserBalance(@Param('userId') userId: string) {
     return await this.userWalletService.getBalance(parseInt(userId));
   }
 
   @Get(':id')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async findOne(@Param('id') id: string) {
     return await this.userWalletService.findOne(parseInt(id));
   }
 
   @Patch(':id')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async update(
     @Param('id') id: string,
     @Body() updateUserWalletDto: UpdateUserWalletDto,
@@ -69,13 +70,13 @@ export class UserWalletController {
   }
 
   @Patch(':id/deactivate')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async deactivate(@Param('id') id: string) {
     return await this.userWalletService.deactivate(parseInt(id));
   }
 
   @Patch(':id/activate')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async activate(@Param('id') id: string) {
     return await this.userWalletService.activate(parseInt(id));
   }

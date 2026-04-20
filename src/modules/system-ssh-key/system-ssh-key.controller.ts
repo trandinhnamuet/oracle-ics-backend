@@ -1,12 +1,13 @@
 import { Controller, Get, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../../auth/jwt-auth.guard';
+import { AdminGuard } from '../../auth/admin.guard';
 import { SystemSshKeyService } from './system-ssh-key.service';
 
 /**
  * Controller for managing system SSH keys
  */
 @Controller('system-ssh-key')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, AdminGuard)
 export class SystemSshKeyController {
   constructor(private readonly systemSshKeyService: SystemSshKeyService) {}
 
@@ -23,17 +24,7 @@ export class SystemSshKeyController {
     publicKey: string;
     fingerprint: string;
   }> {
-    console.log('\n🔐 API CALL: GET /system-ssh-key/admin-private-key');
-    console.log('=' .repeat(80));
-    
     const adminKey = await this.systemSshKeyService.getAdminKey();
-    
-    console.log('\n📤 Preparing response...');
-    console.log(`   Public key: ${adminKey.publicKey.substring(0, 80)}...`);
-    console.log(`   Public key starts with: ${adminKey.publicKey.substring(0, 20)}`);
-    console.log(`   Private key starts with: ${adminKey.privateKey.substring(0, 50)}`);
-    console.log(`   Fingerprint: ${adminKey.fingerprint}`);
-    console.log('=' .repeat(80) + '\n');
     
     return {
       privateKey: adminKey.privateKey,

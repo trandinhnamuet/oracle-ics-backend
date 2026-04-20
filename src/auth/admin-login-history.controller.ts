@@ -1,6 +1,7 @@
 import { Controller, Get, Post, Body, Param, Query, UseGuards, Logger, UseFilters } from '@nestjs/common';
 import { AdminLoginHistoryService } from './admin-login-history.service';
 import { JwtAuthGuard } from './jwt-auth.guard';
+import { AdminGuard } from './admin.guard';
 import {
   CreateAdminLoginHistoryDto,
   AdminLoginHistoryQueryDto,
@@ -18,6 +19,7 @@ export class AdminLoginHistoryController {
    * Record a new login
    */
   @Post('record')
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async recordLogin(@Body() createDto: CreateAdminLoginHistoryDto) {
     this.logger.log(`Recording login for admin ${createDto.adminId}`);
     return await this.adminLoginHistoryService.recordLogin(createDto);
@@ -27,7 +29,7 @@ export class AdminLoginHistoryController {
    * Get all login history (admin only)
    */
   @Get('all')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async getLoginHistory(@Query() query: AdminLoginHistoryQueryDto) {
     this.logger.log(`Fetching login history with filters: ${JSON.stringify(query)}`);
     return await this.adminLoginHistoryService.getLoginHistory(query);
@@ -37,7 +39,7 @@ export class AdminLoginHistoryController {
    * Get login history for specific admin (admin only)
    */
   @Get('admin/:adminId')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async getAdminLoginHistory(
     @Param('adminId') adminId: number,
     @Query() query: AdminLoginHistoryQueryDto,
@@ -50,7 +52,7 @@ export class AdminLoginHistoryController {
    * Get single login record
    */
   @Get(':id')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async getLoginById(@Param('id') id: number) {
     this.logger.log(`Fetching login record ${id}`);
     return await this.adminLoginHistoryService.getLoginById(id);
@@ -60,7 +62,7 @@ export class AdminLoginHistoryController {
    * Get recent logins for admin
    */
   @Get('admin/:adminId/recent')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async getRecentLogins(@Param('adminId') adminId: number, @Query('days') days: number = 30) {
     this.logger.log(`Fetching recent logins for admin ${adminId} (last ${days} days)`);
     return await this.adminLoginHistoryService.getRecentLogins(adminId, days);
@@ -70,7 +72,7 @@ export class AdminLoginHistoryController {
    * Get login statistics for admin
    */
   @Get('admin/:adminId/statistics')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async getLoginStatistics(
     @Param('adminId') adminId: number,
     @Query('days') days: number = 30,
@@ -83,7 +85,7 @@ export class AdminLoginHistoryController {
    * Get suspicious login attempts
    */
   @Get('admin/:adminId/suspicious')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async getSuspiciousAttempts(@Param('adminId') adminId: number) {
     this.logger.log(`Fetching suspicious attempts for admin ${adminId}`);
     return await this.adminLoginHistoryService.getSuspiciousAttempts(adminId);
@@ -93,6 +95,7 @@ export class AdminLoginHistoryController {
    * Record logout
    */
   @Post(':sessionId/logout')
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async recordLogout(@Param('sessionId') sessionId: string, @Body() body: { logoutTime: string }) {
     this.logger.log(`Recording logout for session ${sessionId}`);
     await this.adminLoginHistoryService.recordLogout(sessionId, new Date(body.logoutTime));
