@@ -148,6 +148,15 @@ export class VmSubscriptionService {
   }
 
   /**
+   * Parse a numeric value from a cloud_package string field (e.g. "2 OCPU" → 2, "12 GB" → 12)
+   */
+  private parsePackageNumericValue(value: string | null | undefined, defaultValue: number): number {
+    if (!value) return defaultValue;
+    const match = value.match(/(\d+(?:\.\d+)?)/);
+    return match ? parseFloat(match[1]) : defaultValue;
+  }
+
+  /**
    * Configure VM for a subscription (new or reconfigure)
    */
   async configureSubscriptionVm(
@@ -160,6 +169,23 @@ export class VmSubscriptionService {
 
     // Step 1: Check subscription eligibility
     const subscription = await this.checkSubscriptionEligibility(subscriptionId, userId);
+
+    // Step 1.5: Derive VM specs from cloud_package (enforce subscription limits)
+    const cloudPackage = subscription.cloudPackage;
+    if (!cloudPackage) {
+      throw new BadRequestException('Subscription does not have an associated cloud package');
+    }
+
+    const packageOcpus = this.parsePackageNumericValue(cloudPackage.cpu, 1);
+    const packageMemoryInGBs = this.parsePackageNumericValue(cloudPackage.ram, 4);
+    const packageBootVolumeSizeInGBs = this.parsePackageNumericValue(cloudPackage.memory, 50);
+
+    this.logger.log(`Cloud package specs - CPU: ${packageOcpus}, RAM: ${packageMemoryInGBs}GB, Storage: ${packageBootVolumeSizeInGBs}GB`);
+
+    // Override DTO values with cloud_package specs
+    configureVmDto.ocpus = packageOcpus;
+    configureVmDto.memoryInGBs = packageMemoryInGBs;
+    configureVmDto.bootVolumeSizeInGBs = packageBootVolumeSizeInGBs < 50 ? 50 : packageBootVolumeSizeInGBs;
 
     // Update configuration status to 'configuring'
     subscription.configuration_status = 'configuring';
