@@ -647,7 +647,7 @@ export class OciController {
       const resolution =
         timeRange === '1h' ? '1m' : timeRange === '6h' ? '5m' : '1h';
 
-      const [cpu, memory, networkIn, networkOut, diskRead, diskWrite] =
+      let [cpu, memory, networkIn, networkOut, diskRead, diskWrite] =
         await Promise.all([
           this.ociService.getCpuUtilization(instanceId, startTime, endTime),
           this.ociService.getMemoryUtilization(instanceId, startTime, endTime),
@@ -657,18 +657,44 @@ export class OciController {
           this.ociService.getDiskWriteBytes(instanceId, startTime, endTime),
         ]);
 
+      // For long time ranges that use hourly resolution, OCI may return no data for
+      // newly provisioned instances (< a few hours old) because no complete hourly
+      // aggregation bucket exists yet in oci_computeagent namespace.
+      // Fall back to querying the last 1 hour at 1-minute resolution so the chart
+      // always shows recent activity when the VM is running.
+      let effectiveResolution = resolution;
+      const primaryEmpty = cpu.length === 0 && memory.length === 0;
+      if (primaryEmpty && resolution === '1h') {
+        const fbStart = new Date(endTime.getTime() - 3600 * 1000);
+        fbStart.setSeconds(0, 0);
+        effectiveResolution = '1m';
+        [cpu, memory, networkIn, networkOut, diskRead, diskWrite] =
+          await Promise.all([
+            this.ociService.getCpuUtilization(instanceId, fbStart, endTime),
+            this.ociService.getMemoryUtilization(instanceId, fbStart, endTime),
+            this.ociService.getNetworkBytesIn(instanceId, fbStart, endTime),
+            this.ociService.getNetworkBytesOut(instanceId, fbStart, endTime),
+            this.ociService.getDiskReadBytes(instanceId, fbStart, endTime),
+            this.ociService.getDiskWriteBytes(instanceId, fbStart, endTime),
+          ]);
+        this.logger.log(
+          `[METRICS] Primary ${resolution}/7d query returned no data for ${instanceId}; ` +
+          `fell back to last 1h at 1m resolution`,
+        );
+      }
+
       return {
         success: true,
         data: {
-          cpu: this.formatMetricsData(cpu, resolution),
-          memory: this.formatMetricsData(memory, resolution),
+          cpu: this.formatMetricsData(cpu, effectiveResolution),
+          memory: this.formatMetricsData(memory, effectiveResolution),
           network: {
-            in: this.formatMetricsData(networkIn, resolution),
-            out: this.formatMetricsData(networkOut, resolution),
+            in: this.formatMetricsData(networkIn, effectiveResolution),
+            out: this.formatMetricsData(networkOut, effectiveResolution),
           },
           disk: {
-            read: this.formatMetricsData(diskRead, resolution),
-            write: this.formatMetricsData(diskWrite, resolution),
+            read: this.formatMetricsData(diskRead, effectiveResolution),
+            write: this.formatMetricsData(diskWrite, effectiveResolution),
           },
         },
       };
