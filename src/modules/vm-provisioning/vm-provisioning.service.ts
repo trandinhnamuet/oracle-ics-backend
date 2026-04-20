@@ -28,12 +28,21 @@ export class VmProvisioningService {
   private transporter: nodemailer.Transporter;
 
   // Fallback shapes ordered by preference (for capacity issues)
-  private readonly fallbackShapes = [
+  // Tách biệt ARM và x86 để tránh fallback sai architecture
+  private readonly fallbackShapesArm = [
+    'VM.Standard.A1.Flex',        // ARM Always Free flex
+  ];
+
+  private readonly fallbackShapesX86 = [
     'VM.Standard.E2.1.Micro',    // x86 Always Free micro
     'VM.Standard.E3.Flex',        // AMD EPYC 3rd Gen flexible
     'VM.Standard3.Flex',          // AMD EPYC 4th Gen flexible
     'VM.Standard2.1',             // Intel Xeon standard
   ];
+
+  private isArmShape(shape: string): boolean {
+    return shape.includes('A1.Flex') || shape.includes('A2.Flex');
+  }
 
   constructor(
     @InjectRepository(User)
@@ -155,13 +164,15 @@ export class VmProvisioningService {
       let usedShape = createVmDto.shape;
       let launchError: any = null;
 
-      // Build list of shapes to try: requested shape first, then fallbacks
+      // Build list of shapes to try: requested shape first, then fallbacks CÙNG architecture
+      const isArm = this.isArmShape(createVmDto.shape);
+      const fallbackPool = isArm ? this.fallbackShapesArm : this.fallbackShapesX86;
       const shapesToTry = [
         createVmDto.shape,
-        ...this.fallbackShapes.filter(s => s !== createVmDto.shape)
+        ...fallbackPool.filter(s => s !== createVmDto.shape)
       ];
 
-      this.logger.log(`Launching instance in OCI with shape priority: ${shapesToTry.join(' -> ')}`);
+      this.logger.log(`Launching instance in OCI with shape priority: ${shapesToTry.join(' -> ')} (architecture: ${isArm ? 'ARM' : 'x86'})`);
 
       // Track if we encountered any shape incompatibility errors
       let hasIncompatibilityError = false;
