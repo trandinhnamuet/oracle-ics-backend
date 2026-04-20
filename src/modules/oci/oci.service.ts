@@ -3069,8 +3069,8 @@ chmod 600 ~/.ssh/authorized_keys`;
       // immediately via `net user opc /logonpasswordchg:no`, plus a Scheduled Task
       // as safety net (fires every 2 min for 1 hour).  We retry WinRM a few times
       // to give the flag-clearing a chance in case of timing issues.
-      const winrmMaxAttempts = passwordInitialized ? 1 : 3;
-      const winrmRetryDelays = [0, 30_000, 45_000]; // total ~75s of retries
+      const winrmMaxAttempts = passwordInitialized ? 2 : 3;
+      const winrmRetryDelays = [0, 15_000, 45_000]; // initialized: 15s gap; fresh VM: 30s+45s
 
       for (let attempt = 1; attempt <= winrmMaxAttempts; attempt++) {
         try {
@@ -3099,8 +3099,12 @@ chmod 600 ~/.ssh/authorized_keys`;
           }
           // For non-initialized VMs, always retry: the must-change-password flag causes
           // NTLM rejection → basic-auth timeout cascade, so error type is unreliable.
-          if (passwordInitialized && !isAuthError) {
-            this.logger.warn(`⚠️ WinRM strategy failed (attempt ${attempt}): ${winrmErr.message}`);
+          // For initialized VMs: also retry transient drops (RemoteDisconnected, Connection aborted)
+          // which occur intermittently on Windows Server 2025 and are not credential errors.
+          const isTransientDrop = !!(winrmErr.message?.toLowerCase().includes('remotedisconnected') ||
+            winrmErr.message?.toLowerCase().includes('connection aborted'));
+          if (passwordInitialized && !isAuthError && !isTransientDrop) {
+            this.logger.warn(`⚠️ WinRM sttrategy failed (attempt ${attempt}): ${winrmErr.message}`);
             break;
           }
           this.logger.log(`🔄 WinRM failed (attempt ${attempt}/${winrmMaxAttempts}) — ${isAuthError ? 'auth rejected, must-change-password flag may still be active' : 'connection issue, will retry'} — retrying...`);
