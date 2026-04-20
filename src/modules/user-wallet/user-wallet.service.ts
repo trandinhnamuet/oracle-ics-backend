@@ -176,27 +176,58 @@ export class UserWalletService {
   }
 
   async addBalance(userId: number, amount: number): Promise<UserWallet> {
-    // Kiểm tra và tạo wallet nếu chưa có (sử dụng findByUserId đã có logic tạo wallet)
-    const wallet = await this.findByUserId(userId);
-    const currentBalance = parseFloat(wallet.balance.toString());
-    const addAmount = parseFloat(amount.toString());
-    wallet.balance = currentBalance + addAmount;
-    return await this.userWalletRepository.save(wallet);
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+    try {
+      const wallet = await queryRunner.manager.findOne(UserWallet, {
+        where: { user_id: userId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!wallet) {
+        throw new NotFoundException(`Wallet not found for user ${userId}`);
+      }
+      const currentBalance = parseFloat(wallet.balance.toString());
+      const addAmount = parseFloat(amount.toString());
+      wallet.balance = currentBalance + addAmount;
+      const saved = await queryRunner.manager.save(wallet);
+      await queryRunner.commitTransaction();
+      return saved;
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      throw error;
+    } finally {
+      await queryRunner.release();
+    }
   }
 
   async deductBalance(userId: number, amount: number): Promise<UserWallet> {
-    // Kiểm tra và tạo wallet nếu chưa có (sử dụng findByUserId đã có logic tạo wallet)
-    const wallet = await this.findByUserId(userId);
-    
-    const currentBalance = parseFloat(wallet.balance.toString());
-    const deductAmount = parseFloat(amount.toString());
-    
-    if (currentBalance < deductAmount) {
-      throw new ConflictException('Insufficient balance');
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+    try {
+      const wallet = await queryRunner.manager.findOne(UserWallet, {
+        where: { user_id: userId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!wallet) {
+        throw new NotFoundException(`Wallet not found for user ${userId}`);
+      }
+      const currentBalance = parseFloat(wallet.balance.toString());
+      const deductAmount = parseFloat(amount.toString());
+      if (currentBalance < deductAmount) {
+        throw new ConflictException('Insufficient balance');
+      }
+      wallet.balance = currentBalance - deductAmount;
+      const saved = await queryRunner.manager.save(wallet);
+      await queryRunner.commitTransaction();
+      return saved;
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      throw error;
+    } finally {
+      await queryRunner.release();
     }
-    
-    wallet.balance = currentBalance - deductAmount;
-    return await this.userWalletRepository.save(wallet);
   }
 
   async getBalance(userId: number): Promise<{ balance: number }> {

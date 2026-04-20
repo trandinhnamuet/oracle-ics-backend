@@ -7,6 +7,7 @@ import { CorsOptions } from '@nestjs/common/interfaces/external/cors-options.int
 import { ValidationPipe, ClassSerializerInterceptor } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import cookieParser from 'cookie-parser';
+import helmet from 'helmet';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { json, urlencoded } from 'express';
 import { join } from 'path';
@@ -26,10 +27,10 @@ pgTypes.setTypeParser(1184, (val: string) => new Date(val))                     
 
 // Debug: Check env vars loaded
 console.log('📝 Environment check:');
-console.log(`DB_HOST: ${process.env.DB_HOST}`);
-console.log(`DB_PORT: ${process.env.DB_PORT}`);
-console.log(`DB_USERNAME: ${process.env.DB_USERNAME}`);
-console.log(`DB_NAME: ${process.env.DB_NAME}`);
+console.log(`DB_HOST: ${process.env.DB_HOST ? '***' : 'NOT SET'}`);
+console.log(`DB_PORT: ${process.env.DB_PORT ? '***' : 'NOT SET'}`);
+console.log(`DB_USERNAME: ${process.env.DB_USERNAME ? '***' : 'NOT SET'}`);
+console.log(`DB_NAME: ${process.env.DB_NAME ? '***' : 'NOT SET'}`);
 console.log(`DB_PASSWORD: ${process.env.DB_PASSWORD ? '***' : 'NOT SET'}`);
 console.log('');
 
@@ -57,9 +58,8 @@ async function bootstrap() {
   app.use(json({ limit: '10mb' }));
   app.use(urlencoded({ limit: '10mb', extended: true }));
 
-  // Trust proxy - CRITICAL for getting real IP behind nginx/load balancer
-  // This tells Express to trust the X-Forwarded-* headers
-  app.set('trust proxy', true);
+  // Trust proxy - only trust first reverse proxy (nginx)
+  app.set('trust proxy', 'loopback');
 
   // Serve static files from uploads directory
   app.useStaticAssets(join(__dirname, '..', 'uploads'), {
@@ -69,13 +69,16 @@ async function bootstrap() {
   // Use cookie parser
   app.use(cookieParser());
 
+  // Security headers
+  app.use(helmet());
+
   // Global class serializer interceptor for transforming DTOs
   app.useGlobalInterceptors(new ClassSerializerInterceptor(app.get(Reflector)));
 
   // Global validation pipe with transformers
   app.useGlobalPipes(new ValidationPipe({
     whitelist: true,
-    forbidNonWhitelisted: false,
+    forbidNonWhitelisted: true,
     transform: true,
     transformOptions: {
       enableImplicitConversion: true,

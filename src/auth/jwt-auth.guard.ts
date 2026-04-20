@@ -12,7 +12,6 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
   handleRequest(err: any, user: any, info: any) {
     // Handle token expired error
     if (info?.message === 'jwt expired') {
-      console.log('🔴 Token expired, returning 401');
       throw new UnauthorizedException('Access token has expired. Please refresh.');
     }
     

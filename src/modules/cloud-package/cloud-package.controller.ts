@@ -13,13 +13,14 @@ import { CloudPackageService } from './cloud-package.service';
 import { CreateCloudPackageDto } from './dto/create-cloud-package.dto';
 import { UpdateCloudPackageDto } from './dto/update-cloud-package.dto';
 import { JwtAuthGuard } from '../../auth/jwt-auth.guard';
+import { AdminGuard } from '../../auth/admin.guard';
 
 @Controller('cloud-packages')
 export class CloudPackageController {
   constructor(private readonly cloudPackageService: CloudPackageService) {}
 
   @Post()
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async create(@Body() createCloudPackageDto: CreateCloudPackageDto) {
     return await this.cloudPackageService.create(createCloudPackageDto);
   }
@@ -45,7 +46,7 @@ export class CloudPackageController {
   }
 
   @Patch(':id')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async update(
     @Param('id', ParseIntPipe) id: number,
     @Body() updateCloudPackageDto: UpdateCloudPackageDto,
@@ -54,19 +55,19 @@ export class CloudPackageController {
   }
 
   @Delete(':id')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async remove(@Param('id', ParseIntPipe) id: number) {
     return await this.cloudPackageService.remove(id);
   }
 
   @Patch(':id/deactivate')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async deactivate(@Param('id', ParseIntPipe) id: number) {
     return await this.cloudPackageService.deactivate(id);
   }
 
   @Patch(':id/activate')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async activate(@Param('id', ParseIntPipe) id: number) {
     return await this.cloudPackageService.activate(id);
   }

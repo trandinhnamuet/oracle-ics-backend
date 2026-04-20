@@ -10,6 +10,7 @@ import {
 import { AnalyticsService } from './analytics.service'
 import { CreatePageAnalyticsDto } from '../../entities/dto/create-page-analytics.dto'
 import { JwtAuthGuard } from '../../auth/jwt-auth.guard'
+import { AdminGuard } from '../../auth/admin.guard'
 
 @Controller('api/analytics')
 export class AnalyticsController {
@@ -40,7 +41,7 @@ export class AnalyticsController {
    * Get dashboard statistics (requires authentication)
    */
   @Get('dashboard')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async getDashboardStats(
     @Query('startDate') startDate?: string,
     @Query('endDate') endDate?: string,
@@ -73,7 +74,7 @@ export class AnalyticsController {
    * Get page views by path (requires authentication)
    */
   @Get('pages')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async getPageViewsByPath(
     @Query('startDate') startDate?: string,
     @Query('endDate') endDate?: string,

@@ -35,7 +35,7 @@ export class EmailService {
           pass: process.env.SMTP_PASS,
         },
         tls: {
-          rejectUnauthorized: false, // Cho development, nên set true trong production
+          rejectUnauthorized: process.env.NODE_ENV === 'production',
         },
       });
 

@@ -8,10 +8,11 @@
   HttpStatus,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../../auth/jwt-auth.guard';
+import { AdminGuard } from '../../auth/admin.guard';
 import { BandwidthService } from './bandwidth.service';
 
 @Controller('bandwidth')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, AdminGuard)
 export class BandwidthController {
   private readonly logger = new Logger(BandwidthController.name);
 

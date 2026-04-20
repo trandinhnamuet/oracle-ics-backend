@@ -13,6 +13,7 @@ import { PaymentService } from './payment.service';
 import { CreatePaymentDto } from './dto/create-payment.dto';
 import { UpdatePaymentDto } from './dto/update-payment.dto';
 import { JwtAuthGuard } from '../../auth/jwt-auth.guard';
+import { AdminGuard } from '../../auth/admin.guard';
 
 @Controller('payments')
 export class PaymentController {
@@ -30,15 +31,14 @@ export class PaymentController {
   }
 
   @Get()
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async findAll() {
     return await this.paymentService.findAll();
   }
 
   @Get('admin/all')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async getAllPaymentsForAdmin(@Request() req) {
-    // TODO: Add admin role check if needed
     return await this.paymentService.findAll();
   }
 
@@ -49,13 +49,13 @@ export class PaymentController {
   }
 
   @Get(':id')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async findOne(@Param('id') id: string) {
     return await this.paymentService.findOne(id);
   }
 
   @Patch(':id')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async update(
     @Param('id') id: string,
     @Body() updatePaymentDto: UpdatePaymentDto,
@@ -64,11 +64,14 @@ export class PaymentController {
   }
 
   @Post('sepay-callback')
-  async handleSepayCallback(@Body() callbackData: any) {
+  async handleSepayCallback(
+    @Body() callbackData: any,
+  ) {
     return await this.paymentService.handleSepayCallback(callbackData);
   }
 
   @Post('process-success')
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async processSuccess(
     @Body() body: { transactionCode: string; amount: number },
   ) {
@@ -79,9 +82,8 @@ export class PaymentController {
   }
 
   @Post('admin/:id/accept')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async acceptPayment(@Param('id') id: string, @Request() req) {
-    // TODO: Add admin role check if needed
     return await this.paymentService.acceptPayment(id);
   }
 }

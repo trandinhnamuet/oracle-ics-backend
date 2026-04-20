@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, LessThan } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
+import { randomInt, randomUUID } from 'crypto';
 import { UAParser } from 'ua-parser-js';
 import { t, DEFAULT_LANG } from '../i18n/auth-messages';
 import { User } from '../entities/user.entity';
@@ -62,7 +63,7 @@ export class AuthService {
     const otpExpiresAt = new Date();
     otpExpiresAt.setMinutes(otpExpiresAt.getMinutes() + 10); // OTP valid for 10 minutes
 
-    this.logger.log(`Generated OTP for ${email}: ${otp}, expires at: ${otpExpiresAt.toISOString()}`);
+    this.logger.log(`Generated OTP for ${email}, expires at: ${otpExpiresAt.toISOString()}`);
 
     // Create user with isActive = false
     const user = this.userRepository.create({
@@ -104,7 +105,7 @@ export class AuthService {
     const { email, otp, ipv4: ipv4Raw, ipv6: ipv6Raw } = verifyOtpDto;
     const ipv4 = ipv4Raw || null;
     const ipv6 = ipv6Raw || null;
-    this.logger.log(`OTP verification attempt for email: ${email}, otp: ${otp}, ipv4: ${ipv4}, ipv6: ${ipv6}`);
+    this.logger.log(`OTP verification attempt for email: ${email}`);
 
     // Find user
     const user = await this.userRepository.findOne({ where: { email } });
@@ -113,7 +114,7 @@ export class AuthService {
       throw new BadRequestException(t('verifyOtp.userNotFound', lang));
     }
 
-    this.logger.log(`User found: ${email}, isActive: ${user.isActive}, stored OTP: ${user.emailVerificationOtp}, expires: ${user.otpExpiresAt}`);
+    this.logger.log(`User found: ${email}, isActive: ${user.isActive}`);
 
     // Check if already active
     if (user.isActive) {
@@ -123,7 +124,7 @@ export class AuthService {
 
     // Check OTP
     if (!user.emailVerificationOtp || user.emailVerificationOtp !== otp) {
-      this.logger.warn(`OTP verification failed: Invalid OTP for ${email}. Expected: ${user.emailVerificationOtp}, Received: ${otp}`);
+      this.logger.warn(`OTP verification failed: Invalid OTP for ${email}`);
       throw new BadRequestException(t('verifyOtp.invalidOtp', lang));
     }
 
@@ -208,7 +209,7 @@ export class AuthService {
     const otpExpiresAt = new Date();
     otpExpiresAt.setMinutes(otpExpiresAt.getMinutes() + 10);
 
-    this.logger.log(`Generated new OTP for ${email}: ${otp}, expires at: ${otpExpiresAt.toISOString()}`);
+    this.logger.log(`Generated new OTP for ${email}, expires at: ${otpExpiresAt.toISOString()}`);
 
     user.emailVerificationOtp = otp;
     user.otpExpiresAt = otpExpiresAt;
@@ -236,7 +237,7 @@ export class AuthService {
   }
 
   private generateOtp(): string {
-    return Math.floor(100000 + Math.random() * 900000).toString();
+    return randomInt(100000, 999999).toString();
   }
 
   // ==================== CLIENT INFO EXTRACTION ====================
@@ -352,7 +353,7 @@ export class AuthService {
   }
 
   private generateSessionId(): string {
-    return `sess_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    return `sess_${randomUUID()}`;
   }
 
   // ==================== SESSION MANAGEMENT ====================
@@ -599,7 +600,7 @@ export class AuthService {
       const otpExpiresAt = new Date();
       otpExpiresAt.setMinutes(otpExpiresAt.getMinutes() + 10);
 
-      this.logger.log(`Generated new OTP for unverified login: ${email}: ${otp}, expires at: ${otpExpiresAt.toISOString()}`);
+      this.logger.log(`Generated new OTP for unverified login: ${email}, expires at: ${otpExpiresAt.toISOString()}`);
 
       // Update user with new OTP
       user.emailVerificationOtp = otp;

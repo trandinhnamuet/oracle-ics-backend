@@ -24,8 +24,7 @@ export class SepayService {
 
   async handleWebhook(webhookData: SepayWebhookDto): Promise<{ success: boolean; message: string }> {
     try {
-      this.logger.log(`Received Sepay webhook: ${JSON.stringify(webhookData)}`);
-      console.log('Sepay webhook received:', webhookData);
+      this.logger.log(`Received Sepay webhook: transaction ${webhookData.id}, amount ${webhookData.transferAmount}`);
 
       // Kiểm tra giao dịch có tiền vào không (transferType = "in" và transferAmount > 0)
       if (webhookData.transferType !== 'in' || webhookData.transferAmount <= 0) {
@@ -34,36 +33,47 @@ export class SepayService {
       }
 
       // Đã xác nhận có tiền vào
-      console.log('[SEPAY] ĐÃ NHẬN TIỀN VÀO:', {
-        id: webhookData.id,
-        amount: webhookData.transferAmount,
-        content: webhookData.content,
-        accountNumber: webhookData.accountNumber,
-        transactionDate: webhookData.transactionDate
-      });
+      this.logger.log(`[SEPAY] Incoming transfer: id=${webhookData.id}, amount=${webhookData.transferAmount}`);
 
-      // Tìm payment theo amount và thời gian gần đây (trong vòng 1 giờ)
+      // Tìm payment theo transaction_code trong nội dung chuyển khoản (ưu tiên),
+      // hoặc fallback bằng amount + thời gian gần đây
       const validFrom = new Date(Date.now() - SepayService.PAYMENT_EXPIRE_MS);
+      const content = (webhookData.content || '').toUpperCase();
 
-      const payment = await this.paymentRepository
-        .createQueryBuilder('payment')
-        .where('payment.amount = :amount', { amount: webhookData.transferAmount })
-        .andWhere('payment.status = :status', { status: 'pending' })
-        .andWhere('payment.created_at >= :validFrom', { validFrom })
-        .orderBy('payment.id', 'DESC')
-        .getOne();
+      // Ưu tiên tìm theo transaction_code trong nội dung chuyển khoản
+      let payment: Payment | null = null;
+      if (content) {
+        payment = await this.paymentRepository
+          .createQueryBuilder('payment')
+          .where('UPPER(payment.transaction_code) = ANY(string_to_array(UPPER(:content), \' \'))', { content })
+          .andWhere('payment.status = :status', { status: 'pending' })
+          .andWhere('payment.created_at >= :validFrom', { validFrom })
+          .getOne();
+
+        // Nếu không match bằng word split, thử tìm transaction_code trong content
+        if (!payment) {
+          const pendingPayments = await this.paymentRepository
+            .createQueryBuilder('payment')
+            .where('payment.status = :status', { status: 'pending' })
+            .andWhere('payment.created_at >= :validFrom', { validFrom })
+            .andWhere('payment.transaction_code IS NOT NULL')
+            .getMany();
+          payment = pendingPayments.find(p => content.includes(p.transaction_code.toUpperCase())) || null;
+        }
+      }
+
+      // Fallback: tìm theo amount nếu không match được transaction_code
+      if (!payment) {
+        payment = await this.paymentRepository
+          .createQueryBuilder('payment')
+          .where('payment.amount = :amount', { amount: webhookData.transferAmount })
+          .andWhere('payment.status = :status', { status: 'pending' })
+          .andWhere('payment.created_at >= :validFrom', { validFrom })
+          .orderBy('payment.id', 'DESC')
+          .getOne();
+      }
 
       this.logger.log(`Looking for payment with amount: ${webhookData.transferAmount}`);
-      
-      // Debug: Log all pending payments
-      const allPendingPayments = await this.paymentRepository.find({
-        where: { status: 'pending' },
-        take: 10
-      });
-      this.logger.log(`Found ${allPendingPayments.length} pending payments in last 10 records:`);
-      allPendingPayments.forEach(p => {
-        this.logger.log(`- Payment ${p.id}: amount=${p.amount}, type=${p.payment_type}, subscription_id=${p.subscription_id}`);
-      });
       
       if (payment) {
         const paymentAgeMs = Date.now() - new Date(payment.created_at).getTime();

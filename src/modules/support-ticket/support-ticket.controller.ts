@@ -8,6 +8,7 @@ import { SupportTicketService } from './support-ticket.service';
 import { CreateSupportTicketDto, UpdateSupportTicketDto } from './dto/support-ticket.dto';
 import { JwtAuthGuard } from '../../auth/jwt-auth.guard';
 import { OptionalJwtAuthGuard } from '../../auth/optional-jwt-auth.guard';
+import { AdminGuard } from '../../auth/admin.guard';
 import { ImageService } from '../image/image.service';
 
 const ALLOWED_MIME_TYPES = new Set([
@@ -75,14 +76,14 @@ export class SupportTicketController {
 
   /** Admin: stats by status */
   @Get('stats')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async stats() {
     return this.service.countByStatus();
   }
 
   /** Admin: update status / note */
   @Patch(':id')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async update(
     @Param('id') id: string,
     @Body() dto: UpdateSupportTicketDto,
@@ -93,7 +94,7 @@ export class SupportTicketController {
 
   /** Admin: delete */
   @Delete(':id')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   @HttpCode(HttpStatus.NO_CONTENT)
   async remove(@Param('id') id: string) {
     return this.service.remove(Number(id));
