@@ -148,12 +148,20 @@ export class VmSubscriptionService {
   }
 
   /**
-   * Parse a numeric value from a cloud_package string field (e.g. "2 OCPU" → 2, "12 GB" → 12)
+   * Parse a numeric value from a cloud_package string field (e.g. "2 vCPU" → 2, "12 GB" → 12)
    */
   private parsePackageNumericValue(value: string | null | undefined, defaultValue: number): number {
     if (!value) return defaultValue;
     const match = value.match(/(\d+(?:\.\d+)?)/);
     return match ? parseFloat(match[1]) : defaultValue;
+  }
+
+  /**
+   * Convert vCPU count to OCPU count (2 vCPU = 1 OCPU).
+   * Minimum 1 OCPU.
+   */
+  private vcpuToOcpu(vcpu: number): number {
+    return Math.max(1, Math.ceil(vcpu / 2));
   }
 
   /**
@@ -176,11 +184,13 @@ export class VmSubscriptionService {
       throw new BadRequestException('Subscription does not have an associated cloud package');
     }
 
-    const packageOcpus = this.parsePackageNumericValue(cloudPackage.cpu, 1);
+    // CPU trong cloud_package lưu theo đơn vị vCPU, cần chuyển sang OCPU cho OCI SDK (2 vCPU = 1 OCPU)
+    const packageVcpus = this.parsePackageNumericValue(cloudPackage.cpu, 2);
+    const packageOcpus = this.vcpuToOcpu(packageVcpus);
     const packageMemoryInGBs = this.parsePackageNumericValue(cloudPackage.ram, 4);
     const packageBootVolumeSizeInGBs = this.parsePackageNumericValue(cloudPackage.memory, 50);
 
-    this.logger.log(`Cloud package specs - CPU: ${packageOcpus}, RAM: ${packageMemoryInGBs}GB, Storage: ${packageBootVolumeSizeInGBs}GB`);
+    this.logger.log(`Cloud package specs - vCPU: ${packageVcpus} → OCPU: ${packageOcpus}, RAM: ${packageMemoryInGBs}GB, Storage: ${packageBootVolumeSizeInGBs}GB`);
 
     // Override DTO values with cloud_package specs
     configureVmDto.ocpus = packageOcpus;
