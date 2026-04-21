@@ -3070,7 +3070,11 @@ chmod 600 ~/.ssh/authorized_keys`;
       // as safety net (fires every 2 min for 1 hour).  We retry WinRM a few times
       // to give the flag-clearing a chance in case of timing issues.
       const winrmMaxAttempts = passwordInitialized ? 2 : 3;
-      const winrmRetryDelays = [0, 15_000, 45_000]; // initialized: 15s gap; fresh VM: 30s+45s
+      // Initialized VMs: retry after 15s — handles transient TCP drops (RemoteDisconnected)
+      // Fresh VMs (not initialized): retry after 30s then 45s — must-change-password flag
+      // needs ~30s to be cleared by userdata `net user opc /logonpasswordchg:no` after
+      // cloudbase-init SetUserPasswordPlugin overrides it.
+      const winrmRetryDelays = passwordInitialized ? [0, 15_000] : [0, 30_000, 45_000];
 
       for (let attempt = 1; attempt <= winrmMaxAttempts; attempt++) {
         try {
