@@ -205,6 +205,11 @@ export class VmProvisioningService {
             // For non-flex shapes, use reasonable defaults
             ocpus = ocpus || 1;
             memoryInGBs = memoryInGBs || 4;
+          } else {
+            // Flex shapes: enforce minimum 1 GB RAM per OCPU (OCI requirement)
+            ocpus = ocpus || 1;
+            const minMem = ocpus; // 1 GB per OCPU
+            memoryInGBs = Math.max(memoryInGBs || 6, minMem);
           }
 
           this.logger.log(`Attempting to launch with shape: ${shapeAttempt} (${ocpus} OCPU, ${memoryInGBs}GB)`);
