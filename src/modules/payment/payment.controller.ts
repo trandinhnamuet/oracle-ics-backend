@@ -8,6 +8,7 @@ import {
   UseGuards,
   Request,
   ParseIntPipe,
+  ForbiddenException,
 } from '@nestjs/common';
 import { PaymentService } from './payment.service';
 import { CreatePaymentDto } from './dto/create-payment.dto';
@@ -49,9 +50,14 @@ export class PaymentController {
   }
 
   @Get(':id')
-  @UseGuards(JwtAuthGuard, AdminGuard)
-  async findOne(@Param('id') id: string) {
-    return await this.paymentService.findOne(id);
+  @UseGuards(JwtAuthGuard)
+  async findOne(@Param('id') id: string, @Request() req) {
+    const payment = await this.paymentService.findOne(id);
+    // Users can only view their own payments; admins can view any payment
+    if (req.user.role !== 'admin' && payment.user_id !== req.user.id) {
+      throw new ForbiddenException('You do not have permission to view this payment');
+    }
+    return payment;
   }
 
   @Patch(':id')
