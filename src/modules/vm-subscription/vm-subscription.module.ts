@@ -5,6 +5,7 @@ import { VmSubscriptionService } from './vm-subscription.service';
 import { Subscription } from '../../entities/subscription.entity';
 import { VmInstance } from '../../entities/vm-instance.entity';
 import { User } from '../../entities/user.entity';
+import { ActionOtpVerification } from '../../entities/action-otp-verification.entity';
 import { VmProvisioningModule } from '../vm-provisioning/vm-provisioning.module';
 import { SystemSshKeyModule } from '../system-ssh-key/system-ssh-key.module';
 import { OciModule } from '../oci/oci.module';
@@ -13,7 +14,7 @@ import { BandwidthModule } from '../bandwidth/bandwidth.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Subscription, VmInstance, User]),
+    TypeOrmModule.forFeature([Subscription, VmInstance, User, ActionOtpVerification]),
     VmProvisioningModule,
     SystemSshKeyModule,
     OciModule,
