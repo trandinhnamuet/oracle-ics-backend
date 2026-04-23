@@ -891,9 +891,21 @@ export class OciService {
   ) {
     try {
       // Prepare shape config for flexible shapes
+      // OCI yêu cầu tối thiểu 1 GB RAM trên mỗi OCPU cho tất cả Flex shapes (A1/A2/E3/E4)
+      // Ví dụ: 1 OCPU → min 1 GB, 2 OCPU → min 2 GB, etc.
+      const effectiveOcpus = ocpus || 1;
+      const requestedMemory = memoryInGBs || 6;
+      const minMemoryForRatio = effectiveOcpus; // 1 GB per OCPU minimum per OCI spec
+      const effectiveMemory = Math.max(requestedMemory, minMemoryForRatio);
+      if (effectiveMemory > requestedMemory) {
+        this.logger.warn(
+          `⚠️  Flex shape memory adjusted: ${requestedMemory}GB → ${effectiveMemory}GB ` +
+          `to meet OCI minimum ratio of 1 GB/OCPU (${effectiveOcpus} OCPU × 1 = ${minMemoryForRatio}GB min)`,
+        );
+      }
       const shapeConfig = shape.includes('Flex') ? {
-        ocpus: ocpus || 1,
-        memoryInGBs: memoryInGBs || 16,
+        ocpus: effectiveOcpus,
+        memoryInGBs: effectiveMemory,
       } : undefined;
 
       // Prepare source details
