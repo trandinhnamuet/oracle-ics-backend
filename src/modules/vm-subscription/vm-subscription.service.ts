@@ -688,7 +688,10 @@ export class VmSubscriptionService {
       
       // Determine SSH username from OS
       const username = this.getOsSshUsername(vm.operating_system);
-      this.logger.log(`👤 SSH Username: ${username}`);
+      // For CentOS/Rocky: admin key is only in 'opc' authorized_keys (not centos/rocky user).
+      // SSH as 'opc' and use sudo to update the target user's authorized_keys.
+      const sshUser = (username === 'centos' || username === 'rocky') ? 'opc' : username;
+      this.logger.log(`👤 SSH Username: ${sshUser}${sshUser !== username ? ` (updating ${username}'s authorized_keys via sudo)` : ''}`);
       
       // Check if VM has public IP
       if (!vm.public_ip) {
@@ -700,9 +703,10 @@ export class VmSubscriptionService {
         vm.instance_id,
         newKeyPair.publicKey,
         vm.public_ip,
-        username,
+        sshUser,
         adminPrivateKey,
         adminKey.public_key,
+        username, // homeUser: whose authorized_keys to update (centos/rocky via sudo)
       );
 
       this.logger.log(
