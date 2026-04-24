@@ -26,13 +26,13 @@ export class ActionOtpVerification {
   @Column({ type: 'varchar', length: 6, name: 'otp_code' })
   otpCode: string;
 
-  @Column({ type: 'timestamp', name: 'expires_at' })
+  @Column({ type: 'timestamptz', name: 'expires_at' })
   expiresAt: Date;
 
-  @Column({ type: 'timestamp', nullable: true, name: 'used_at' })
+  @Column({ type: 'timestamptz', nullable: true, name: 'used_at' })
   usedAt: Date | null;
 
-  @Column({ type: 'timestamp', name: 'sent_at' })
+  @Column({ type: 'timestamptz', name: 'sent_at' })
   sentAt: Date;
 
   @CreateDateColumn({ name: 'created_at' })
