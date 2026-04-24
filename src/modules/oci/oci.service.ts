@@ -1571,8 +1571,8 @@ runcmd:
     adminPublicKey?: string,
     homeUser?: string,
   ): Promise<{ id: string; keysCount: number; userKeysCount: number; removedOldest: boolean }> {
-    const MAX_RETRIES = 5;
-    const RETRY_DELAY_MS = 20000; // 20s between retries
+    const MAX_RETRIES = 8;
+    const RETRY_DELAY_MS = 15000; // 15s between retries
 
     const attempt = async (retryNum: number): Promise<{ id: string; keysCount: number; userKeysCount: number; removedOldest: boolean }> => {
     try {
@@ -1580,7 +1580,7 @@ runcmd:
       const useSudo = targetUser !== username;
       const { Client } = await import('ssh2');
       
-      return new Promise((resolve, reject) => {
+      return await new Promise<{ id: string; keysCount: number; userKeysCount: number; removedOldest: boolean }>((resolve, reject) => {
         const conn = new Client();
         
         this.logger.log(`🔐 Connecting to ${username}@${publicIp} via SSH${useSudo ? ` (will update ${targetUser}'s authorized_keys via sudo)` : ''}...`);
@@ -1746,7 +1746,7 @@ chmod 600 ~/.ssh/authorized_keys`;
                            adminPrivateKey.includes('BEGIN PRIVATE KEY') ? 'PKCS#8' : 'UNKNOWN',
           privateKeyLength: adminPrivateKey.length,
           privateKeyStart: adminPrivateKey.substring(0, 50),
-          readyTimeout: 30000,
+          readyTimeout: 60000,
         };
         this.logger.log(`🔧 SSH Config: ${JSON.stringify(sshConfig, null, 2)}`);
         
@@ -1756,7 +1756,7 @@ chmod 600 ~/.ssh/authorized_keys`;
           port: 22,
           username: username,
           privateKey: Buffer.from(adminPrivateKey, 'utf8'),
-          readyTimeout: 30000,
+          readyTimeout: 60000,
           debug: (msg) => this.logger.debug(`SSH2 Debug: ${msg}`),
         });
       });
