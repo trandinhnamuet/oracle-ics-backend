@@ -47,6 +47,11 @@ dotenv.config();
       database: process.env.DB_NAME,
       synchronize: false,
       autoLoadEntities: true,
+      extra: {
+        // Force every DB session to use UTC so TIMESTAMP (no timezone) columns
+        // are stored/read as UTC, preventing timezone mismatch with Node.js Date.now()
+        options: '-c timezone=UTC',
+      },
     }),
     AuthModule,
     CustomPackageRegistrationModule,

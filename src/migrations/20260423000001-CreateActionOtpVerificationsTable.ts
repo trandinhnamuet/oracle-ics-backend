@@ -9,11 +9,11 @@ export class CreateActionOtpVerificationsTable20260423000001 implements Migratio
         subscription_id UUID NOT NULL,
         action VARCHAR(32) NOT NULL,
         otp_code VARCHAR(6) NOT NULL,
-        expires_at TIMESTAMP NOT NULL,
-        used_at TIMESTAMP,
-        sent_at TIMESTAMP NOT NULL,
-        created_at TIMESTAMP DEFAULT NOW(),
-        updated_at TIMESTAMP DEFAULT NOW()
+        expires_at TIMESTAMPTZ NOT NULL,
+        used_at TIMESTAMPTZ,
+        sent_at TIMESTAMPTZ NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
       );
 
       CREATE INDEX IF NOT EXISTS idx_action_otp_key_active
