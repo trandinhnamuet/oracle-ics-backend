@@ -975,7 +975,9 @@ runcmd:
   - echo "rocky ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers.d/90-cloud-init-users
   - echo "root ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers.d/90-cloud-init-users
   - chmod 0440 /etc/sudoers.d/90-cloud-init-users
-  - echo "✅ Cloud-init completed - sudo configured"
+  - sed -i 's/^#*PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config 2>/dev/null; grep -q 'PermitRootLogin' /etc/ssh/sshd_config || echo 'PermitRootLogin prohibit-password' >> /etc/ssh/sshd_config
+  - systemctl reload sshd || service sshd reload || true
+  - echo "✅ Cloud-init completed - sudo and SSH root login configured"
 `;
 
       // Prepare metadata
@@ -1534,8 +1536,9 @@ runcmd:
           
           // Read current authorized_keys
           this.logger.log(`📖 Reading current authorized_keys...`);
+          const targetHome = targetUser === 'root' ? '/root' : `/home/${targetUser}`;
           const readCmd = useSudo
-            ? `sudo mkdir -p /home/${targetUser}/.ssh && sudo chmod 700 /home/${targetUser}/.ssh; sudo cat /home/${targetUser}/.ssh/authorized_keys 2>/dev/null || true`
+            ? `sudo mkdir -p ${targetHome}/.ssh && sudo chmod 700 ${targetHome}/.ssh; sudo cat ${targetHome}/.ssh/authorized_keys 2>/dev/null || true`
             : 'cat ~/.ssh/authorized_keys';
           conn.exec(readCmd, (err, stream) => {
             if (err) {
@@ -1611,12 +1614,14 @@ runcmd:
               // Write new authorized_keys file
               this.logger.log(`✍️  Writing updated authorized_keys (${finalKeys.length} keys)...`);
               
-              // Use heredoc to write authorized_keys; for sudo cases use 'tee' so root writes to target user's file
+              // Use heredoc to write authorized_keys; always use sudo when targetUser differs from SSH user
               const command = useSudo
-                ? `sudo tee /home/${targetUser}/.ssh/authorized_keys > /dev/null << 'EOF_SSH_KEYS'
+                ? `sudo tee ${targetHome}/.ssh/authorized_keys > /dev/null << 'EOF_SSH_KEYS'
 ${newAuthorizedKeysContent}EOF_SSH_KEYS
-sudo chmod 600 /home/${targetUser}/.ssh/authorized_keys
-sudo chown ${targetUser}:${targetUser} /home/${targetUser}/.ssh/authorized_keys /home/${targetUser}/.ssh`
+sudo chmod 600 ${targetHome}/.ssh/authorized_keys
+sudo chown ${targetUser}:${targetUser} ${targetHome}/.ssh/authorized_keys ${targetHome}/.ssh
+sudo sed -i 's/^#*PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config 2>/dev/null; sudo grep -q 'PermitRootLogin' /etc/ssh/sshd_config 2>/dev/null || echo 'PermitRootLogin prohibit-password' | sudo tee -a /etc/ssh/sshd_config > /dev/null
+sudo systemctl reload sshd 2>/dev/null || sudo service sshd reload 2>/dev/null || true`
                 : `cat > ~/.ssh/authorized_keys << 'EOF_SSH_KEYS'
 ${newAuthorizedKeysContent}EOF_SSH_KEYS
 chmod 600 ~/.ssh/authorized_keys`;
