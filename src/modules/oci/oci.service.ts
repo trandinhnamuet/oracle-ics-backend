@@ -1555,8 +1555,11 @@ runcmd:
    * @param instanceId - The OCID of the instance
    * @param newSshKey - The new SSH public key to add
    * @param publicIp - Public IP of the instance
-   * @param username - SSH username (e.g., 'opc', 'ubuntu')
+   * @param username - SSH username to connect as (e.g., 'opc', 'ubuntu')
    * @param adminPrivateKey - Admin private key string (decrypted)
+   * @param adminPublicKey - Admin public key (used to identify admin key in authorized_keys)
+   * @param homeUser - Target user whose authorized_keys to update (defaults to username).
+   *                   When different from username, sudo is used (e.g., SSH as 'opc', update 'centos').
    * @returns Updated key info
    */
   async updateInstanceSshKeys(
@@ -1566,21 +1569,27 @@ runcmd:
     username: string,
     adminPrivateKey: string,
     adminPublicKey?: string,
+    homeUser?: string,
   ): Promise<{ id: string; keysCount: number; userKeysCount: number; removedOldest: boolean }> {
     try {
+      const targetUser = homeUser || username;
+      const useSudo = targetUser !== username;
       const { Client } = await import('ssh2');
       
       return new Promise((resolve, reject) => {
         const conn = new Client();
         
-        this.logger.log(`🔐 Connecting to ${username}@${publicIp} via SSH...`);
+        this.logger.log(`🔐 Connecting to ${username}@${publicIp} via SSH${useSudo ? ` (will update ${targetUser}'s authorized_keys via sudo)` : ''}...`);
         
         conn.on('ready', () => {
           this.logger.log(`✅ SSH connection established`);
           
           // Read current authorized_keys
           this.logger.log(`📖 Reading current authorized_keys...`);
-          conn.exec('cat ~/.ssh/authorized_keys', (err, stream) => {
+          const readCmd = useSudo
+            ? `sudo mkdir -p /home/${targetUser}/.ssh && sudo chmod 700 /home/${targetUser}/.ssh; sudo cat /home/${targetUser}/.ssh/authorized_keys 2>/dev/null || true`
+            : 'cat ~/.ssh/authorized_keys';
+          conn.exec(readCmd, (err, stream) => {
             if (err) {
               conn.end();
               return reject(new Error(`Failed to read authorized_keys: ${err.message}`));
@@ -1654,9 +1663,13 @@ runcmd:
               // Write new authorized_keys file
               this.logger.log(`✍️  Writing updated authorized_keys (${finalKeys.length} keys)...`);
               
-              // Use cat > file approach with heredoc to avoid shell escaping issues
-              // This is more reliable than echo for large content
-              const command = `cat > ~/.ssh/authorized_keys << 'EOF_SSH_KEYS'
+              // Use heredoc to write authorized_keys; for sudo cases use 'tee' so root writes to target user's file
+              const command = useSudo
+                ? `sudo tee /home/${targetUser}/.ssh/authorized_keys > /dev/null << 'EOF_SSH_KEYS'
+${newAuthorizedKeysContent}EOF_SSH_KEYS
+sudo chmod 600 /home/${targetUser}/.ssh/authorized_keys
+sudo chown ${targetUser}:${targetUser} /home/${targetUser}/.ssh/authorized_keys /home/${targetUser}/.ssh`
+                : `cat > ~/.ssh/authorized_keys << 'EOF_SSH_KEYS'
 ${newAuthorizedKeysContent}EOF_SSH_KEYS
 chmod 600 ~/.ssh/authorized_keys`;
               
