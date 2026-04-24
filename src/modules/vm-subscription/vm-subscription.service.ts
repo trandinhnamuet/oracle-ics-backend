@@ -4,6 +4,7 @@ import {
   NotFoundException,
   BadRequestException,
   InternalServerErrorException,
+  HttpException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, IsNull, Repository } from 'typeorm';
@@ -752,7 +753,12 @@ export class VmSubscriptionService {
       };
     } catch (error) {
       this.logger.error('Error updating SSH keys in OCI:', error);
-      throw new BadRequestException(
+      // Re-throw HttpExceptions as-is (e.g. BadRequestException for Windows VM)
+      if (error instanceof HttpException) {
+        throw error;
+      }
+      // SSH or other internal errors → 500 so frontend shows actual error, not OTP message
+      throw new InternalServerErrorException(
         `Failed to update SSH keys on VM: ${error.message || 'Unknown error'}`,
       );
     }
@@ -1091,7 +1097,10 @@ export class VmSubscriptionService {
       this.logger.log(`✅ Password changed successfully`);
     } catch (runCmdError) {
       this.logger.error(`❌ Password reset failed: ${runCmdError.message}`);
-      throw new BadRequestException(`Failed to reset Windows password: ${runCmdError.message}`);
+      if (runCmdError instanceof HttpException) {
+        throw runCmdError;
+      }
+      throw new InternalServerErrorException(`Failed to reset Windows password: ${runCmdError.message}`);
     }
 
     // Step 9: Mark VM as initialized and store the new password for future resets
