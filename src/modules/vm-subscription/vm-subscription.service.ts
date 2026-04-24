@@ -767,6 +767,7 @@ export class VmSubscriptionService {
           totalKeys: updateResult.keysCount,
           removedOldest: updateResult.removedOldest,
         },
+        sshUsername: username, // The SSH username the user should connect with (e.g. ubuntu, centos, opc)
       };
     } catch (error) {
       this.logger.error('Error updating SSH keys in OCI:', error);
