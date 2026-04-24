@@ -224,13 +224,18 @@ export class VmSubscriptionService {
           }
         }
 
-        // Step B: Delete old VM from database
-        await this.vmInstanceRepo.remove(existingVm);
-        this.logger.log(`✅ Old VM record deleted from database`);
-
-        // Step C: Clear subscription VM reference
+        // Step C: Clear subscription VM reference FIRST (before deleting VM)
+        // CRITICAL: Must null vm_instance_id before deleting the VM record.
+        // If the subscriptions.vm_instance_id FK has ON DELETE CASCADE, deleting
+        // the vm_instance row first would also delete the subscription row via cascade,
+        // causing FK violation when inserting the new vm_instance.
         subscription.vm_instance_id = null;
         await this.subscriptionRepo.update(subscription.id, { vm_instance_id: null });
+        this.logger.log(`✅ Cleared VM reference from subscription`);
+
+        // Step B: Delete old VM from database (safe now that FK reference is null)
+        await this.vmInstanceRepo.remove(existingVm);
+        this.logger.log(`✅ Old VM record deleted from database`);
 
         // Step D: Provision new VM
         subscription.configuration_status = 'provisioning';
@@ -331,22 +336,26 @@ export class VmSubscriptionService {
           if (vmResult.windowsInitialPassword) {
             // Windows VM with password - send RDP credentials
             this.logger.log('📧 Sending Windows RDP credentials email...');
-            await this.sendWindowsPasswordEmail(
-              userEmail,
-              {
-                name: vmResult.instanceName,
-                publicIp: vmResult.publicIp,
-                operatingSystem: vmResult.operatingSystem,
-                status: vmResult.lifecycleState,
-              },
-              {
-                username: 'opc', // Default OCI Windows username
-                password: vmResult.windowsInitialPassword,
-              },
-              subscription,
-              language,
-            );
-            this.logger.log('✅ Windows credentials email sent successfully');
+            try {
+              await this.sendWindowsPasswordEmail(
+                userEmail,
+                {
+                  name: vmResult.instanceName,
+                  publicIp: vmResult.publicIp,
+                  operatingSystem: vmResult.operatingSystem,
+                  status: vmResult.lifecycleState,
+                },
+                {
+                  username: 'opc', // Default OCI Windows username
+                  password: vmResult.windowsInitialPassword,
+                },
+                subscription,
+                language,
+              );
+              this.logger.log('✅ Windows credentials email sent successfully');
+            } catch (emailError) {
+              this.logger.error(`❌ Failed to send Windows credentials email (VM still created): ${emailError.message}`);
+            }
           } else {
             // Windows VM without password - password will be retrieved by background job
             // and sent via email automatically when ready (usually within 5-10 minutes)
@@ -357,19 +366,23 @@ export class VmSubscriptionService {
         } else if (isWindows === false && userSshKeyPair) {
           // Confirmed Linux VM - send SSH key
           this.logger.log('📧 Sending Linux SSH key email...');
-          await this.sendSshKeyEmail(
-            userEmail,
-            {
-              displayName: vmResult.instanceName,
-              publicIp: vmResult.publicIp,
-              instanceOcid: vmResult.instanceId,
-            },
-            userSshKeyPair,
-            subscription,
-            false,
-            language,
-          );
-          this.logger.log('✅ SSH key email sent successfully');
+          try {
+            await this.sendSshKeyEmail(
+              userEmail,
+              {
+                displayName: vmResult.instanceName,
+                publicIp: vmResult.publicIp,
+                instanceOcid: vmResult.instanceId,
+              },
+              userSshKeyPair,
+              subscription,
+              false,
+              language,
+            );
+            this.logger.log('✅ SSH key email sent successfully');
+          } catch (emailError) {
+            this.logger.error(`❌ Failed to send SSH key email (VM still created): ${emailError.message}`);
+          }
         } else {
           // isWindows is undefined (OS unknown) or missing credentials
           this.logger.warn(`⚠️  Could not send credentials email - OS type unknown or missing required data`);
