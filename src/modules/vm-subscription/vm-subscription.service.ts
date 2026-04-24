@@ -699,17 +699,19 @@ export class VmSubscriptionService {
       this.logger.log(`   Key starts with: ${adminPrivateKey.substring(0, 50)}...`);
       this.logger.log(`   Key length: ${adminPrivateKey.length} bytes`);
       
-      // Determine which user to SSH in as (admin key is in these users' authorized_keys from cloud-init)
-      const osUsername = this.getOsSshUsername(vm.operating_system);
-      const sshUser = (osUsername === 'centos' || osUsername === 'rocky') ? 'opc' : osUsername;
-      this.logger.log(`👤 Connecting as: ${sshUser} → updating root's authorized_keys via sudo`);
+      // Determine SSH username from OS
+      const username = this.getOsSshUsername(vm.operating_system);
+      // For CentOS/Rocky: admin key is only in 'opc' authorized_keys (not centos/rocky user).
+      // SSH as 'opc' and use sudo to update the target user's authorized_keys.
+      const sshUser = (username === 'centos' || username === 'rocky') ? 'opc' : username;
+      this.logger.log(`👤 SSH Username: ${sshUser}${sshUser !== username ? ` (updating ${username}'s authorized_keys via sudo)` : ''}`);
       
       // Check if VM has public IP
       if (!vm.public_ip) {
         throw new BadRequestException('VM does not have a public IP address');
       }
       
-      // Update SSH keys via SSH connection — always target root's authorized_keys
+      // Update SSH keys via SSH connection
       updateResult = await this.ociService.updateInstanceSshKeys(
         vm.instance_id,
         newKeyPair.publicKey,
@@ -717,7 +719,7 @@ export class VmSubscriptionService {
         sshUser,
         adminPrivateKey,
         adminKey.public_key,
-        'root', // homeUser: always update root's authorized_keys so users SSH as root
+        username, // homeUser: whose authorized_keys to update (centos/rocky via sudo)
       );
 
       this.logger.log(
@@ -765,7 +767,7 @@ export class VmSubscriptionService {
           totalKeys: updateResult.keysCount,
           removedOldest: updateResult.removedOldest,
         },
-        sshUsername: 'root', // Users always SSH as root regardless of OS
+        sshUsername: username, // The SSH username the user should connect with (e.g. ubuntu, centos, opc)
       };
     } catch (error) {
       this.logger.error('Error updating SSH keys in OCI:', error);
@@ -1411,9 +1413,30 @@ chmod 600 ~/.ssh/oracle-vm-key${isNewKey ? '-new' : ''}.pem
               </div>
 
               <h4>${isVietnamese ? 'Bước 2: Kết Nối Bằng SSH' : 'Step 2: Connect via SSH'}</h4>
-              <p>${isVietnamese ? 'Tất cả hệ điều hành đều dùng username <code>root</code>:' : 'All operating systems use <code>root</code> as the SSH username:'}</p>
-
-              <div class="code-block">ssh -i ~/.ssh/oracle-vm-key${isNewKey ? '-new' : ''}.pem root@${vmInfo.publicIp || 'YOUR_VM_IP'}</div>
+              <p>${isVietnamese ? 'Sử dụng username phù hợp với hệ điều hành của VM:' : 'Use the appropriate username based on your VM operating system:'}</p>
+              
+              <table style="border-collapse: collapse; width: 100%; margin: 10px 0;">
+                <tr style="background-color: #f0f0f0;">
+                  <th style="border: 1px solid #ddd; padding: 8px;">${isVietnamese ? 'Hệ Điều Hành' : 'Operating System'}</th>
+                  <th style="border: 1px solid #ddd; padding: 8px;">Username</th>
+                  <th style="border: 1px solid #ddd; padding: 8px;">${isVietnamese ? 'Lệnh SSH' : 'SSH Command'}</th>
+                </tr>
+                <tr>
+                  <td style="border: 1px solid #ddd; padding: 8px;">Oracle Linux</td>
+                  <td style="border: 1px solid #ddd; padding: 8px;"><code>opc</code></td>
+                  <td style="border: 1px solid #ddd; padding: 8px; font-size: 11px;"><code>ssh -i ~/.ssh/oracle-vm-key${isNewKey ? '-new' : ''}.pem opc@${vmInfo.publicIp || 'YOUR_VM_IP'}</code></td>
+                </tr>
+                <tr>
+                  <td style="border: 1px solid #ddd; padding: 8px;">Ubuntu</td>
+                  <td style="border: 1px solid #ddd; padding: 8px;"><code>ubuntu</code></td>
+                  <td style="border: 1px solid #ddd; padding: 8px; font-size: 11px;"><code>ssh -i ~/.ssh/oracle-vm-key${isNewKey ? '-new' : ''}.pem ubuntu@${vmInfo.publicIp || 'YOUR_VM_IP'}</code></td>
+                </tr>
+                <tr>
+                  <td style="border: 1px solid #ddd; padding: 8px;">CentOS/Rocky</td>
+                  <td style="border: 1px solid #ddd; padding: 8px;"><code>centos</code> or <code>rocky</code></td>
+                  <td style="border: 1px solid #ddd; padding: 8px; font-size: 11px;"><code>ssh -i ~/.ssh/oracle-vm-key${isNewKey ? '-new' : ''}.pem centos@${vmInfo.publicIp || 'YOUR_VM_IP'}</code></td>
+                </tr>
+              </table>
 
               <h4>${isVietnamese ? 'Bước 3: Lệnh Sau Khi Đăng Nhập Lần Đầu' : 'Step 3: First Login Commands'}</h4>
               <div class="code-block">
@@ -1421,10 +1444,13 @@ chmod 600 ~/.ssh/oracle-vm-key${isNewKey ? '-new' : ''}.pem
 uname -a
 
 # ${isVietnamese ? 'Cập nhật hệ thống (Oracle Linux/CentOS/Rocky)' : 'Update system (Oracle Linux/CentOS/Rocky)'}
-dnf update -y
+sudo dnf update -y
 
 # ${isVietnamese ? 'Cập nhật hệ thống (Ubuntu)' : 'Update system (Ubuntu)'}
-apt update && apt upgrade -y
+sudo apt update && sudo apt upgrade -y
+
+# ${isVietnamese ? 'Chuyển sang root (nếu cần)' : 'Switch to root (if needed)'}
+sudo su -
               </div>
 
               <h3>${isVietnamese ? '🔐 Dấu Vân Tay SSH Key:' : '🔐 SSH Key Fingerprint:'}</h3>
@@ -1445,7 +1471,7 @@ apt update && apt upgrade -y
                 <h3>${isVietnamese ? '💡 Khắc Phục Sự Cố' : '💡 Troubleshooting'}</h3>
                 <p><strong>${isVietnamese ? 'Kết nối bị timeout:' : 'Connection timeout:'}</strong> ${isVietnamese ? 'Đảm bảo VM đang ở trạng thái RUNNING và port 22 đang mở (đã được cấu hình tự động).' : 'Make sure the VM is in RUNNING state and port 22 is open (already configured automatically).'}</p>
                 <p><strong>${isVietnamese ? 'Permission denied:' : 'Permission denied:'}</strong> ${isVietnamese ? 'Kiểm tra file private key đã đặt đúng quyền (600 trên Linux/Mac).' : 'Check that your private key file has correct permissions (600 on Linux/Mac).'}</p>
-                <p><strong>${isVietnamese ? 'Permission denied:' : 'Permission denied:'}</strong> ${isVietnamese ? 'Đảm bảo dùng đúng username <code>root</code> và file key đúng.' : 'Make sure you are using username <code>root</code> and the correct key file.'}</p>
+                <p><strong>${isVietnamese ? 'Sai username:' : 'Wrong username:'}</strong> ${isVietnamese ? 'Thử các username khác nhau theo bảng hướng dẫn ở trên.' : 'Try different usernames based on the table above.'}</p>
               </div>
 
               <a href="https://oraclecloud.vn/package-management/${subscription.id}" class="button">
