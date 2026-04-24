@@ -983,11 +983,11 @@ runcmd:
   - echo "rocky ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers.d/90-cloud-init-users
   - echo "root ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers.d/90-cloud-init-users
   - chmod 0440 /etc/sudoers.d/90-cloud-init-users
-  - systemctl restart sshd
   # Open firewall ports for web traffic (HTTP/HTTPS)
   - |
     if command -v firewall-cmd &> /dev/null; then
       # Oracle Linux / CentOS / RHEL with firewalld
+      firewall-cmd --permanent --add-service=ssh
       firewall-cmd --permanent --add-service=http
       firewall-cmd --permanent --add-service=https
       firewall-cmd --permanent --add-port=80/tcp
