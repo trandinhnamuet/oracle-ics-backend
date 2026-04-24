@@ -1571,6 +1571,10 @@ runcmd:
     adminPublicKey?: string,
     homeUser?: string,
   ): Promise<{ id: string; keysCount: number; userKeysCount: number; removedOldest: boolean }> {
+    const MAX_RETRIES = 5;
+    const RETRY_DELAY_MS = 20000; // 20s between retries
+
+    const attempt = async (retryNum: number): Promise<{ id: string; keysCount: number; userKeysCount: number; removedOldest: boolean }> => {
     try {
       const targetUser = homeUser || username;
       const useSudo = targetUser !== username;
@@ -1757,9 +1761,19 @@ chmod 600 ~/.ssh/authorized_keys`;
         });
       });
     } catch (error) {
+      const isRetryable = error['code'] === 'ECONNREFUSED' || 
+                          (error.message && (error.message.includes('ECONNREFUSED') || error.message.includes('Timed out while waiting for handshake')));
+      if (isRetryable && retryNum < MAX_RETRIES) {
+        this.logger.warn(`⏳ SSH not ready (${error['code'] || 'timeout'}) for ${publicIp}, retry ${retryNum}/${MAX_RETRIES} in ${RETRY_DELAY_MS / 1000}s...`);
+        await new Promise(res => setTimeout(res, RETRY_DELAY_MS));
+        return attempt(retryNum + 1);
+      }
       this.logger.error('Error updating instance SSH keys via SSH:', error);
       throw error;
     }
+    };
+
+    return attempt(1);
   }
 
   /**
