@@ -1191,7 +1191,7 @@ export class VmSubscriptionService {
         format: 'pem',
       },
       privateKeyEncoding: {
-        type: 'pkcs8',
+        type: 'pkcs1',  // PKCS#1 (-----BEGIN RSA PRIVATE KEY-----) — universally compatible with all SSH clients including PuTTY and OpenSSH < 7.8
         format: 'pem',
       },
     });
@@ -1427,8 +1427,8 @@ chmod 600 ~/.ssh/oracle-vm-key${isNewKey ? '-new' : ''}.pem
                 </tr>
                 <tr>
                   <td style="border: 1px solid #ddd; padding: 8px;">Ubuntu</td>
-                  <td style="border: 1px solid #ddd; padding: 8px;"><code>root</code></td>
-                  <td style="border: 1px solid #ddd; padding: 8px; font-size: 11px;"><code>ssh -i ~/.ssh/oracle-vm-key${isNewKey ? '-new' : ''}.pem root@${vmInfo.publicIp || 'YOUR_VM_IP'}</code></td>
+                  <td style="border: 1px solid #ddd; padding: 8px;"><code>ubuntu</code></td>
+                  <td style="border: 1px solid #ddd; padding: 8px; font-size: 11px;"><code>ssh -i ~/.ssh/oracle-vm-key${isNewKey ? '-new' : ''}.pem ubuntu@${vmInfo.publicIp || 'YOUR_VM_IP'}</code></td>
                 </tr>
                 <tr>
                   <td style="border: 1px solid #ddd; padding: 8px;">CentOS/Rocky</td>
