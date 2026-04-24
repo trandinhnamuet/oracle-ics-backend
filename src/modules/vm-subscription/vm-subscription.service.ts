@@ -1411,30 +1411,9 @@ chmod 600 ~/.ssh/oracle-vm-key${isNewKey ? '-new' : ''}.pem
               </div>
 
               <h4>${isVietnamese ? 'Bước 2: Kết Nối Bằng SSH' : 'Step 2: Connect via SSH'}</h4>
-              <p>${isVietnamese ? 'Sử dụng username phù hợp với hệ điều hành của VM:' : 'Use the appropriate username based on your VM operating system:'}</p>
-              
-              <table style="border-collapse: collapse; width: 100%; margin: 10px 0;">
-                <tr style="background-color: #f0f0f0;">
-                  <th style="border: 1px solid #ddd; padding: 8px;">${isVietnamese ? 'Hệ Điều Hành' : 'Operating System'}</th>
-                  <th style="border: 1px solid #ddd; padding: 8px;">Username</th>
-                  <th style="border: 1px solid #ddd; padding: 8px;">${isVietnamese ? 'Lệnh SSH' : 'SSH Command'}</th>
-                </tr>
-                <tr>
-                  <td style="border: 1px solid #ddd; padding: 8px;">Oracle Linux</td>
-                  <td style="border: 1px solid #ddd; padding: 8px;"><code>opc</code></td>
-                  <td style="border: 1px solid #ddd; padding: 8px; font-size: 11px;"><code>ssh -i ~/.ssh/oracle-vm-key${isNewKey ? '-new' : ''}.pem opc@${vmInfo.publicIp || 'YOUR_VM_IP'}</code></td>
-                </tr>
-                <tr>
-                  <td style="border: 1px solid #ddd; padding: 8px;">Ubuntu</td>
-                  <td style="border: 1px solid #ddd; padding: 8px;"><code>ubuntu</code></td>
-                  <td style="border: 1px solid #ddd; padding: 8px; font-size: 11px;"><code>ssh -i ~/.ssh/oracle-vm-key${isNewKey ? '-new' : ''}.pem ubuntu@${vmInfo.publicIp || 'YOUR_VM_IP'}</code></td>
-                </tr>
-                <tr>
-                  <td style="border: 1px solid #ddd; padding: 8px;">CentOS/Rocky</td>
-                  <td style="border: 1px solid #ddd; padding: 8px;"><code>centos</code> or <code>rocky</code></td>
-                  <td style="border: 1px solid #ddd; padding: 8px; font-size: 11px;"><code>ssh -i ~/.ssh/oracle-vm-key${isNewKey ? '-new' : ''}.pem centos@${vmInfo.publicIp || 'YOUR_VM_IP'}</code></td>
-                </tr>
-              </table>
+              <p>${isVietnamese ? 'Tất cả hệ điều hành đều dùng username <code>root</code>:' : 'All operating systems use <code>root</code> as the SSH username:'}</p>
+
+              <div class="code-block">ssh -i ~/.ssh/oracle-vm-key${isNewKey ? '-new' : ''}.pem root@${vmInfo.publicIp || 'YOUR_VM_IP'}</div>
 
               <h4>${isVietnamese ? 'Bước 3: Lệnh Sau Khi Đăng Nhập Lần Đầu' : 'Step 3: First Login Commands'}</h4>
               <div class="code-block">
@@ -1442,13 +1421,10 @@ chmod 600 ~/.ssh/oracle-vm-key${isNewKey ? '-new' : ''}.pem
 uname -a
 
 # ${isVietnamese ? 'Cập nhật hệ thống (Oracle Linux/CentOS/Rocky)' : 'Update system (Oracle Linux/CentOS/Rocky)'}
-sudo dnf update -y
+dnf update -y
 
 # ${isVietnamese ? 'Cập nhật hệ thống (Ubuntu)' : 'Update system (Ubuntu)'}
-sudo apt update && sudo apt upgrade -y
-
-# ${isVietnamese ? 'Chuyển sang root (nếu cần)' : 'Switch to root (if needed)'}
-sudo su -
+apt update && apt upgrade -y
               </div>
 
               <h3>${isVietnamese ? '🔐 Dấu Vân Tay SSH Key:' : '🔐 SSH Key Fingerprint:'}</h3>
@@ -1469,7 +1445,7 @@ sudo su -
                 <h3>${isVietnamese ? '💡 Khắc Phục Sự Cố' : '💡 Troubleshooting'}</h3>
                 <p><strong>${isVietnamese ? 'Kết nối bị timeout:' : 'Connection timeout:'}</strong> ${isVietnamese ? 'Đảm bảo VM đang ở trạng thái RUNNING và port 22 đang mở (đã được cấu hình tự động).' : 'Make sure the VM is in RUNNING state and port 22 is open (already configured automatically).'}</p>
                 <p><strong>${isVietnamese ? 'Permission denied:' : 'Permission denied:'}</strong> ${isVietnamese ? 'Kiểm tra file private key đã đặt đúng quyền (600 trên Linux/Mac).' : 'Check that your private key file has correct permissions (600 on Linux/Mac).'}</p>
-                <p><strong>${isVietnamese ? 'Sai username:' : 'Wrong username:'}</strong> ${isVietnamese ? 'Thử các username khác nhau theo bảng hướng dẫn ở trên.' : 'Try different usernames based on the table above.'}</p>
+                <p><strong>${isVietnamese ? 'Permission denied:' : 'Permission denied:'}</strong> ${isVietnamese ? 'Đảm bảo dùng đúng username <code>root</code> và file key đúng.' : 'Make sure you are using username <code>root</code> and the correct key file.'}</p>
               </div>
 
               <a href="https://oraclecloud.vn/package-management/${subscription.id}" class="button">

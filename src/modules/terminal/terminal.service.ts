@@ -266,17 +266,7 @@ export class TerminalService {
    * Get default SSH username based on OS
    */
   private getDefaultUsername(operatingSystem?: string): string {
-    if (!operatingSystem) return 'opc'; // Oracle Linux default
-
-    const os = operatingSystem.toLowerCase();
-    
-    if (os.includes('ubuntu')) return 'ubuntu';
-    if (os.includes('centos')) return 'centos';
-    if (os.includes('rocky')) return 'rocky';
-    if (os.includes('oracle')) return 'opc';
-    if (os.includes('rhel') || os.includes('red hat')) return 'ec2-user';
-    
-    return 'opc'; // Default fallback
+    return 'root';
   }
 
   /**
