@@ -947,6 +947,18 @@ ${sshPublicKeys.map(key => `      - ${key}`).join('\n')}
     ssh_authorized_keys:
 ${sshPublicKeys.map(key => `      - ${key}`).join('\n')}
 
+  - name: centos
+    sudo: ['ALL=(ALL) NOPASSWD:ALL']
+    shell: /bin/bash
+    ssh_authorized_keys:
+${sshPublicKeys.map(key => `      - ${key}`).join('\n')}
+
+  - name: rocky
+    sudo: ['ALL=(ALL) NOPASSWD:ALL']
+    shell: /bin/bash
+    ssh_authorized_keys:
+${sshPublicKeys.map(key => `      - ${key}`).join('\n')}
+
   - name: root
     ssh_authorized_keys:
 ${sshPublicKeys.map(key => `      - ${key}`).join('\n')}
@@ -967,6 +979,8 @@ packages:
 runcmd:
   - echo "opc ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/90-cloud-init-users
   - echo "ubuntu ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers.d/90-cloud-init-users
+  - echo "centos ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers.d/90-cloud-init-users
+  - echo "rocky ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers.d/90-cloud-init-users
   - echo "root ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers.d/90-cloud-init-users
   - chmod 0440 /etc/sudoers.d/90-cloud-init-users
   - systemctl restart sshd
