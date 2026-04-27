@@ -1006,8 +1006,8 @@ runcmd:
         // 4. "Must change password at next login" flag is cleared by the deferred background process
         //    AFTER cloudbase-init SetUserPasswordPlugin finishes (or it will be re-set).
         //    Without clearing this flag, WinRM NTLM auth refuses ALL logins — the password reset
-        //    feature cannot work. When user resets via our UI, the reset command also sets
-        //    /logonpasswordchg:no to keep the flag clear.
+        //    feature cannot work. When user resets via our UI, the reset command sets
+        //    /logonpasswordchg:yes to force the customer to change on first login.
         // 5. Create WinRM HTTP listener explicitly (otherwise port 5985 never listens).
         // IMPORTANT: Each step has its own try-catch so one failure doesn't skip the rest.
         //            WinRM setup comes FIRST (before OpenSSH) — it's required for password reset.
@@ -3252,12 +3252,12 @@ chmod 600 ~/.ssh/authorized_keys`;
     // command-line escaping issues with special chars in the password (@ ! $ # & etc.).
     // OCI Run Command on Windows executes via PowerShell by default.
     const b64pw = Buffer.from(newPassword, 'utf8').toString('base64');
-    // /logonpasswordchg:no clears the "must change password at next logon" flag so
-    // the admin-issued password is directly usable without forcing another RDP change.
+    // /logonpasswordchg:yes sets the "must change password at next logon" flag so
+    // the customer is forced to create their own private password on first RDP login.
     const script = [
       `$b=[System.Convert]::FromBase64String('${b64pw}')`,
       `$p=[System.Text.Encoding]::UTF8.GetString($b)`,
-      `net user opc $p /logonpasswordchg:no`,
+      `net user opc $p /logonpasswordchg:yes`,
       `Write-Output 'PASSWORD_CHANGED_OK'`,
     ].join('\r\n');
 
@@ -3361,7 +3361,7 @@ chmod 600 ~/.ssh/authorized_keys`;
       const psScript = [
         `$b=[System.Convert]::FromBase64String('${b64pw}')`,
         `$p=[System.Text.Encoding]::UTF8.GetString($b)`,
-        `net user opc $p /logonpasswordchg:no`,
+        `net user opc $p /logonpasswordchg:yes`,
       ].join(';');
       const encodedCmd = Buffer.from(psScript, 'utf16le').toString('base64');
       const sshCommand = `powershell.exe -NonInteractive -NoProfile -EncodedCommand ${encodedCmd}`;
