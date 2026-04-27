@@ -40,7 +40,7 @@ export class ImageController {
       throw new BadRequestException('No file uploaded');
     }
 
-    // Validate file type
+    // Validate file type via mimetype (declared by client — not authoritative)
     const allowedMimeTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
     if (!allowedMimeTypes.includes(file.mimetype)) {
       throw new BadRequestException('Invalid file type. Only images are allowed');
@@ -49,11 +49,67 @@ export class ImageController {
     // Validate file size (10MB max)
     const maxSize = 10 * 1024 * 1024; // 10MB
     if (file.size > maxSize) {
-      throw new BadRequestException('File size too large. Maximum 5MB allowed');
+      throw new BadRequestException('File size too large. Maximum 10MB allowed');
+    }
+
+    // SECURITY: Authoritative content-type check via magic bytes. The
+    // mimetype above is supplied by the client and can be spoofed to slip in
+    // executables or scripts disguised as images. Verify the actual file
+    // header bytes before accepting the upload.
+    if (!file.buffer || file.buffer.length < 12) {
+      throw new BadRequestException('Invalid image file (empty or truncated)');
+    }
+    if (!ImageController.isValidImageBuffer(file.buffer)) {
+      throw new BadRequestException(
+        'Invalid file content. The file does not appear to be a valid image (JPEG, PNG, GIF, or WEBP).',
+      );
     }
 
     const userId = req.user?.id;
     return await this.imageService.saveImage(file, userId);
+  }
+
+  /**
+   * Validate that a file buffer starts with a known image magic-bytes signature.
+   * - JPEG: FF D8 FF
+   * - PNG : 89 50 4E 47 0D 0A 1A 0A
+   * - GIF : 47 49 46 38 (GIF8 — covers GIF87a / GIF89a)
+   * - WEBP: 52 49 46 46 ?? ?? ?? ?? 57 45 42 50  (RIFF....WEBP)
+   */
+  private static isValidImageBuffer(buf: Buffer): boolean {
+    if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
+      return true; // JPEG
+    }
+    if (
+      buf.length >= 8 &&
+      buf[0] === 0x89 &&
+      buf[1] === 0x50 &&
+      buf[2] === 0x4e &&
+      buf[3] === 0x47 &&
+      buf[4] === 0x0d &&
+      buf[5] === 0x0a &&
+      buf[6] === 0x1a &&
+      buf[7] === 0x0a
+    ) {
+      return true; // PNG
+    }
+    if (
+      buf.length >= 4 &&
+      buf[0] === 0x47 &&
+      buf[1] === 0x49 &&
+      buf[2] === 0x46 &&
+      buf[3] === 0x38
+    ) {
+      return true; // GIF (GIF87a / GIF89a)
+    }
+    if (
+      buf.length >= 12 &&
+      buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46 && // "RIFF"
+      buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50  // "WEBP"
+    ) {
+      return true; // WEBP
+    }
+    return false;
   }
 
   @Get('serve/:filename')

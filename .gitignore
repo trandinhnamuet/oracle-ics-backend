@@ -73,3 +73,25 @@ secrets/
 *_rsa.pub
 id_rsa*
 *.ppk
+
+# Debug/dev scripts (contain hardcoded resource IDs)
+oci-creds.js
+create_vm.js
+create_vm2016.js
+get_console.js
+oci-port.js
+open5985.js
+open_port.js
+open_winrm.js
+raw_console.js
+raw_console2.js
+run_cmd.js
+run_cmd2.js
+run_cmd3.js
+save_key.js
+serial_console.js
+test_ssh.js
+check_agent.js
+check_ssh.js
+srv.py
+test_reset.py

@@ -56,7 +56,7 @@ export class AuthService {
     const hashedPassword = await bcrypt.hash(password, 10);
 
     // Enforce shared hourly OTP limit before generating/sending (counts the registration OTP)
-    this.otpService.checkAndRecordHourlySend(email);
+    await this.otpService.checkAndRecordHourlySend(email);
 
     // Generate 6-digit OTP
     const otp = this.generateOtp();
@@ -202,7 +202,7 @@ export class AuthService {
     }
 
     // Enforce shared hourly OTP limit before generating/sending
-    this.otpService.checkAndRecordHourlySend(email);
+    await this.otpService.checkAndRecordHourlySend(email);
 
     // Generate new OTP
     const otp = this.generateOtp();
@@ -379,6 +379,21 @@ export class AuthService {
 
     const expiresAt = new Date();
     expiresAt.setDate(expiresAt.getDate() + 30); // 30 days
+
+    // Enforce a per-user session cap. If the user already has the maximum
+    // number of active sessions, evict the oldest ones so that after this
+    // insert the total stays at the cap.
+    const MAX_SESSIONS_PER_USER = 10;
+    const existingSessions = await this.sessionRepository.find({
+      where: { userId },
+      order: { createdAt: 'ASC' }, // oldest first
+    });
+    if (existingSessions.length >= MAX_SESSIONS_PER_USER) {
+      const evictCount =
+        existingSessions.length - MAX_SESSIONS_PER_USER + 1;
+      const sessionsToDelete = existingSessions.slice(0, evictCount);
+      await this.sessionRepository.remove(sessionsToDelete);
+    }
 
     const session = this.sessionRepository.create({
       userId,
@@ -585,7 +600,7 @@ export class AuthService {
 
       // Enforce shared hourly OTP limit (silently skip send if limit hit — don't block login flow)
       try {
-        this.otpService.checkAndRecordHourlySend(email);
+        await this.otpService.checkAndRecordHourlySend(email);
       } catch {
         // Limit reached: return verification required without sending a new OTP
         return {
@@ -786,39 +801,51 @@ export class AuthService {
   async forgotPassword(forgotPasswordDto: ForgotPasswordDto, lang: string = DEFAULT_LANG) {
     const { email } = forgotPasswordDto;
 
-    // Find user
-    const user = await this.userRepository.findOne({ where: { email } });
-    if (!user) {
-      throw new BadRequestException(t('forgotPassword.notFound', lang));
-    }
-
-    // Enforce shared hourly OTP limit before generating/sending
-    this.otpService.checkAndRecordHourlySend(email);
-
-    // Generate 6-digit OTP
-    const otp = this.generateOtp();
-    const otpExpiresAt = new Date();
-    otpExpiresAt.setMinutes(otpExpiresAt.getMinutes() + 10); // OTP valid for 10 minutes
-
-    // Save OTP to user
-    user.passwordResetOtp = otp;
-    user.passwordResetOtpExpiresAt = otpExpiresAt;
-    await this.userRepository.save(user);
-
-    // Send OTP email
-    await this.emailService.sendPasswordReset({
-      to: email,
-      userName: `${user.firstName} ${user.lastName}`,
-      resetCode: otp,
-      expirationMinutes: 10,
-      lang,
-    });
-
-    return {
+    // SECURITY: To prevent account enumeration, always return the same generic
+    // success response regardless of whether the email exists. Only perform the
+    // OTP generation / email send when the user actually exists.
+    const genericResponse = {
       message: t('forgotPassword.success', lang),
-      email: user.email,
+      email,
       success: true,
     };
+
+    const user = await this.userRepository.findOne({ where: { email } });
+    if (!user) {
+      this.logger.log(`forgotPassword requested for non-existent email (uniform response returned)`);
+      return genericResponse;
+    }
+
+    try {
+      // Enforce shared hourly OTP limit before generating/sending
+      await this.otpService.checkAndRecordHourlySend(email);
+
+      // Generate 6-digit OTP
+      const otp = this.generateOtp();
+      const otpExpiresAt = new Date();
+      otpExpiresAt.setMinutes(otpExpiresAt.getMinutes() + 10); // OTP valid for 10 minutes
+
+      // Save OTP to user
+      user.passwordResetOtp = otp;
+      user.passwordResetOtpExpiresAt = otpExpiresAt;
+      await this.userRepository.save(user);
+
+      // Send OTP email
+      await this.emailService.sendPasswordReset({
+        to: email,
+        userName: `${user.firstName} ${user.lastName}`,
+        resetCode: otp,
+        expirationMinutes: 10,
+        lang,
+      });
+    } catch (err) {
+      // Do not leak failure reasons (e.g. rate-limit message) — log internally
+      // and return the same generic response. This preserves the
+      // non-enumeration guarantee.
+      this.logger.error(`forgotPassword: failed to dispatch OTP for ${email}: ${err?.message}`);
+    }
+
+    return genericResponse;
   }
 
   /**
@@ -879,6 +906,15 @@ export class AuthService {
     user.passwordResetOtp = undefined;
     user.passwordResetOtpExpiresAt = undefined;
     await this.userRepository.save(user);
+
+    // SECURITY: Invalidate all existing sessions/refresh tokens after password
+    // reset so that any attacker who previously obtained credentials or a
+    // session is forcefully logged out and must re-authenticate.
+    try {
+      await this.deleteAllUserSessions(String(user.id));
+    } catch (err) {
+      this.logger.error(`Failed to invalidate sessions after password reset for user ${user.id}: ${err?.message}`);
+    }
 
     // Notify user: password reset success
     await this.notificationService.notify(

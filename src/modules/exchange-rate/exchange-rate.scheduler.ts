@@ -1,16 +1,18 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { ExchangeRateService } from './exchange-rate.service';
 
 @Injectable()
 export class ExchangeRateScheduler {
+  private readonly logger = new Logger(ExchangeRateScheduler.name);
+
   constructor(private readonly exchangeRateService: ExchangeRateService) {}
 
   // Chạy mỗi ngày lúc 1h sáng giờ Việt Nam
   @Cron('0 1 * * *', { timeZone: 'Asia/Ho_Chi_Minh' })
   async handleDailyExchangeRate() {
-    console.log('Đang lấy tỉ giá Vietcombank...');
+    this.logger.log('Fetching Vietcombank exchange rates...');
     await this.exchangeRateService.fetchAndSaveRates();
-    console.log('Đã lưu tỉ giá xong!');
+    this.logger.log('Exchange rate update finished');
   }
 }

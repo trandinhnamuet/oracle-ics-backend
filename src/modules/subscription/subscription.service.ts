@@ -126,14 +126,9 @@ export class SubscriptionService {
     const currentBalance = parseFloat(userWallet.balance.toString());
     const packageCost = parseFloat(cloudPackage.cost_vnd.toString()) * monthsCount;
     
-    console.log('[SubscriptionService][createWithAccountBalance] Balance check:', {
-      userId,
-      cloudPackageId,
-      monthsCount,
-      currentBalance,
-      packageCost,
-      sufficient: currentBalance >= packageCost
-    });
+    this.logger.log(
+      `[createWithAccountBalance] Balance check userId=${userId} cloudPackageId=${cloudPackageId} monthsCount=${monthsCount} currentBalance=${currentBalance} packageCost=${packageCost} sufficient=${currentBalance >= packageCost}`,
+    );
 
     if (currentBalance < packageCost) {
       throw new BadRequestException('Insufficient balance');
@@ -406,7 +401,7 @@ export class SubscriptionService {
         },
       });
     } catch (error) {
-      console.error('Error in findByUser with relations:', error);
+      this.logger.error('Error in findByUser with relations', error?.stack || error?.message || error);
       // Fallback: try with array syntax for older TypeORM versions
       try {
         return await this.subscriptionRepository.find({
@@ -417,7 +412,7 @@ export class SubscriptionService {
           },
         });
       } catch (fallbackError) {
-        console.error('Fallback error in findByUser:', fallbackError);
+        this.logger.error('Fallback error in findByUser', fallbackError?.stack || fallbackError?.message || fallbackError);
         // Final fallback: return subscriptions without relations
         return await this.subscriptionRepository.find({
           where: { user_id: userId },
@@ -441,7 +436,7 @@ export class SubscriptionService {
         },
       });
     } catch (error) {
-      console.error('Error in findOne with relations:', error);
+      this.logger.error('Error in findOne with relations', error?.stack || error?.message || error);
       // Fallback: try with array syntax for older TypeORM versions
       subscription = await this.subscriptionRepository.findOne({
         where: { id },

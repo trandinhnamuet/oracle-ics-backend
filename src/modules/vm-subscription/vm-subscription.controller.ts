@@ -95,11 +95,11 @@ export class VmSubscriptionController {
     @Body() requestNewKeyDto: RequestNewKeyDto,
     @Headers('accept-language') acceptLanguage?: string,
   ) {
-    console.log('🚀 Controller: Request New SSH Key endpoint hit');
-    console.log('📋 Subscription ID:', subscriptionId);
-    console.log('👤 User ID:', req.user?.id);
-    console.log('📧 Request Body:', requestNewKeyDto);
-    
+    this.logger.log(
+      `Request New SSH Key endpoint hit (subscriptionId=${subscriptionId}, userId=${req.user?.id})`,
+    );
+    this.logger.debug(`Request body: ${JSON.stringify(requestNewKeyDto)}`);
+
     const userId = req.user.id;
     return this.vmSubscriptionService.requestNewSshKey(
       subscriptionId,
@@ -123,14 +123,10 @@ export class VmSubscriptionController {
   ) {
     const userId = req.user.id;
     const userRole = req.user.role;
-    console.log('\n========== VM ACTION ENDPOINT ==========');
-    console.log('📍 Endpoint: POST /vm-subscription/:subscriptionId/action');
-    console.log('📋 Subscription ID:', subscriptionId);
-    console.log('👤 User ID:', userId);
-    console.log('👤 User Role:', userRole);
-    console.log('🎯 Action:', vmActionDto.action);
-    console.log('========================================\n');
-    
+    this.logger.log(
+      `VM action requested: action=${vmActionDto.action} subscriptionId=${subscriptionId} userId=${userId} userRole=${userRole}`,
+    );
+
     return this.vmSubscriptionService.performVmAction(
       subscriptionId,
       userId,
@@ -152,11 +148,9 @@ export class VmSubscriptionController {
     @Param('subscriptionId') subscriptionId: string,
     @Body() body: ResetWindowsPasswordDto,
   ) {
-    console.log('\n========== RESET WINDOWS PASSWORD ENDPOINT ==========');
-    console.log('📋 Subscription ID:', subscriptionId);
-    console.log('👤 User ID:', req.user?.id);
-    console.log('🔑 Custom password provided:', !!body?.newPassword);
-    console.log('====================================================\n');
+    this.logger.log(
+      `Reset Windows password requested: subscriptionId=${subscriptionId} userId=${req.user?.id} customPasswordProvided=${!!body?.newPassword}`,
+    );
 
     const userId = req.user.id;
     const jobId = await this.vmSubscriptionService.startResetWindowsPasswordAsync(

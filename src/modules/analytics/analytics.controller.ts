@@ -102,7 +102,7 @@ export class AnalyticsController {
    * Get daily page views (requires authentication)
    */
   @Get('daily')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async getPageViewsByDate(
     @Query('startDate') startDate?: string,
     @Query('endDate') endDate?: string,
@@ -131,7 +131,7 @@ export class AnalyticsController {
    * Get average page load time (requires authentication)
    */
   @Get('load-time')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async getAveragePageLoadTime(
     @Query('startDate') startDate?: string,
     @Query('endDate') endDate?: string,
@@ -159,7 +159,7 @@ export class AnalyticsController {
    * Get unique users count (requires authentication)
    */
   @Get('users')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async getUniqueUsers(
     @Query('startDate') startDate?: string,
     @Query('endDate') endDate?: string,
@@ -187,7 +187,7 @@ export class AnalyticsController {
    * Get bounce rate (requires authentication)
    */
   @Get('bounce-rate')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async getBounceRate(
     @Query('startDate') startDate?: string,
     @Query('endDate') endDate?: string,
@@ -215,7 +215,7 @@ export class AnalyticsController {
    * Get top events (requires authentication)
    */
   @Get('events')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async getTopEvents(
     @Query('startDate') startDate?: string,
     @Query('endDate') endDate?: string,

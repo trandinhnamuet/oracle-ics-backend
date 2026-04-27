@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Notification, NotificationType } from '../../entities/notification.entity';
@@ -14,6 +14,8 @@ export interface NotificationPage {
 
 @Injectable()
 export class NotificationService {
+  private readonly logger = new Logger(NotificationService.name);
+
   constructor(
     @InjectRepository(Notification)
     private notificationRepo: Repository<Notification>,
@@ -49,7 +51,7 @@ export class NotificationService {
     try {
       await this.create({ user_id: userId, type, title, message, data, title_en: titleEn, message_en: messageEn });
     } catch (err) {
-      console.error('[NotificationService] Failed to create notification:', err);
+      this.logger.error('Failed to create notification', err?.stack || err?.message || err);
     }
   }
 

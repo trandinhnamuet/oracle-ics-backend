@@ -86,94 +86,128 @@ export class SepayService {
         this.logger.log(`Found payment: ${payment.id}, type: ${payment.payment_type}, subscription_id: ${payment.subscription_id}`);
         // Cập nhật payment status
         await this.paymentRepository.update(payment.id, { status: 'success' });
-        
-        // Xử lý theo loại payment
-        if (payment.payment_type === 'deposit') {
-          // Nạp tiền vào wallet
-          const updatedWallet = await this.userWalletService.addBalance(payment.user_id, payment.amount);
-          this.logger.log(`Added ${payment.amount} VND to user ${payment.user_id} wallet`);
 
-          // Notification: wallet credit
-          const formatted = new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(payment.amount);
-          await this.notificationService.notify(
-            payment.user_id,
-            NotificationType.WALLET_CREDIT,
-            '💰 Nạp tiền thành công',
-            `Bạn đã nạp thành công ${formatted} vào tài khoản. Số dư mới: ${new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(updatedWallet.balance)}.`,
-            { amount: payment.amount, balance_after: updatedWallet.balance, payment_id: payment.id },
-            '💰 Deposit successful',
-            `You have successfully deposited ${formatted} to your account. New balance: ${new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(updatedWallet.balance)}.`,
-          );
-        } else if (payment.payment_type === 'subscription') {
-          // Kích hoạt subscription
-          if (payment.subscription_id) {
-            await this.subscriptionRepository.update(payment.subscription_id, { 
-              status: 'active' 
-            });
-            this.logger.log(`Activated subscription ${payment.subscription_id}`);
+        // SECURITY/CORRECTNESS: Wrap downstream side effects (wallet credit,
+        // subscription activation, statistical transactions) in try-catch with
+        // a best-effort rollback of the payment status. Without this, a
+        // failure after the payment row is flipped to "success" leaves the
+        // user without their money / subscription while the payment looks
+        // settled — silently dropping funds.
+        // We do NOT use a TypeORM QueryRunner here because the dependent
+        // services manage their own connections and may already have been
+        // partially committed. Best we can do at this layer is mark the
+        // payment as 'failed' so support / a retry job can replay it.
+        try {
+          // Xử lý theo loại payment
+          if (payment.payment_type === 'deposit') {
+            // Nạp tiền vào wallet
+            const updatedWallet = await this.userWalletService.addBalance(payment.user_id, payment.amount);
+            this.logger.log(`Added ${payment.amount} VND to user ${payment.user_id} wallet`);
 
-            // Send notification to user about successful subscription payment
+            // Notification: wallet credit (failures here must NOT roll back the
+            // wallet credit — the money has landed; just log).
             try {
-              const subscription = await this.subscriptionRepository.findOne({
-                where: { id: payment.subscription_id },
-                relations: ['cloudPackage'],
-              });
-
-              if (subscription && subscription.cloudPackage) {
-                const pkgName = subscription.cloudPackage.name;
-                const fmtAmount = new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(payment.amount);
-                const endDate = new Date(subscription.end_date).toLocaleDateString('vi-VN');
-
-                await this.notificationService.notify(
-                  payment.user_id,
-                  NotificationType.SUBSCRIPTION_CREATED,
-                  '🚀 Đăng ký gói dịch vụ thành công',
-                  `Gói "${pkgName}" (${fmtAmount}) đã được kích hoạt. Hạn sử dụng: ${endDate}. Vui lòng tham khảo trang "Gói dịch vụ" để khởi tạo máy ảo.`,
-                  { 
-                    subscription_id: subscription.id, 
-                    package_name: pkgName, 
-                    amount: payment.amount,
-                    end_date: subscription.end_date 
-                  },
-                  '🚀 Subscription activated',
-                  `"${pkgName}" (${fmtAmount}) is now active until ${new Date(subscription.end_date).toLocaleDateString('en-US')}. Visit the "Service Package" page to create your virtual machine.`,
-                );
-                this.logger.log(`Sent subscription notification to user ${payment.user_id}`);
-              }
-            } catch (notificationErr) {
-              this.logger.error(`Failed to send subscription notification: ${notificationErr.message}`);
+              const formatted = new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(payment.amount);
+              await this.notificationService.notify(
+                payment.user_id,
+                NotificationType.WALLET_CREDIT,
+                '💰 Nạp tiền thành công',
+                `Bạn đã nạp thành công ${formatted} vào tài khoản. Số dư mới: ${new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(updatedWallet.balance)}.`,
+                { amount: payment.amount, balance_after: updatedWallet.balance, payment_id: payment.id },
+                '💰 Deposit successful',
+                `You have successfully deposited ${formatted} to your account. New balance: ${new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(updatedWallet.balance)}.`,
+              );
+            } catch (notifyErr) {
+              this.logger.error(`Failed to send wallet credit notification for payment ${payment.id}: ${notifyErr?.message}`);
             }
+          } else if (payment.payment_type === 'subscription') {
+            // Kích hoạt subscription
+            if (payment.subscription_id) {
+              await this.subscriptionRepository.update(payment.subscription_id, {
+                status: 'active'
+              });
+              this.logger.log(`Activated subscription ${payment.subscription_id}`);
+
+              // Send notification to user about successful subscription payment
+              try {
+                const subscription = await this.subscriptionRepository.findOne({
+                  where: { id: payment.subscription_id },
+                  relations: ['cloudPackage'],
+                });
+
+                if (subscription && subscription.cloudPackage) {
+                  const pkgName = subscription.cloudPackage.name;
+                  const fmtAmount = new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(payment.amount);
+                  const endDate = new Date(subscription.end_date).toLocaleDateString('vi-VN');
+
+                  await this.notificationService.notify(
+                    payment.user_id,
+                    NotificationType.SUBSCRIPTION_CREATED,
+                    '🚀 Đăng ký gói dịch vụ thành công',
+                    `Gói "${pkgName}" (${fmtAmount}) đã được kích hoạt. Hạn sử dụng: ${endDate}. Vui lòng tham khảo trang "Gói dịch vụ" để khởi tạo máy ảo.`,
+                    {
+                      subscription_id: subscription.id,
+                      package_name: pkgName,
+                      amount: payment.amount,
+                      end_date: subscription.end_date
+                    },
+                    '🚀 Subscription activated',
+                    `"${pkgName}" (${fmtAmount}) is now active until ${new Date(subscription.end_date).toLocaleDateString('en-US')}. Visit the "Service Package" page to create your virtual machine.`,
+                  );
+                  this.logger.log(`Sent subscription notification to user ${payment.user_id}`);
+                }
+              } catch (notificationErr) {
+                this.logger.error(`Failed to send subscription notification: ${notificationErr.message}`);
+              }
+            }
+
+            // Ghi nhận 2 giao dịch thống kê cho subscription qua QR:
+            //   credit (+amount, 'qr_payment_received')    → tính vào Tổng nạp
+            //   debit  (-amount, 'qr_subscription_payment') → tính vào Tổng chi
+            // Ví của người dùng không thay đổi (tiền đến thẳng ngân hàng).
+            const userWallet = await this.userWalletService.findByUserId(payment.user_id);
+            const currentWalletBalance = Number(userWallet.balance);
+            const balanceAfterCredit = currentWalletBalance + Number(payment.amount);
+
+            // Credit — Tổng nạp
+            await this.userWalletService.createTransaction({
+              wallet_id: userWallet.id,
+              payment_id: payment.id,
+              change_amount: payment.amount,
+              balance_after: balanceAfterCredit,
+              type: 'qr_payment_received',
+            });
+
+            // Debit — Tổng chi
+            await this.userWalletService.createTransaction({
+              wallet_id: userWallet.id,
+              payment_id: payment.id,
+              change_amount: -payment.amount,
+              balance_after: currentWalletBalance,
+              type: 'qr_subscription_payment',
+            });
+
+            this.logger.log(`Recorded QR credit+debit for payment ${payment.id}`);
           }
-          
-          // Ghi nhận 2 giao dịch thống kê cho subscription qua QR:
-          //   credit (+amount, 'qr_payment_received')    → tính vào Tổng nạp
-          //   debit  (-amount, 'qr_subscription_payment') → tính vào Tổng chi
-          // Ví của người dùng không thay đổi (tiền đến thẳng ngân hàng).
-          const userWallet = await this.userWalletService.findByUserId(payment.user_id);
-          const currentWalletBalance = Number(userWallet.balance);
-          const balanceAfterCredit = currentWalletBalance + Number(payment.amount);
-
-          // Credit — Tổng nạp
-          await this.userWalletService.createTransaction({
-            wallet_id: userWallet.id,
-            payment_id: payment.id,
-            change_amount: payment.amount,
-            balance_after: balanceAfterCredit,
-            type: 'qr_payment_received',
-          });
-
-          // Debit — Tổng chi
-          await this.userWalletService.createTransaction({
-            wallet_id: userWallet.id,
-            payment_id: payment.id,
-            change_amount: -payment.amount,
-            balance_after: currentWalletBalance,
-            type: 'qr_subscription_payment',
-          });
-
-          this.logger.log(`Recorded QR credit+debit for payment ${payment.id}`);
+        } catch (postUpdateErr) {
+          // Roll back payment status so this transaction does not appear
+          // settled while user-visible side effects failed. Operators can
+          // manually investigate / retry payments left in 'failed'.
+          this.logger.error(
+            `Post-payment side effects failed for payment ${payment.id}; rolling back payment to 'failed'. Error: ${postUpdateErr?.message}`,
+            postUpdateErr?.stack,
+          );
+          try {
+            await this.paymentRepository.update(payment.id, { status: 'failed' });
+          } catch (rollbackErr) {
+            this.logger.error(
+              `CRITICAL: failed to roll back payment ${payment.id} status after side-effect failure. Manual intervention required. Error: ${rollbackErr?.message}`,
+              rollbackErr?.stack,
+            );
+          }
+          return { success: false, message: 'Internal error finalizing payment; rolled back' };
         }
-        
+
         this.logger.log(`Updated payment ${payment.id} to success for amount ${webhookData.transferAmount}`);
       } else {
         this.logger.warn(`No pending payment found for amount: ${webhookData.transferAmount}`);
@@ -241,9 +275,15 @@ export class SepayService {
 
   private generateQRUrl(amount: string, description: string): string {
     const baseUrl = 'https://qr.sepay.vn/img';
+    // Read bank credentials from environment to avoid leaking real account
+    // numbers in source control. Fall back to known defaults only when env
+    // vars are unset (legacy behavior). Configure BANK_ACCOUNT_NUMBER and
+    // BANK_NAME in your deployment environment.
+    const acc = process.env.BANK_ACCOUNT_NUMBER || '1036053562';
+    const bank = process.env.BANK_NAME || 'Vietcombank';
     const params = new URLSearchParams({
-      acc: '1036053562',
-      bank: 'Vietcombank',
+      acc,
+      bank,
       amount: amount,
       des: description
     });

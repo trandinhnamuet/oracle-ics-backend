@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import * as nodemailer from 'nodemailer';
 import { join } from 'path';
 import { RegistrationRequests } from '../registration-requests/registration-requests.entity';
@@ -7,6 +7,7 @@ import { appendMailLog } from '../../email/mail-logger.util';
 
 @Injectable()
 export class EmailService {
+    private readonly logger = new Logger(EmailService.name);
     private transporter: nodemailer.Transporter;
 
     constructor() {
@@ -31,7 +32,7 @@ export class EmailService {
             html,
             attachments,
         };
-        console.log('Sending email with options:', mailOptions);
+        this.logger.log(`Sending email to ${to} (subject="${subject}")`);
         const result = await this.transporter.sendMail(mailOptions);
         appendMailLog({
           to,

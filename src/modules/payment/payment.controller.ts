@@ -9,6 +9,10 @@ import {
   Request,
   ParseIntPipe,
   ForbiddenException,
+  Headers,
+  UnauthorizedException,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
 import { PaymentService } from './payment.service';
 import { CreatePaymentDto } from './dto/create-payment.dto';
@@ -70,9 +74,19 @@ export class PaymentController {
   }
 
   @Post('sepay-callback')
+  @HttpCode(HttpStatus.OK)
   async handleSepayCallback(
+    @Headers('authorization') authHeader: string,
     @Body() callbackData: any,
   ) {
+    // Webhook authentication: require Sepay API key (fail-close).
+    const apiKey = process.env.SEPAY_WEBHOOK_API_KEY;
+    if (!apiKey) {
+      throw new UnauthorizedException('Webhook API key is not configured');
+    }
+    if (authHeader !== `Apikey ${apiKey}`) {
+      throw new UnauthorizedException('Invalid webhook API key');
+    }
     return await this.paymentService.handleSepayCallback(callbackData);
   }
 
