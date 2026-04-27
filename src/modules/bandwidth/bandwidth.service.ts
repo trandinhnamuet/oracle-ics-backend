@@ -31,9 +31,11 @@ export class BandwidthService {
    */
   private getMonthRange(yearMonth: string): { startTime: Date; endTime: Date } {
     const [year, month] = yearMonth.split('-').map(Number);
-    const startTime = new Date(year, month - 1, 1, 0, 0, 0, 0);
-    const lastDay = new Date(year, month, 0).getDate();
-    const endTime = new Date(year, month - 1, lastDay, 23, 59, 59, 999);
+    // Use UTC to match OCI Console's month boundaries — avoids UTC+7 offset
+    // causing data from the last ~7h of the previous month to bleed in.
+    const startTime = new Date(Date.UTC(year, month - 1, 1, 0, 0, 0, 0));
+    const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    const endTime = new Date(Date.UTC(year, month - 1, lastDay, 23, 59, 59, 999));
     const now = new Date();
     return { startTime, endTime: endTime > now ? now : endTime };
   }
