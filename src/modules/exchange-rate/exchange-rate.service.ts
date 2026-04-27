@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ExchangeRate } from './exchange-rate.entity';
@@ -7,6 +7,8 @@ import { parseStringPromise } from 'xml2js';
 
 @Injectable()
 export class ExchangeRateService {
+  private readonly logger = new Logger(ExchangeRateService.name);
+
   constructor(
     @InjectRepository(ExchangeRate)
     private readonly exchangeRateRepository: Repository<ExchangeRate>,
@@ -50,9 +52,9 @@ export class ExchangeRateService {
           direction: 'sell',
         });
       }
-      console.log(`Tỉ giá USD/VND: Mua ${buy}, Bán ${sell}`);
+      this.logger.log(`USD/VND rates updated: buy=${buy}, sell=${sell}`);
     } catch (error) {
-      console.error('Lỗi lấy tỉ giá:', error);
+      this.logger.error('Failed to fetch exchange rates', error?.stack || error?.message || error);
     }
   }
 }

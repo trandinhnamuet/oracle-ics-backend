@@ -1,7 +1,9 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { LessThan, Repository, MoreThan } from 'typeorm';
 import { EmailVerification } from '../../entities/email-verification.entity';
+import { OtpRateLimit } from '../../entities/otp-rate-limit.entity';
 import { EmailService } from '../email/email.service';
 import { otpEmailTemplate } from '../../templates/otp-email.template';
 import * as crypto from 'crypto';
@@ -15,50 +17,44 @@ export class OtpService {
   private readonly HOURLY_LIMIT = 6;
   private readonly HOURLY_WINDOW_MS = 60 * 60 * 1000; // 1 hour
 
-  /** Sliding-window store: email -> array of send timestamps (ms) */
-  private readonly hourlySendStore = new Map<string, number[]>();
-
   constructor(
     @InjectRepository(EmailVerification)
     private emailVerificationRepository: Repository<EmailVerification>,
+    @InjectRepository(OtpRateLimit)
+    private otpRateLimitRepository: Repository<OtpRateLimit>,
     private emailService: EmailService,
   ) {}
 
   /**
    * Enforce a shared hourly send limit (HOURLY_LIMIT per email across all OTP types).
-   * Uses a sliding-window approach: timestamps older than 1 hour are evicted on each call.
+   * Persists send timestamps in oracle.otp_rate_limit so the limit survives restarts
+   * and is shared across multiple instances.
    * Throws BadRequestException when the limit is exceeded.
    */
-  checkAndRecordHourlySend(email: string): void {
-    const now = Date.now();
-    const windowStart = now - this.HOURLY_WINDOW_MS;
+  async checkAndRecordHourlySend(email: string): Promise<void> {
+    const now = new Date();
+    const windowStart = new Date(now.getTime() - this.HOURLY_WINDOW_MS);
 
-    // Evict timestamps outside the window
-    const existing = (this.hourlySendStore.get(email) ?? []).filter(t => t > windowStart);
+    const recent = await this.otpRateLimitRepository.find({
+      where: {
+        email,
+        sentAt: MoreThan(windowStart),
+      },
+      order: { sentAt: 'ASC' },
+    });
 
-    if (existing.length >= this.HOURLY_LIMIT) {
-      // Earliest timestamp in window; user must wait until it ages out
-      const oldestInWindow = Math.min(...existing);
-      const waitMs = oldestInWindow + this.HOURLY_WINDOW_MS - now;
-      const waitMinutes = Math.ceil(waitMs / 60_000);
+    if (recent.length >= this.HOURLY_LIMIT) {
+      const oldestInWindow = recent[0].sentAt.getTime();
+      const waitMs = oldestInWindow + this.HOURLY_WINDOW_MS - now.getTime();
+      const waitMinutes = Math.max(1, Math.ceil(waitMs / 60_000));
       throw new BadRequestException(
         `Hourly OTP limit reached. Please wait ${waitMinutes} minute${waitMinutes !== 1 ? 's' : ''} before requesting again.`,
       );
     }
 
-    // Record this send and persist updated list
-    existing.push(now);
-    this.hourlySendStore.set(email, existing);
-
-    // Auto-cleanup: remove entry after window expires (no lingering memory)
-    setTimeout(() => {
-      const remaining = (this.hourlySendStore.get(email) ?? []).filter(t => t > Date.now() - this.HOURLY_WINDOW_MS);
-      if (remaining.length === 0) {
-        this.hourlySendStore.delete(email);
-      } else {
-        this.hourlySendStore.set(email, remaining);
-      }
-    }, this.HOURLY_WINDOW_MS);
+    await this.otpRateLimitRepository.save(
+      this.otpRateLimitRepository.create({ email, sentAt: now }),
+    );
   }
 
   /**
@@ -86,7 +82,7 @@ export class OtpService {
       if (existing && existing.lastResendAt) {
         const timeSinceLastResend = now.getTime() - existing.lastResendAt.getTime();
         const cooldownMs = this.RESEND_COOLDOWN_SECONDS * 1000;
-        
+
         if (timeSinceLastResend < cooldownMs) {
           const remainingSeconds = Math.ceil((cooldownMs - timeSinceLastResend) / 1000);
           throw new BadRequestException(`Please wait ${remainingSeconds} seconds before requesting new OTP`);
@@ -94,7 +90,7 @@ export class OtpService {
       }
 
       // Enforce shared hourly limit only when we're about to send an actual email.
-      this.checkAndRecordHourlySend(email);
+      await this.checkAndRecordHourlySend(email);
 
       const otpCode = this.generateOtp();
 
@@ -126,7 +122,7 @@ export class OtpService {
         text: emailTemplate.text,
       });
 
-      this.logger.log(`OTP created and sent to ${email}: ${otpCode}`);
+      this.logger.log(`OTP created and sent to ${email}`);
       return { otpCode, canResend: true };
     } catch (error) {
       this.logger.error(`Failed to create OTP for ${email}:`, error);
@@ -139,8 +135,8 @@ export class OtpService {
    */
   async verifyOtp(email: string, otpCode: string): Promise<{ valid: boolean; error?: string }> {
     try {
-      this.logger.log(`Attempting to verify OTP for email: ${email}, code: ${otpCode}`);
-      
+      this.logger.log(`Attempting to verify OTP for email: ${email}`);
+
       const verification = await this.emailVerificationRepository.findOne({
         where: { email },
       });
@@ -150,7 +146,7 @@ export class OtpService {
         return { valid: false, error: 'No OTP found for this email' };
       }
 
-      this.logger.log(`Found OTP record for ${email}: code=${verification.otpCode}, expires=${verification.expiresAt}, attempts=${verification.attemptCount}`);
+      this.logger.log(`Found OTP record for ${email}: expires=${verification.expiresAt}, attempts=${verification.attemptCount}`);
 
       // Check expiry
       if (new Date() > verification.expiresAt) {
@@ -169,7 +165,7 @@ export class OtpService {
         verification.attemptCount += 1;
         await this.emailVerificationRepository.save(verification);
         const remaining = this.MAX_ATTEMPTS - verification.attemptCount;
-        this.logger.log(`Invalid OTP for ${email}. Expected: ${verification.otpCode}, Received: ${otpCode}`);
+        this.logger.log(`Invalid OTP for ${email}. Attempts used: ${verification.attemptCount}/${this.MAX_ATTEMPTS}`);
         return { valid: false, error: `Invalid OTP. ${remaining} attempts remaining.` };
       }
 
@@ -245,10 +241,29 @@ export class OtpService {
         .delete()
         .where('expires_at < :now', { now: new Date() })
         .execute();
-        
+
       this.logger.log(`Cleaned up ${result.affected} expired OTP records`);
     } catch (error) {
       this.logger.error('Failed to cleanup expired OTPs:', error);
+    }
+  }
+
+  /**
+   * Cleanup old rate-limit records (older than 2 hours).
+   * Runs every hour to keep the table small.
+   */
+  @Cron(CronExpression.EVERY_HOUR)
+  async cleanupOtpRateLimitRecords(): Promise<void> {
+    try {
+      const cutoff = new Date(Date.now() - 2 * this.HOURLY_WINDOW_MS);
+      const result = await this.otpRateLimitRepository.delete({
+        sentAt: LessThan(cutoff),
+      });
+      if (result.affected) {
+        this.logger.log(`Cleaned up ${result.affected} old OTP rate-limit records`);
+      }
+    } catch (error) {
+      this.logger.error('Failed to cleanup OTP rate-limit records:', error);
     }
   }
 }

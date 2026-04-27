@@ -15,8 +15,14 @@ export class SepayController {
     @Headers('authorization') authHeader: string,
     @Body() webhookData: SepayWebhookDto,
   ) {
+    // Fail-close: reject if the webhook API key is not configured to avoid
+    // accidentally exposing the webhook in misconfigured environments.
     const apiKey = process.env.SEPAY_WEBHOOK_API_KEY;
-    if (apiKey && authHeader !== `Apikey ${apiKey}`) {
+    if (!apiKey) {
+      this.logger.error('SEPAY_WEBHOOK_API_KEY is not configured; rejecting webhook');
+      throw new UnauthorizedException('Webhook API key is not configured');
+    }
+    if (authHeader !== `Apikey ${apiKey}`) {
       throw new UnauthorizedException('Invalid webhook API key');
     }
     this.logger.log(`Received Sepay webhook for transaction ${webhookData.id}`);

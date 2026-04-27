@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, ConflictException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import { UserWallet } from '../../entities/user-wallet.entity';
@@ -11,6 +11,8 @@ const creatingWallets = new Set<number>();
 
 @Injectable()
 export class UserWalletService {
+  private readonly logger = new Logger(UserWalletService.name);
+
   constructor(
     @InjectRepository(UserWallet)
     private userWalletRepository: Repository<UserWallet>,
@@ -127,7 +129,7 @@ export class UserWalletService {
       }
       
       // Tạo wallet mới
-      console.log(`Creating new wallet for user ${userId}`);
+      this.logger.log(`Creating new wallet for user ${userId}`);
       const newWallet = await this.create({ user_id: userId });
       
       // Load lại với relations

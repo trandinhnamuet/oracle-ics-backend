@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
@@ -12,6 +12,8 @@ import { NotificationType } from '../entities/notification.entity';
 
 @Injectable()
 export class UserService {
+  private readonly logger = new Logger(UserService.name);
+
   constructor(
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
@@ -39,7 +41,7 @@ export class UserService {
       await this.userWalletRepository.save(userWallet);
     } catch (error) {
       // Log error but don't fail user creation
-      console.error('Failed to create wallet for user:', savedUser.id, error);
+      this.logger.error(`Failed to create wallet for user ${savedUser.id}`, error?.stack || error?.message || error);
     }
 
     return savedUser;

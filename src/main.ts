@@ -69,6 +69,28 @@ async function bootstrap() {
   // Use cookie parser
   app.use(cookieParser());
 
+  // ── CSRF posture ──────────────────────────────────────────────────────────
+  // The API is consumed primarily by SPA clients that authenticate with a
+  // JWT Bearer token in the Authorization header. CSRF tokens are not needed
+  // for those requests because attackers cannot forge custom Authorization
+  // headers cross-origin (browsers block this without an explicit CORS opt-in).
+  //
+  // The only browser-managed credential we issue is the refresh-token cookie,
+  // which is hardened against CSRF as follows:
+  //   * httpOnly      → JavaScript on attacker pages cannot read it
+  //   * secure (prod) → only sent over HTTPS
+  //   * SameSite=Lax  → not sent on cross-site sub-resource requests; only
+  //                     attached to top-level navigations to our own origin
+  //   * domain pinned → restricted to the configured COOKIE_DOMAIN
+  //
+  // CORS is also locked to an explicit allow-list (see corsOptions below) so
+  // that even if a malicious page attempted credentialed requests, the browser
+  // would reject the response.
+  //
+  // If we ever introduce non-Bearer cookie-based session auth for state-
+  // changing endpoints, add a double-submit-cookie or csurf middleware here.
+  // ──────────────────────────────────────────────────────────────────────────
+
   // Security headers
   app.use(helmet());
 

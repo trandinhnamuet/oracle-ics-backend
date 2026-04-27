@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Payment } from '../../entities/payment.entity';
@@ -14,6 +14,7 @@ import { v4 as uuidv4 } from 'uuid';
 @Injectable()
 export class PaymentService {
   private static readonly PAYMENT_EXPIRE_MS = 15 * 60 * 1000;
+  private readonly logger = new Logger(PaymentService.name);
 
   constructor(
     @InjectRepository(Payment)
@@ -158,8 +159,8 @@ export class PaymentService {
     });
 
     if (!userWallet) {
-      console.warn(
-        `[PaymentService][recordSubscriptionExpense] No wallet found for user ${payment.user_id}`,
+      this.logger.warn(
+        `[recordSubscriptionExpense] No wallet found for user ${payment.user_id}`,
       );
       return;
     }
@@ -192,27 +193,27 @@ export class PaymentService {
       }),
     );
 
-    console.log(
-      `[PaymentService][recordSubscriptionExpense] Recorded QR credit+debit ` +
+    this.logger.log(
+      `[recordSubscriptionExpense] Recorded QR credit+debit ` +
         `paymentId=${payment.id} amount=${amount} userId=${payment.user_id}`,
     );
   }
 
   private async activateSubscription(subscriptionId: string): Promise<void> {
-    console.log(`[PaymentService][activateSubscription] activating subscription id=${subscriptionId}`);
+    this.logger.log(`[activateSubscription] activating subscription id=${subscriptionId}`);
     const subscription = await this.subscriptionRepository.findOne({
       where: { id: subscriptionId },
       relations: ['cloudPackage'],
     });
 
     if (!subscription) {
-      console.warn(`[PaymentService][activateSubscription] subscription not found id=${subscriptionId}`);
+      this.logger.warn(`[activateSubscription] subscription not found id=${subscriptionId}`);
       throw new NotFoundException(`Subscription with ID ${subscriptionId} not found`);
     }
 
     subscription.status = 'active';
     await this.subscriptionRepository.save(subscription);
-    console.log(`[PaymentService][activateSubscription] subscription activated id=${subscriptionId}`);
+    this.logger.log(`[activateSubscription] subscription activated id=${subscriptionId}`);
 
     // Send notification to user about successful subscription payment
     try {
@@ -241,22 +242,22 @@ export class PaymentService {
             '🚀 Subscription activated',
             `"${pkgName}" (${fmtAmount}) is now active until ${new Date(subscription.end_date).toLocaleDateString('en-US')}. Visit the "Service Package" page to create your virtual machine.`,
           );
-          console.log(`[PaymentService][activateSubscription] Sent subscription notification to user ${subscription.user_id}`);
+          this.logger.log(`[activateSubscription] Sent subscription notification to user ${subscription.user_id}`);
         }
       }
     } catch (notificationErr) {
-      console.error(`[PaymentService][activateSubscription] Failed to send subscription notification: ${notificationErr.message}`);
+      this.logger.error(`[activateSubscription] Failed to send subscription notification: ${notificationErr.message}`);
     }
   }
 
   private async updateUserWallet(payment: Payment): Promise<void> {
-    console.log(`[PaymentService][updateUserWallet] start paymentId=${payment.id} user_id=${payment.user_id} amount=${payment.amount}`);
+    this.logger.log(`[updateUserWallet] start paymentId=${payment.id} user_id=${payment.user_id} amount=${payment.amount}`);
     // Find user wallet
     const userWallet = await this.userWalletRepository.findOne({
       where: { user_id: payment.user_id },
     });
 
-    console.log(`[PaymentService][updateUserWallet] findOne returned ${userWallet ? 'wallet id=' + userWallet.id : 'null'}`);
+    this.logger.debug(`[updateUserWallet] findOne returned ${userWallet ? 'wallet id=' + userWallet.id : 'null'}`);
 
     if (!userWallet) {
       throw new NotFoundException(`User wallet for user ${payment.user_id} not found`);
@@ -264,14 +265,14 @@ export class PaymentService {
 
     const balanceBefore = Number(userWallet.balance);
     const paymentAmountNum = Number(payment.amount);
-    console.log(`[PaymentService][updateUserWallet] calculating: balanceBefore(${typeof balanceBefore})=${balanceBefore} + paymentAmount(${typeof paymentAmountNum})=${paymentAmountNum}`);
+    this.logger.debug(`[updateUserWallet] calculating: balanceBefore(${typeof balanceBefore})=${balanceBefore} + paymentAmount(${typeof paymentAmountNum})=${paymentAmountNum}`);
     const balanceAfter = balanceBefore + paymentAmountNum;
-    console.log(`[PaymentService][updateUserWallet] balanceAfter=${balanceAfter}`);
+    this.logger.debug(`[updateUserWallet] balanceAfter=${balanceAfter}`);
 
     // Update wallet balance
     userWallet.balance = balanceAfter;
     const savedWallet = await this.userWalletRepository.save(userWallet);
-    console.log(`[PaymentService][updateUserWallet] userWallet saved id=${savedWallet.id} balanceBefore=${balanceBefore} paymentAmount=${paymentAmountNum} balanceAfter=${balanceAfter} savedBalance=${savedWallet.balance}`);
+    this.logger.log(`[updateUserWallet] userWallet saved id=${savedWallet.id} balanceBefore=${balanceBefore} paymentAmount=${paymentAmountNum} balanceAfter=${balanceAfter} savedBalance=${savedWallet.balance}`);
 
     // Create wallet transaction record
     const walletTransaction = this.walletTransactionRepository.create({
@@ -283,7 +284,7 @@ export class PaymentService {
     });
 
     const savedTx = await this.walletTransactionRepository.save(walletTransaction);
-    console.log(`[PaymentService][updateUserWallet] walletTransaction saved id=${savedTx.id} wallet_id=${savedTx.wallet_id} change_amount=${savedTx.change_amount}`);
+    this.logger.log(`[updateUserWallet] walletTransaction saved id=${savedTx.id} wallet_id=${savedTx.wallet_id} change_amount=${savedTx.change_amount}`);
 
     const formattedAmount = new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(paymentAmountNum);
     const formattedBalance = new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(balanceAfter);
@@ -319,7 +320,11 @@ export class PaymentService {
       
       return { success: false, message: 'Invalid callback data' };
     } catch (error) {
-      return { success: false, error: error.message };
+      // SECURITY: Do not echo raw error.message back to the webhook caller —
+      // it can leak SQL fragments, stack frames or PII. Log internally and
+      // return a generic message.
+      this.logger.error(`handleSepayCallback failed: ${error?.message}`, error?.stack);
+      return { success: false, message: 'Internal error processing callback' };
     }
   }
 
@@ -349,7 +354,7 @@ export class PaymentService {
       await this.paymentRepository.save(payment);
     }
 
-    console.log(`[PaymentService] Marked ${stale.length} expired pending payment(s) as expired (older than ${ageMinutes} min)`);
+    this.logger.log(`Marked ${stale.length} expired pending payment(s) as expired (older than ${ageMinutes} min)`);
   }
 
   // Admin manually accept a pending payment

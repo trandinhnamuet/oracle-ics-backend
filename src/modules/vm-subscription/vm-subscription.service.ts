@@ -5,6 +5,8 @@ import {
   BadRequestException,
   InternalServerErrorException,
   HttpException,
+  OnModuleInit,
+  OnModuleDestroy,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, IsNull, Repository } from 'typeorm';
@@ -40,11 +42,23 @@ export interface ResetPasswordJob {
 }
 
 @Injectable()
-export class VmSubscriptionService {
+export class VmSubscriptionService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(VmSubscriptionService.name);
   private transporter: nodemailer.Transporter;
   /** In-memory store for async password-reset jobs (single-process deployment) */
   private readonly resetPasswordJobs = new Map<string, ResetPasswordJob>();
+
+  /**
+   * Periodic sweep interval that evicts password-reset jobs older than the
+   * retention threshold. We rely on this in addition to the per-job setTimeout
+   * so that jobs which never reach the cleanup setTimeout (e.g. service
+   * restart, or callers which never read the result) still get evicted.
+   */
+  private resetPasswordJobsCleanupInterval: NodeJS.Timeout | null = null;
+  /** Maximum age of a password-reset job before it is forcibly evicted (1 hour). */
+  private static readonly RESET_PASSWORD_JOB_TTL_MS = 60 * 60 * 1000;
+  /** How often to sweep stale password-reset jobs (15 minutes). */
+  private static readonly RESET_PASSWORD_JOB_SWEEP_INTERVAL_MS = 15 * 60 * 1000;
 
   constructor(
     @InjectRepository(Subscription)
@@ -74,16 +88,54 @@ export class VmSubscriptionService {
     });
   }
 
+  onModuleInit(): void {
+    // Start periodic cleanup of the in-memory password-reset job store so the
+    // map never grows unbounded if jobs are abandoned or scheduled cleanups
+    // are skipped.
+    this.resetPasswordJobsCleanupInterval = setInterval(
+      () => this.cleanupStaleResetPasswordJobs(),
+      VmSubscriptionService.RESET_PASSWORD_JOB_SWEEP_INTERVAL_MS,
+    );
+    // Avoid blocking process exit (test runners, graceful shutdowns).
+    this.resetPasswordJobsCleanupInterval.unref?.();
+  }
+
+  onModuleDestroy(): void {
+    if (this.resetPasswordJobsCleanupInterval) {
+      clearInterval(this.resetPasswordJobsCleanupInterval);
+      this.resetPasswordJobsCleanupInterval = null;
+    }
+  }
+
+  /**
+   * Evict password-reset jobs that have exceeded RESET_PASSWORD_JOB_TTL_MS.
+   * Age is measured from `startedAt`. A job is considered stale once it is
+   * older than the TTL regardless of status, since clients had ample time to
+   * poll for the result.
+   */
+  private cleanupStaleResetPasswordJobs(): void {
+    const cutoff = Date.now() - VmSubscriptionService.RESET_PASSWORD_JOB_TTL_MS;
+    let evicted = 0;
+    for (const [jobId, job] of this.resetPasswordJobs.entries()) {
+      const startedAtMs = job.startedAt instanceof Date
+        ? job.startedAt.getTime()
+        : new Date(job.startedAt as any).getTime();
+      if (Number.isFinite(startedAtMs) && startedAtMs < cutoff) {
+        this.resetPasswordJobs.delete(jobId);
+        evicted++;
+      }
+    }
+    if (evicted > 0) {
+      this.logger.debug(`Evicted ${evicted} stale resetPasswordJobs (older than 1h)`);
+    }
+  }
+
   /**
    * Check if subscription can be configured (paid and not expired)
    */
   async checkSubscriptionEligibility(subscriptionId: string, userId: number) {
-    console.log('\n========== CHECK SUBSCRIPTION ELIGIBILITY ==========');
-    console.log('🔍 Searching for subscription...');
-    console.log('📋 Subscription ID:', subscriptionId);
-    console.log('👤 User ID:', userId);
-    console.log('👤 User ID Type:', typeof userId);
-    
+    this.logger.debug(`checkSubscriptionEligibility: subscriptionId=${subscriptionId}, userId=${userId}`);
+
     const subscription = await this.subscriptionRepo.findOne({
       where: { id: subscriptionId, user_id: userId },
       relations: ['cloudPackage'],
@@ -91,54 +143,48 @@ export class VmSubscriptionService {
 
     if (!subscription) {
       // Log all subscriptions for this user to help debug
-      console.log('❌ Subscription NOT FOUND');
       const allUserSubscriptions = await this.subscriptionRepo.find({
         where: { user_id: userId },
       });
-      console.log('📊 Total subscriptions for user:', allUserSubscriptions.length);
-      console.log('📋 All subscriptions for this user:');
-      allUserSubscriptions.forEach((sub, index) => {
-        console.log(`  [${index}] ID: ${sub.id}, Status: ${sub.status}, Created: ${sub.created_at}`);
-      });
-      
+      this.logger.debug(
+        `Subscription not found. Total subscriptions for user ${userId}: ${allUserSubscriptions.length}`,
+      );
+
       // Also check if subscription exists with ANY user_id
       const subscriptionAnyUser = await this.subscriptionRepo.findOne({
         where: { id: subscriptionId },
       });
       if (subscriptionAnyUser) {
-        console.log('⚠️  Subscription EXISTS but belongs to different user!');
-        console.log('   Subscription user_id:', subscriptionAnyUser.user_id);
-        console.log('   Request user_id:', userId);
+        this.logger.debug(
+          `Subscription exists but belongs to a different user (owner=${subscriptionAnyUser.user_id}, requester=${userId})`,
+        );
       } else {
-        console.log('❌ Subscription does NOT exist in database at all');
+        this.logger.debug(`Subscription ${subscriptionId} does not exist in database`);
       }
-      console.log('=============================================\n');
       throw new NotFoundException('Subscription not found');
     }
 
-    console.log('✅ Subscription FOUND');
-    console.log('📊 Subscription Status:', subscription.status);
-    console.log('📊 Configuration Status:', subscription.configuration_status);
-    console.log('📊 VM Instance ID:', subscription.vm_instance_id);
+    this.logger.debug(
+      `Subscription found: status=${subscription.status}, configuration_status=${subscription.configuration_status}, vm_instance_id=${subscription.vm_instance_id}`,
+    );
 
     // Check if subscription is paid
     if (subscription.status === 'pending') {
-      console.log('⚠️  Subscription payment is pending');
+      this.logger.debug('Subscription payment is pending');
       throw new BadRequestException('Subscription payment is pending');
     }
 
     if (subscription.status === 'cancelled') {
-      console.log('⚠️  Subscription is cancelled');
+      this.logger.debug('Subscription is cancelled');
       throw new BadRequestException('Subscription is cancelled');
     }
 
     if (subscription.status === 'expired') {
-      console.log('⚠️  Subscription has expired');
+      this.logger.debug('Subscription has expired');
       throw new BadRequestException('Subscription has expired');
     }
 
-    console.log('✅ Subscription eligibility check PASSED');
-    console.log('=============================================\n');
+    this.logger.debug('Subscription eligibility check passed');
     return subscription;
   }
 
@@ -495,10 +541,9 @@ export class VmSubscriptionService {
    * Get VM details for a subscription
    */
   async getSubscriptionVm(subscriptionId: string, userId: number, role?: string) {
-    console.log('\n========== GET SUBSCRIPTION VM ==========');
-    console.log('🔑 Subscription ID:', subscriptionId);
-    console.log('👤 User ID:', userId);
-    console.log('🛡️  Role:', role);
+    this.logger.debug(
+      `getSubscriptionVm: subscriptionId=${subscriptionId}, userId=${userId}, role=${role}`,
+    );
 
     const isAdmin = role === 'admin';
 
@@ -508,17 +553,15 @@ export class VmSubscriptionService {
     });
 
     if (!subscription) {
-      console.log('❌ Subscription NOT FOUND');
-      console.log('========================================\n');
+      this.logger.debug(`Subscription ${subscriptionId} not found`);
       throw new NotFoundException('Subscription not found');
     }
-    
-    console.log('✅ Subscription FOUND');
+
+    this.logger.debug(`Subscription ${subscriptionId} found`);
 
     // If no VM OCID, subscription is not configured yet
     if (!subscription.vm_instance_id) {
-      console.log('⚠️  VM not configured yet for this subscription');
-      console.log('========================================\n');
+      this.logger.debug(`VM not configured yet for subscription ${subscriptionId}`);
       return {
         subscription: {
           id: subscription.id,
@@ -532,7 +575,7 @@ export class VmSubscriptionService {
       };
     }
 
-    console.log('🔑 VM Instance ID:', subscription.vm_instance_id);
+    this.logger.debug(`VM instance ID for subscription: ${subscription.vm_instance_id}`);
 
     // Find VM by ID
     const vm = await this.vmInstanceRepo.findOne({
@@ -540,8 +583,6 @@ export class VmSubscriptionService {
     });
 
     if (!vm) {
-      console.log('⚠️  VM Instance not found in database');
-      console.log('========================================\n');
       this.logger.warn(`VM not found for subscription ${subscriptionId}, ID: ${subscription.vm_instance_id}`);
       return {
         subscription: {
@@ -556,11 +597,11 @@ export class VmSubscriptionService {
       };
     }
 
-    console.log('✅ VM found in database');
+    this.logger.debug('VM found in database');
 
     // Get fresh data from OCI (use subscription owner's userId to pass vm-provisioning ownership check)
     const vmDetail = await this.vmProvisioningService.getVmById(subscription.user_id, vm.id);
-    console.log('✅ VM details retrieved from OCI');
+    this.logger.debug('VM details retrieved from OCI');
 
     // On-demand Windows credential fetch: if OS is Windows and no password yet
     // Try fetching as long as VM is not terminated (OCI API will return null if not ready)
@@ -580,8 +621,6 @@ export class VmSubscriptionService {
         this.logger.warn(`⚠️  [OnDemand] Could not fetch Windows credentials: ${credErr.message}`);
       }
     }
-
-    console.log('========================================\n');
 
     return {
       subscription: {
@@ -831,7 +870,7 @@ export class VmSubscriptionService {
 
     // Enforce shared hourly limit (6 OTPs per hour across all OTP types).
     // Must come AFTER the cooldown check so only genuine sends consume the quota.
-    this.otpService.checkAndRecordHourlySend(user.email);
+    await this.otpService.checkAndRecordHourlySend(user.email);
 
     // Generate 6-digit numeric OTP
     const otp = Array.from({ length: 6 }, () => crypto.randomInt(0, 10)).join('');
@@ -1804,19 +1843,17 @@ net user ${windowsCredentials.username} *</div>
     userRole?: string,
   ) {
     const isAdmin = userRole === 'admin';
-    console.log('\n========== PERFORM VM ACTION SERVICE ==========');
-    console.log(`🎯 Action: ${action}`);
-    console.log(`📋 Subscription ID: ${subscriptionId}`);
-    console.log(`👤 User ID: ${userId}`);
-    console.log(`👤 User Role: ${userRole} | isAdmin: ${isAdmin}`);
+    this.logger.debug(
+      `performVmAction: action=${action}, subscriptionId=${subscriptionId}, userId=${userId}, role=${userRole}, isAdmin=${isAdmin}`,
+    );
     this.logger.log(`Performing ${action} on VM for subscription ${subscriptionId} (role: ${userRole})`);
 
     // Step 1: Find subscription
     // Admin can access any subscription regardless of owner
-    console.log('🔍 Step 1: Looking up subscription...');
+    this.logger.debug('Step 1: Looking up subscription');
     let subscription: Subscription | null;
     if (isAdmin) {
-      console.log('🔐 Admin mode: searching without user_id filter');
+      this.logger.debug('Admin mode: searching without user_id filter');
       subscription = await this.subscriptionRepo.findOne({
         where: { id: subscriptionId },
         relations: ['cloudPackage'],
@@ -1829,11 +1866,12 @@ net user ${windowsCredentials.username} *</div>
     }
 
     if (!subscription) {
-      console.log('❌ Step 1 FAILED: Subscription not found');
+      this.logger.debug('Step 1 failed: subscription not found');
       throw new NotFoundException('Subscription not found');
     }
-    console.log('✅ Step 1 PASSED: Subscription found, owner user_id:', subscription.user_id);
-    console.log('📊 Subscription Status:', subscription.status);
+    this.logger.debug(
+      `Step 1 passed: subscription found, owner user_id=${subscription.user_id}, status=${subscription.status}`,
+    );
 
     // Check subscription status (applies to admin too)
     if (subscription.status === 'pending') {
@@ -1846,41 +1884,35 @@ net user ${windowsCredentials.username} *</div>
       throw new BadRequestException('Subscription has expired');
     }
 
-    console.log('🔍 Step 2: Checking VM instance configuration...');
+    this.logger.debug('Step 2: Checking VM instance configuration');
     if (!subscription.vm_instance_id) {
-      console.log('❌ Step 2 FAILED: VM not configured');
+      this.logger.debug('Step 2 failed: VM not configured');
       throw new BadRequestException('VM not configured for this subscription');
     }
-    console.log('✅ Step 2 PASSED: VM configured, ID:', subscription.vm_instance_id);
+    this.logger.debug(`Step 2 passed: VM configured, id=${subscription.vm_instance_id}`);
 
     // Find VM by database ID
-    console.log('🔍 Step 3: Loading VM instance from database...');
+    this.logger.debug('Step 3: Loading VM instance from database');
     const vm = await this.vmInstanceRepo.findOne({
       where: { id: subscription.vm_instance_id },
     });
 
     if (!vm) {
-      console.log('❌ Step 3 FAILED: VM instance not found in database');
-      console.log('   VM ID searched:', subscription.vm_instance_id);
+      this.logger.debug(`Step 3 failed: VM instance not found, id=${subscription.vm_instance_id}`);
       throw new NotFoundException('VM not found');
     }
-    console.log('✅ Step 3 PASSED: VM found');
-    console.log('   VM ID:', vm.id);
-    console.log('   VM user_id (owner):', vm.user_id);
-    console.log('   VM Compartment ID:', vm.compartment_id);
+    this.logger.debug(`Step 3 passed: VM found id=${vm.id}, owner=${vm.user_id}`);
 
     // Use the subscription owner's user_id when calling vmProvisioningService
     // This is crucial for admin: admin (user 8) controlling user 82's VM
     const ownerUserId = subscription.user_id;
-    console.log(`🔍 Step 4: Executing VM action on OCI (using owner user_id: ${ownerUserId})...`);
+    this.logger.debug(`Step 4: Executing VM action on OCI (owner user_id=${ownerUserId})`);
     const result = await this.vmProvisioningService.performVmAction(
       ownerUserId,
       vm.id,
       action,
     );
-    console.log('✅ Step 4 PASSED: Action executed successfully');
-    console.log('✅ ALL STEPS PASSED');
-    console.log('==============================================\n');
+    this.logger.debug('Step 4 passed: action executed successfully');
 
     this.logger.log(`Action ${action} completed successfully on VM ${vm.id} (owner: ${ownerUserId}, actor: ${userId})`);
 

@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { RegistrationRequests } from './registration-requests.entity';
@@ -6,6 +6,8 @@ import { EmailService } from '../email/email.service';
 
 @Injectable()
 export class RegistrationRequestsService {
+	private readonly logger = new Logger(RegistrationRequestsService.name);
+
 	constructor(
 		@InjectRepository(RegistrationRequests)
 		private readonly registrationRequestsRepository: Repository<RegistrationRequests>,
@@ -15,18 +17,18 @@ export class RegistrationRequestsService {
 	async create(data: Partial<RegistrationRequests>): Promise<RegistrationRequests> {
 		const entity = this.registrationRequestsRepository.create(data);
 		const savedEntity = await this.registrationRequestsRepository.save(entity);
-		console.log('Saved entity:', savedEntity);
-		
+		this.logger.log(`Registration request saved (id=${savedEntity.id})`);
+
 		// Gửi email bất đồng bộ, không chờ kết quả
 		setImmediate(async () => {
 			try {
 				await this.emailService.sendRegistrationEbook(savedEntity);
-				console.log('Email sent successfully for registration:', savedEntity.id);
+				this.logger.log(`Email sent successfully for registration id=${savedEntity.id}`);
 			} catch (error) {
-				console.error('Error sending registration email:', error);
+				this.logger.error(`Error sending registration email (id=${savedEntity.id}):`, error?.stack || error?.message || error);
 			}
 		});
-		
+
 		return savedEntity;
 	}
 
