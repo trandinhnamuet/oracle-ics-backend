@@ -3258,6 +3258,7 @@ chmod 600 ~/.ssh/authorized_keys`;
       `$b=[System.Convert]::FromBase64String('${b64pw}')`,
       `$p=[System.Text.Encoding]::UTF8.GetString($b)`,
       `net user opc $p /logonpasswordchg:yes`,
+      `schtasks /delete /tn OCI_ClearPwFlag /f 2>$null`,
       `Write-Output 'PASSWORD_CHANGED_OK'`,
     ].join('\r\n');
 
@@ -3362,6 +3363,7 @@ chmod 600 ~/.ssh/authorized_keys`;
         `$b=[System.Convert]::FromBase64String('${b64pw}')`,
         `$p=[System.Text.Encoding]::UTF8.GetString($b)`,
         `net user opc $p /logonpasswordchg:yes`,
+        `schtasks /delete /tn OCI_ClearPwFlag /f 2>$null`,
       ].join(';');
       const encodedCmd = Buffer.from(psScript, 'utf16le').toString('base64');
       const sshCommand = `powershell.exe -NonInteractive -NoProfile -EncodedCommand ${encodedCmd}`;

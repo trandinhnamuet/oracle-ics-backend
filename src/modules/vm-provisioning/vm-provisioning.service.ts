@@ -9,7 +9,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { OciService } from '../oci/oci.service';
 import { SystemSshKeyService } from '../system-ssh-key/system-ssh-key.service';
-import { encryptPrivateKey } from '../../utils/system-ssh-key.util';
+import { encryptPrivateKey, decryptPrivateKey } from '../../utils/system-ssh-key.util';
 import { User } from '../../entities/user.entity';
 import { UserCompartment } from '../../entities/user-compartment.entity';
 import { VcnResource } from '../../entities/vcn-resource.entity';
@@ -19,6 +19,7 @@ import { CompartmentAccount } from '../../entities/compartment-account.entity';
 import { Subscription } from '../../entities/subscription.entity';
 import { CreateVmDto, VmActionType } from './dto';
 import * as nodemailer from 'nodemailer';
+import * as crypto from 'crypto';
 import { NotificationService } from '../notification/notification.service';
 import { NotificationType } from '../../entities/notification.entity';
 
@@ -1149,12 +1150,59 @@ export class VmProvisioningService {
               this.logger.error(`❌ [Background] VM ${vmId} no longer in database`);
               return;
             }
+            // Save OCI initial password first (needed as currentPassword for reset)
             freshVm.windows_initial_password = credentials.password;
             await this.vmInstanceRepo.save(freshVm);
             credentialsSaved = true;
             this.logger.log(`🎉 [Background] VM ${vmId}: Windows credentials retrieved on attempt ${attempt}`);
             this.logger.log(`🎉 [Background] Username: ${credentials.username}`);
-            this.logger.log(`🎉 [Background] Password saved to database`);
+            this.logger.log(`🎉 [Background] OCI initial password saved to database`);
+
+            // Perform password reset to enforce /logonpasswordchg:yes and delete
+            // the OCI_ClearPwFlag scheduled task (which would otherwise override the flag).
+            let emailPassword = credentials.password;
+            try {
+              this.logger.log(`🔐 [Background] VM ${vmId}: Resetting password to enforce must-change-on-first-login...`);
+
+              const newPassword = this.generateWindowsPassword();
+
+              // Get admin private key for SSH fallback strategy
+              let adminPrivateKey: string | undefined;
+              try {
+                const adminKey = freshVm.system_ssh_key_id
+                  ? await this.systemSshKeyService.getSystemKeyById(freshVm.system_ssh_key_id).catch(() => null)
+                  : null;
+                const key = adminKey || await this.systemSshKeyService.getActiveKey().catch(() => null);
+                if (key) {
+                  let rawKey = decryptPrivateKey(key.private_key_encrypted);
+                  if (!rawKey.endsWith('\n')) rawKey += '\n';
+                  adminPrivateKey = rawKey;
+                }
+              } catch (keyErr: any) {
+                this.logger.warn(`⚠️ [Background] Could not get admin key: ${keyErr.message}`);
+              }
+
+              await this.ociService.runWindowsPasswordReset(
+                instanceId,
+                freshVm.compartment_id,
+                newPassword,
+                freshVm.subnet_id ?? undefined,
+                freshVm.public_ip ?? undefined,
+                credentials.password, // OCI initial password as currentPassword
+                adminPrivateKey,
+                false, // passwordInitialized = false (fresh VM, flag not cleared yet)
+              );
+
+              // Save new password to DB
+              freshVm.windows_initial_password = newPassword;
+              freshVm.windows_password_initialized = true;
+              await this.vmInstanceRepo.save(freshVm);
+              emailPassword = newPassword;
+              this.logger.log(`✅ [Background] VM ${vmId}: Password reset OK — must-change flag set, OCI_ClearPwFlag task deleted`);
+            } catch (resetErr: any) {
+              this.logger.error(`❌ [Background] VM ${vmId}: Password reset failed, will send OCI initial password: ${resetErr.message}`);
+              // Fall back: email the OCI initial password; customer may not be forced to change
+            }
 
             // Send email notification with password
             try {
@@ -1199,7 +1247,7 @@ export class VmProvisioningService {
                   },
                   {
                     username: credentials.username,
-                    password: credentials.password,
+                    password: emailPassword,
                   },
                   subscription,
                   language,
@@ -1229,6 +1277,35 @@ export class VmProvisioningService {
     } catch (error) {
       this.logger.error(`❌ [Background] VM ${vmId}: Error in password retrieval:`, error.message);
     }
+  }
+
+  /**
+   * Generate a secure random Windows password (16 chars, meets complexity requirements)
+   */
+  private generateWindowsPassword(): string {
+    const upper = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    const lower = 'abcdefghijklmnopqrstuvwxyz';
+    const digits = '0123456789';
+    const special = '!@#$%&*_+-=';
+    const all = upper + lower + digits + special;
+
+    let password = '';
+    password += upper[crypto.randomInt(upper.length)];
+    password += lower[crypto.randomInt(lower.length)];
+    password += digits[crypto.randomInt(digits.length)];
+    password += special[crypto.randomInt(special.length)];
+
+    for (let i = 0; i < 12; i++) {
+      password += all[crypto.randomInt(all.length)];
+    }
+
+    const arr = password.split('');
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = crypto.randomInt(i + 1);
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+
+    return arr.join('');
   }
 
   /**
