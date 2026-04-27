@@ -699,19 +699,17 @@ export class VmSubscriptionService {
       this.logger.log(`   Key starts with: ${adminPrivateKey.substring(0, 50)}...`);
       this.logger.log(`   Key length: ${adminPrivateKey.length} bytes`);
       
-      // Determine SSH username from OS
-      const username = this.getOsSshUsername(vm.operating_system);
-      // For CentOS/Rocky: admin key is only in 'opc' authorized_keys (not centos/rocky user).
-      // SSH as 'opc' and use sudo to update the target user's authorized_keys.
-      const sshUser = (username === 'centos' || username === 'rocky') ? 'opc' : username;
-      this.logger.log(`👤 SSH Username: ${sshUser}${sshUser !== username ? ` (updating ${username}'s authorized_keys via sudo)` : ''}`);
-      
+      // Determine which user to SSH in as (admin key is in these users' authorized_keys from cloud-init)
+      const osUsername = this.getOsSshUsername(vm.operating_system);
+      const sshUser = (osUsername === 'centos' || osUsername === 'rocky') ? 'opc' : osUsername;
+      this.logger.log(`👤 Connecting as: ${sshUser} → updating root's authorized_keys via sudo`);
+
       // Check if VM has public IP
       if (!vm.public_ip) {
         throw new BadRequestException('VM does not have a public IP address');
       }
-      
-      // Update SSH keys via SSH connection
+
+      // Update SSH keys via SSH connection — always target root's authorized_keys
       updateResult = await this.ociService.updateInstanceSshKeys(
         vm.instance_id,
         newKeyPair.publicKey,
@@ -719,7 +717,7 @@ export class VmSubscriptionService {
         sshUser,
         adminPrivateKey,
         adminKey.public_key,
-        username, // homeUser: whose authorized_keys to update (centos/rocky via sudo)
+        'root', // homeUser: always update root's authorized_keys so users SSH as root
       );
 
       this.logger.log(
@@ -767,7 +765,7 @@ export class VmSubscriptionService {
           totalKeys: updateResult.keysCount,
           removedOldest: updateResult.removedOldest,
         },
-        sshUsername: username, // The SSH username the user should connect with (e.g. ubuntu, centos, opc)
+        sshUsername: 'root', // Users always SSH as root regardless of OS
       };
     } catch (error) {
       this.logger.error('Error updating SSH keys in OCI:', error);
