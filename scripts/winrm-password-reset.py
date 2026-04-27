@@ -32,12 +32,12 @@ SESSION_ATTEMPTS = [
 pw_b64 = base64.b64encode(new_password.encode('utf-8')).decode('ascii')
 
 # PowerShell script that decodes the password and runs "net user".
-# /logonpasswordchg:no clears the "must change password at next logon" flag
-# so the admin-issued password is directly usable without forcing an RDP change.
+# /logonpasswordchg:yes sets the "must change password at next logon" flag
+# so the customer is forced to set their own private password on first RDP login.
 ps_script = (
     f"$b=[Convert]::FromBase64String('{pw_b64}');"
     f"$p=[Text.Encoding]::UTF8.GetString($b);"
-    f"net user {username} $p /logonpasswordchg:no"
+    f"net user {username} $p /logonpasswordchg:yes"
 )
 
 last_error = None
