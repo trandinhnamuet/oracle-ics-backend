@@ -185,17 +185,27 @@ export function decryptPrivateKey(encryptedKey: string): string {
 
   const iv = Buffer.from(parts[0], 'hex');
   const encrypted = parts[1];
-  
-  const decipher = crypto.createDecipheriv(
-    'aes-256-cbc',
-    keyBuffer,
-    iv
-  );
-  
-  let decrypted = decipher.update(encrypted, 'hex', 'utf8');
-  decrypted += decipher.final('utf8');
-  
-  return decrypted;
+  // Perform decryption and handle common failures (e.g. wrong secret -> bad decrypt)
+  try {
+    const decipher = crypto.createDecipheriv(
+      'aes-256-cbc',
+      keyBuffer,
+      iv
+    );
+
+    let decrypted = decipher.update(encrypted, 'hex', 'utf8');
+    decrypted += decipher.final('utf8');
+    return decrypted;
+  } catch (err: any) {
+    // Log internal error (do not include key material)
+    logger.error('SSH private key decryption failed', err?.message || err);
+    // Throw a clear error message so callers (and the UI) can provide actionable guidance
+    throw new Error(
+      'SSH key decryption failed: encryption secret missing/incorrect or encrypted data corrupted. ' +
+      'Check the SSH_KEY_ENCRYPTION_SECRET environment variable and ensure it matches the value used to encrypt admin keys. ' +
+      'If you recently rotated or changed this secret, re-generate the admin system key and re-provision affected VMs.'
+    );
+  }
 }
 
 /**

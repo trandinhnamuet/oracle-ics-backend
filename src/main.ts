@@ -34,6 +34,15 @@ console.log(`DB_NAME: ${process.env.DB_NAME ? '***' : 'NOT SET'}`);
 console.log(`DB_PASSWORD: ${process.env.DB_PASSWORD ? '***' : 'NOT SET'}`);
 console.log('');
 
+// In production we require SSH_KEY_ENCRYPTION_SECRET to be configured and reasonably long.
+if (process.env.NODE_ENV === 'production') {
+  const s = process.env.SSH_KEY_ENCRYPTION_SECRET;
+  if (!s || s.length < 32) {
+    console.error('FATAL: SSH_KEY_ENCRYPTION_SECRET is not set or too short (min 32). Set it in environment and restart.');
+    process.exit(1);
+  }
+}
+
 async function bootstrap() {
   try {
     console.log('🔄 Initializing database...');
