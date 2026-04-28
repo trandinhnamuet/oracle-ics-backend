@@ -8,14 +8,6 @@ export class LoginDto {
 
   @IsNotEmpty()
   password: string;
-
-  @IsOptional()
-  @IsString()
-  ipv4?: string;
-
-  @IsOptional()
-  @IsString()
-  ipv6?: string;
 }
 
 export class RegisterDto {
@@ -41,14 +33,6 @@ export class VerifyOtpDto {
   @IsString()
   @Length(6, 6, { message: 'OTP must be exactly 6 characters' })
   otp: string;
-
-  @IsOptional()
-  @IsString()
-  ipv4?: string;
-
-  @IsOptional()
-  @IsString()
-  ipv6?: string;
 }
 
 export class ResendOtpDto {

@@ -19,6 +19,31 @@ const ALLOWED_MIME_TYPES = new Set([
   'text/plain',
 ]);
 
+function validateFileMagicBytes(buf: Buffer, mime: string): boolean {
+  if (!buf || buf.length < 4) return false;
+  if (mime === 'image/jpeg' || mime === 'image/jpg')
+    return buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff;
+  if (mime === 'image/png')
+    return buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47;
+  if (mime === 'image/gif')
+    return buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x38;
+  if (mime === 'image/webp')
+    return buf.length >= 12 &&
+      buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46 &&
+      buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50;
+  if (mime === 'application/pdf')
+    return buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46; // %PDF
+  if (mime === 'application/msword')
+    return buf[0] === 0xd0 && buf[1] === 0xcf && buf[2] === 0x11 && buf[3] === 0xe0; // Compound Document
+  if (mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+    return buf[0] === 0x50 && buf[1] === 0x4b && buf[2] === 0x03 && buf[3] === 0x04; // ZIP/PK
+  if (mime === 'text/plain') {
+    const head = buf.slice(0, 16).toString('ascii').trim().toLowerCase();
+    return !head.startsWith('<') && !head.startsWith('<?');
+  }
+  return false;
+}
+
 @Controller('support-tickets')
 export class SupportTicketController {
   constructor(
@@ -40,6 +65,9 @@ export class SupportTicketController {
     for (const file of files) {
       if (!ALLOWED_MIME_TYPES.has(file.mimetype)) {
         throw new BadRequestException(`File type '${file.mimetype}' is not allowed`);
+      }
+      if (!validateFileMagicBytes(file.buffer, file.mimetype)) {
+        throw new BadRequestException(`File content does not match declared type '${file.mimetype}'`);
       }
       const saved = await this.imageService.saveImage(file, userId);
       // Use the decoded originalName from the saved record (already fixed in saveImage)

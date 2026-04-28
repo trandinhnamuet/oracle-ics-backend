@@ -253,6 +253,7 @@ export class UserWalletService {
   async createTransaction(transactionData: {
     wallet_id: number;
     payment_id: string;
+    subscription_id?: string | null;
     change_amount: number;
     balance_after: number;
     type?: string;
