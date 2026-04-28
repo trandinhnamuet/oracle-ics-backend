@@ -4,6 +4,7 @@ import {
   NotFoundException,
   BadRequestException,
   InternalServerErrorException,
+  HttpException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -590,8 +591,58 @@ export class VmProvisioningService {
             `VM is in ${instanceDetails.lifecycleState} state and cannot perform ${action} action.`
           );
         }
+
+        const currentState = instanceDetails.lifecycleState;
+        if (action === VmActionType.START) {
+          if (currentState === 'STOPPING') {
+            throw new BadRequestException(
+              'VM đang trong quá trình tắt. Vui lòng đợi VM tắt hoàn tất trước khi khởi động lại.'
+            );
+          }
+          if (currentState === 'STARTING') {
+            throw new BadRequestException(
+              'VM đang trong quá trình khởi động. Vui lòng đợi thao tác hoàn tất.'
+            );
+          }
+          if (currentState === 'RUNNING') {
+            throw new BadRequestException('VM đang chạy, không thể khởi động lại.');
+          }
+        } else if (action === VmActionType.STOP) {
+          if (currentState === 'STOPPING') {
+            throw new BadRequestException('VM đang trong quá trình tắt. Vui lòng đợi thao tác hoàn tất.');
+          }
+          if (currentState === 'STARTING') {
+            throw new BadRequestException(
+              'VM đang trong quá trình khởi động. Vui lòng đợi VM chạy hoàn tất trước khi tắt.'
+            );
+          }
+          if (currentState === 'STOPPED') {
+            throw new BadRequestException('VM đã tắt, không thể tắt thêm.');
+          }
+        } else if (action === VmActionType.RESTART) {
+          if (currentState === 'STOPPING') {
+            throw new BadRequestException(
+              'VM đang trong quá trình tắt. Không thể khởi động lại lúc này.'
+            );
+          }
+          if (currentState === 'STARTING') {
+            throw new BadRequestException(
+              'VM đang trong quá trình khởi động. Vui lòng đợi VM chạy hoàn tất trước khi khởi động lại.'
+            );
+          }
+          if (currentState === 'STOPPED') {
+            throw new BadRequestException(
+              'VM đang tắt. Vui lòng khởi động VM trước khi sử dụng chức năng khởi động lại.'
+            );
+          }
+        }
       }
     } catch (checkError: any) {
+      // Preserve our own validation errors (BadRequest/NotFound) thrown above
+      if (checkError instanceof HttpException) {
+        throw checkError;
+      }
+
       // If VM not found on OCI (404 error), mark as TERMINATED in database
       if (checkError.statusCode === 404 || checkError.serviceCode === 'NotAuthorizedOrNotFound') {
         this.logger.warn(`VM ${vmId} (OCI ID: ${vm.instance_id}) not found on Oracle Cloud. Marking as TERMINATED.`);
