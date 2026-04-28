@@ -101,10 +101,9 @@ export class AuthService {
     };
   }
 
-  async verifyOtp(verifyOtpDto: VerifyOtpDto, lang: string = DEFAULT_LANG) {
-    const { email, otp, ipv4: ipv4Raw, ipv6: ipv6Raw } = verifyOtpDto;
-    const ipv4 = ipv4Raw || null;
-    const ipv6 = ipv6Raw || null;
+  async verifyOtp(verifyOtpDto: VerifyOtpDto, request: any, lang: string = DEFAULT_LANG) {
+    const { email, otp } = verifyOtpDto;
+    const { ipV4: ipv4, ipV6: ipv6 } = this.extractIpAddress(request);
     this.logger.log(`OTP verification attempt for email: ${email}`);
 
     // Find user
@@ -464,22 +463,12 @@ export class AuthService {
   }
 
   async login(loginDto: LoginDto, userAgent: string, request: any, lang: string = DEFAULT_LANG, adminOnly = false) {
-    const { email, password, ipv4: ipv4Raw, ipv6: ipv6Raw } = loginDto;
-    const ipv4Frontend = ipv4Raw || null;
-    const ipv6Frontend = ipv6Raw || null;
+    const { email, password } = loginDto;
 
-    // Use IP from frontend (ipify.org - public IP) if provided, otherwise extract from request headers
-    let ipV4: string | null = ipv4Frontend;
-    let ipV6: string | null = ipv6Frontend;
-    
-    if (!ipV4 && !ipV6) {
-      // Fallback to extracting from request headers
-      const extracted = this.extractIpAddress(request);
-      ipV4 = extracted.ipV4;
-      ipV6 = extracted.ipV6;
-    }
+    // Always extract IP from server-side headers; never trust client-supplied values
+    const { ipV4, ipV6 } = this.extractIpAddress(request);
 
-    this.logger.debug(`Login attempt - Email: ${email}, IPv4: ${ipV4}, IPv6: ${ipV6}, Source: ${ipv4Frontend ? 'frontend' : 'headers'}`);
+    this.logger.debug(`Login attempt - Email: ${email}, IPv4: ${ipV4}, IPv6: ${ipV6}`);
 
     // Find user
     const user = await this.userRepository.findOne({ where: { email } });

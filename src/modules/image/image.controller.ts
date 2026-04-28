@@ -124,6 +124,8 @@ export class ImageController {
       res.status(404).json({ message: 'File not found' });
       return;
     }
+    res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}"`);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
     res.sendFile(filePath);
   }
 
