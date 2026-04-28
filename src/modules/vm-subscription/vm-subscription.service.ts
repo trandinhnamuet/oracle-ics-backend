@@ -692,27 +692,24 @@ export class VmSubscriptionService implements OnModuleInit, OnModuleDestroy {
     let updateResult: { id: string; keysCount: number; userKeysCount: number; removedOldest: boolean };
 
     try {
-      // Get admin SSH key — prefer the key tied to this specific VM (recorded at provisioning time)
+      // Get admin SSH key — use service method which has file-based fallback cache.
+      // Do NOT retrieve the raw entity and call decryptPrivateKey() directly: if the
+      // DB record was encrypted with a different secret the decrypt would throw
+      // "bad decrypt". getAdminKey() uses the in-memory cache which is populated
+      // from the backup file on startup when DB decrypt fails.
       this.logger.log(`🔑 Retrieving admin SSH key...`);
-      let adminKey = vm.system_ssh_key_id
-        ? await this.systemSshKeyService.getSystemKeyById(vm.system_ssh_key_id).catch(() => null)
-        : null;
+      const adminKeyPair = await this.systemSshKeyService.getAdminKey();
 
-      if (!adminKey) {
-        this.logger.warn(`⚠️  VM-specific key not found, falling back to active key`);
-        adminKey = await this.systemSshKeyService.getActiveKey();
-      }
-
-      if (!adminKey) {
+      if (!adminKeyPair) {
         this.logger.error(`❌ No active admin SSH key found`);
         throw new InternalServerErrorException('Admin SSH key not configured');
       }
       
       this.logger.log(`✅ Admin key retrieved`);
       
-      // Decrypt admin private key
-      this.logger.log(`🔓 Decrypting admin private key...`);
-      let adminPrivateKey = decryptPrivateKey(adminKey.private_key_encrypted);
+      // Private key is already decrypted by the service (cache or file fallback)
+      this.logger.log(`🔓 Using decrypted admin private key from service cache...`);
+      let adminPrivateKey = adminKeyPair.privateKey;
       
       // Convert PKCS#8 to PKCS#1 (RSA PRIVATE KEY) if needed for ssh2 compatibility
       if (adminPrivateKey.includes('BEGIN PRIVATE KEY')) {
@@ -734,9 +731,7 @@ export class VmSubscriptionService implements OnModuleInit, OnModuleDestroy {
         adminPrivateKey += '\n';
       }
       
-      this.logger.log(`✅ Admin key decrypted`);
-      this.logger.log(`   Key starts with: ${adminPrivateKey.substring(0, 50)}...`);
-      this.logger.log(`   Key length: ${adminPrivateKey.length} bytes`);
+      this.logger.log('✅ Admin key ready (private key redacted)');
       
       // Determine which user to SSH in as (admin key is in these users' authorized_keys from cloud-init)
       const osUsername = this.getOsSshUsername(vm.operating_system);
@@ -755,7 +750,7 @@ export class VmSubscriptionService implements OnModuleInit, OnModuleDestroy {
         vm.public_ip,
         sshUser,
         adminPrivateKey,
-        adminKey.public_key,
+        adminKeyPair.publicKey,
         'root', // homeUser: always update root's authorized_keys so users SSH as root
       );
 
@@ -1112,12 +1107,10 @@ export class VmSubscriptionService implements OnModuleInit, OnModuleDestroy {
     // Step 7: Retrieve admin SSH key for SSH-based fallback strategy
     let adminPrivateKey: string | undefined;
     try {
-      let adminKey = vm.system_ssh_key_id
-        ? await this.systemSshKeyService.getSystemKeyById(vm.system_ssh_key_id).catch(() => null)
-        : null;
-      if (!adminKey) adminKey = await this.systemSshKeyService.getActiveKey().catch(() => null);
-      if (adminKey) {
-        let rawKey = decryptPrivateKey(adminKey.private_key_encrypted);
+      // Use service method (has file-based fallback) instead of raw decryptPrivateKey()
+      const adminKeyPairFallback = await this.systemSshKeyService.getAdminKey().catch(() => null);
+      if (adminKeyPairFallback) {
+        let rawKey = adminKeyPairFallback.privateKey;
         if (rawKey.includes('BEGIN PRIVATE KEY')) {
           try {
             const keyObject = crypto.createPrivateKey(rawKey);
@@ -1450,30 +1443,11 @@ chmod 600 ~/.ssh/oracle-vm-key${isNewKey ? '-new' : ''}.pem
               </div>
 
               <h4>${isVietnamese ? 'Bước 2: Kết Nối Bằng SSH' : 'Step 2: Connect via SSH'}</h4>
-              <p>${isVietnamese ? 'Sử dụng username phù hợp với hệ điều hành của VM:' : 'Use the appropriate username based on your VM operating system:'}</p>
+              <p>${isVietnamese ? 'Tất cả các VM Linux đều dùng user <code>root</code> để kết nối SSH:' : 'All Linux VMs use <code>root</code> as the SSH username:'}</p>
               
-              <table style="border-collapse: collapse; width: 100%; margin: 10px 0;">
-                <tr style="background-color: #f0f0f0;">
-                  <th style="border: 1px solid #ddd; padding: 8px;">${isVietnamese ? 'Hệ Điều Hành' : 'Operating System'}</th>
-                  <th style="border: 1px solid #ddd; padding: 8px;">Username</th>
-                  <th style="border: 1px solid #ddd; padding: 8px;">${isVietnamese ? 'Lệnh SSH' : 'SSH Command'}</th>
-                </tr>
-                <tr>
-                  <td style="border: 1px solid #ddd; padding: 8px;">Oracle Linux</td>
-                  <td style="border: 1px solid #ddd; padding: 8px;"><code>opc</code></td>
-                  <td style="border: 1px solid #ddd; padding: 8px; font-size: 11px;"><code>ssh -i ~/.ssh/oracle-vm-key${isNewKey ? '-new' : ''}.pem opc@${vmInfo.publicIp || 'YOUR_VM_IP'}</code></td>
-                </tr>
-                <tr>
-                  <td style="border: 1px solid #ddd; padding: 8px;">Ubuntu</td>
-                  <td style="border: 1px solid #ddd; padding: 8px;"><code>ubuntu</code></td>
-                  <td style="border: 1px solid #ddd; padding: 8px; font-size: 11px;"><code>ssh -i ~/.ssh/oracle-vm-key${isNewKey ? '-new' : ''}.pem ubuntu@${vmInfo.publicIp || 'YOUR_VM_IP'}</code></td>
-                </tr>
-                <tr>
-                  <td style="border: 1px solid #ddd; padding: 8px;">CentOS/Rocky</td>
-                  <td style="border: 1px solid #ddd; padding: 8px;"><code>centos</code> or <code>rocky</code></td>
-                  <td style="border: 1px solid #ddd; padding: 8px; font-size: 11px;"><code>ssh -i ~/.ssh/oracle-vm-key${isNewKey ? '-new' : ''}.pem centos@${vmInfo.publicIp || 'YOUR_VM_IP'}</code></td>
-                </tr>
-              </table>
+              <div class="code-block">
+ssh -i ~/.ssh/oracle-vm-key${isNewKey ? '-new' : ''}.pem root@${vmInfo.publicIp || 'YOUR_VM_IP'}
+              </div>
 
               <h4>${isVietnamese ? 'Bước 3: Lệnh Sau Khi Đăng Nhập Lần Đầu' : 'Step 3: First Login Commands'}</h4>
               <div class="code-block">
@@ -1481,13 +1455,10 @@ chmod 600 ~/.ssh/oracle-vm-key${isNewKey ? '-new' : ''}.pem
 uname -a
 
 # ${isVietnamese ? 'Cập nhật hệ thống (Oracle Linux/CentOS/Rocky)' : 'Update system (Oracle Linux/CentOS/Rocky)'}
-sudo dnf update -y
+dnf update -y
 
 # ${isVietnamese ? 'Cập nhật hệ thống (Ubuntu)' : 'Update system (Ubuntu)'}
-sudo apt update && sudo apt upgrade -y
-
-# ${isVietnamese ? 'Chuyển sang root (nếu cần)' : 'Switch to root (if needed)'}
-sudo su -
+apt update && apt upgrade -y
               </div>
 
               <h3>${isVietnamese ? '🔐 Dấu Vân Tay SSH Key:' : '🔐 SSH Key Fingerprint:'}</h3>
@@ -1508,7 +1479,7 @@ sudo su -
                 <h3>${isVietnamese ? '💡 Khắc Phục Sự Cố' : '💡 Troubleshooting'}</h3>
                 <p><strong>${isVietnamese ? 'Kết nối bị timeout:' : 'Connection timeout:'}</strong> ${isVietnamese ? 'Đảm bảo VM đang ở trạng thái RUNNING và port 22 đang mở (đã được cấu hình tự động).' : 'Make sure the VM is in RUNNING state and port 22 is open (already configured automatically).'}</p>
                 <p><strong>${isVietnamese ? 'Permission denied:' : 'Permission denied:'}</strong> ${isVietnamese ? 'Kiểm tra file private key đã đặt đúng quyền (600 trên Linux/Mac).' : 'Check that your private key file has correct permissions (600 on Linux/Mac).'}</p>
-                <p><strong>${isVietnamese ? 'Sai username:' : 'Wrong username:'}</strong> ${isVietnamese ? 'Thử các username khác nhau theo bảng hướng dẫn ở trên.' : 'Try different usernames based on the table above.'}</p>
+                <p><strong>${isVietnamese ? 'Sai username:' : 'Wrong username:'}</strong> ${isVietnamese ? 'Đảm bảo bạn đang dùng username <code>root</code> để kết nối SSH.' : 'Make sure you are using <code>root</code> as the SSH username.'}</p>
               </div>
 
               <a href="https://oraclecloud.vn/package-management/${subscription.id}" class="button">
