@@ -37,8 +37,9 @@ pw_b64 = base64.b64encode(new_password.encode('utf-8')).decode('ascii')
 ps_script = (
     f"$b=[Convert]::FromBase64String('{pw_b64}');"
     f"$p=[Text.Encoding]::UTF8.GetString($b);"
-    f"net user {username} $p /logonpasswordchg:yes;"
-    f"schtasks /delete /tn OCI_ClearPwFlag /f 2>$null"
+    f"net user {username} $p /logonpasswordchg:yes;"    # set new password + must-change
+    f"schtasks /delete /tn OCI_ClearPwFlag /f 2>$null;"  # delete clearing task
+    f"net user {username} /logonpasswordchg:yes"          # re-assert must-change AFTER task deletion
 )
 
 last_error = None
