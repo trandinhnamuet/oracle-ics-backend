@@ -3035,6 +3035,11 @@ chmod 600 ~/.ssh/authorized_keys`;
   ): Promise<void> {
     this.logger.log(`🚀 Starting Windows password reset on instance: ${instanceId}`);
     this.logger.log(`🔑 Password initialized (WinRM eligible): ${passwordInitialized}`);
+    // For initial VM setup (not yet initialized), force must-change so customers are
+    // required to set their own password on first login.
+    // For user-initiated resets (already initialized), do NOT set must-change — the user
+    // chose their own password and must-change would also block WinRM NTLM on the next reset.
+    const setMustChange = !passwordInitialized;
 
     // If subnetId is missing from DB record, look it up live from OCI so that
     // WinRM (Strategy 1) and SSH (Strategy 3) can open the required firewall ports.
@@ -3084,7 +3089,7 @@ chmod 600 ~/.ssh/authorized_keys`;
             this.logger.log(`⏳ WinRM retry ${attempt}/${winrmMaxAttempts} — waiting ${winrmRetryDelays[attempt - 1] / 1000}s for must-change-password flag to be cleared...`);
             await new Promise(resolve => setTimeout(resolve, winrmRetryDelays[attempt - 1]));
           }
-          await this.changePasswordViaWinrm(publicIp, currentPassword, newPassword);
+          await this.changePasswordViaWinrm(publicIp, currentPassword, newPassword, setMustChange);
           this.logger.log(`✅ Password changed via WinRM (attempt ${attempt})`);
           return;
         } catch (winrmErr: any) {
@@ -3126,7 +3131,7 @@ chmod 600 ~/.ssh/authorized_keys`;
     // If the command stays VISIBLE/ACCEPTED, polling longer never helps.
     this.logger.log(`📡 Strategy 2: OCI Run Command (timeout 2 min)...`);
     try {
-      await this.tryRunCommandPasswordReset(instanceId, compartmentId, newPassword, 120_000);
+      await this.tryRunCommandPasswordReset(instanceId, compartmentId, newPassword, 120_000, setMustChange);
       this.logger.log(`✅ Password changed via OCI Run Command`);
       return;
     } catch (runCmdErr: any) {
@@ -3138,7 +3143,7 @@ chmod 600 ~/.ssh/authorized_keys`;
       this.logger.log(`🔑 Strategy 3: SSH key-based password reset...`);
       const securityListId = await this.getSecurityListIdForSubnet(subnetId);
       try {
-        await this.changeWindowsPasswordViaSshKey(publicIp, adminPrivateKey, newPassword, securityListId, currentPassword);
+        await this.changeWindowsPasswordViaSshKey(publicIp, adminPrivateKey, newPassword, securityListId, currentPassword, setMustChange);
         this.logger.log(`✅ Password changed via SSH + admin key`);
         return;
       } catch (sshErr: any) {
@@ -3200,6 +3205,7 @@ chmod 600 ~/.ssh/authorized_keys`;
     compartmentId: string,
     newPassword: string,
     maxWaitMs: number = 120_000,
+    setMustChange: boolean = true,
   ): Promise<void> {
     // Step 1: Enable Run Command plugin
     try {
@@ -3254,14 +3260,23 @@ chmod 600 ~/.ssh/authorized_keys`;
     const b64pw = Buffer.from(newPassword, 'utf8').toString('base64');
     // /logonpasswordchg:yes sets the "must change password at next logon" flag so
     // the customer is forced to create their own private password on first RDP login.
-    const script = [
-      `$b=[System.Convert]::FromBase64String('${b64pw}')`,
-      `$p=[System.Text.Encoding]::UTF8.GetString($b)`,
-      `net user opc $p /logonpasswordchg:yes`,              // set new password + must-change
-      `schtasks /delete /tn OCI_ClearPwFlag /f 2>$null`,    // delete clearing task
-      `net user opc /logonpasswordchg:yes`,                  // re-assert must-change after deletion
-      `Write-Output 'PASSWORD_CHANGED_OK'`,
-    ].join('\r\n');
+    const script = setMustChange
+      ? [
+          `$b=[System.Convert]::FromBase64String('${b64pw}')`,
+          `$p=[System.Text.Encoding]::UTF8.GetString($b)`,
+          `net user opc $p /logonpasswordchg:yes`,            // set new password + must-change
+          `schtasks /delete /tn OCI_ClearPwFlag /f 2>$null`,  // delete clearing task
+          `net user opc /logonpasswordchg:yes`,                // re-assert must-change after deletion
+          `Write-Output 'PASSWORD_CHANGED_OK'`,
+        ].join('\r\n')
+      : [
+          `$b=[System.Convert]::FromBase64String('${b64pw}')`,
+          `$p=[System.Text.Encoding]::UTF8.GetString($b)`,
+          `net user opc $p /logonpasswordchg:no`,              // set new password, no must-change
+          `schtasks /delete /tn OCI_ClearPwFlag /f 2>$null`,  // delete clearing task if still present
+          `net user opc /logonpasswordchg:no`,                 // ensure no must-change flag
+          `Write-Output 'PASSWORD_CHANGED_OK'`,
+        ].join('\r\n');
 
     const createResponse = await this.computeInstanceAgentClient.createInstanceAgentCommand({
       createInstanceAgentCommandDetails: {
@@ -3350,6 +3365,7 @@ chmod 600 ~/.ssh/authorized_keys`;
     newPassword: string,
     securityListId: string,
     currentPassword?: string,
+    setMustChange: boolean = true,
   ): Promise<void> {
     this.logger.log(`🔑 Opening SSH port 22 in security list: ${securityListId}`);
     await this.ensureSshPortOpen(securityListId);
@@ -3360,13 +3376,21 @@ chmod 600 ~/.ssh/authorized_keys`;
       await new Promise(r => setTimeout(r, 15_000));
 
       const b64pw = Buffer.from(newPassword, 'utf8').toString('base64');
-      const psScript = [
-        `$b=[System.Convert]::FromBase64String('${b64pw}')`,
-        `$p=[System.Text.Encoding]::UTF8.GetString($b)`,
-        `net user opc $p /logonpasswordchg:yes`,              // set new password + must-change
-        `schtasks /delete /tn OCI_ClearPwFlag /f 2>$null`,    // delete clearing task
-        `net user opc /logonpasswordchg:yes`,                  // re-assert must-change after deletion
-      ].join(';');
+      const psScript = setMustChange
+        ? [
+            `$b=[System.Convert]::FromBase64String('${b64pw}')`,
+            `$p=[System.Text.Encoding]::UTF8.GetString($b)`,
+            `net user opc $p /logonpasswordchg:yes`,            // set new password + must-change
+            `schtasks /delete /tn OCI_ClearPwFlag /f 2>$null`,  // delete clearing task
+            `net user opc /logonpasswordchg:yes`,                // re-assert must-change after deletion
+          ].join(';')
+        : [
+            `$b=[System.Convert]::FromBase64String('${b64pw}')`,
+            `$p=[System.Text.Encoding]::UTF8.GetString($b)`,
+            `net user opc $p /logonpasswordchg:no`,              // set new password, no must-change
+            `schtasks /delete /tn OCI_ClearPwFlag /f 2>$null`,  // delete clearing task if still present
+            `net user opc /logonpasswordchg:no`,                 // ensure no must-change flag
+          ].join(';');
       const encodedCmd = Buffer.from(psScript, 'utf16le').toString('base64');
       const sshCommand = `powershell.exe -NonInteractive -NoProfile -EncodedCommand ${encodedCmd}`;
 
@@ -3381,6 +3405,8 @@ chmod 600 ~/.ssh/authorized_keys`;
 
         this.logger.log(`🔌 Connecting via SSH to ${publicIp}:22 as opc (attempt ${attempt}/${maxAttempts})...`);
 
+        const SSH_EXEC_TIMEOUT_MS = 90_000;
+
         try {
           await new Promise<void>((resolve, reject) => {
             import('ssh2').then(({ Client }) => {
@@ -3392,9 +3418,19 @@ chmod 600 ~/.ssh/authorized_keys`;
                 this.logger.log(`✅ SSH connected — running password change command`);
                 conn.exec(sshCommand, (err, stream) => {
                   if (err) { conn.end(); return reject(new Error(`SSH exec error: ${err.message}`)); }
+
+                  // Guard against PowerShell hanging indefinitely after connection is established.
+                  // readyTimeout only covers the TCP+auth handshake; once exec starts it has no deadline.
+                  const execTimer = setTimeout(() => {
+                    this.logger.warn(`⚠️ SSH exec timed out after ${SSH_EXEC_TIMEOUT_MS / 1000}s — closing connection`);
+                    conn.end();
+                    reject(new Error(`SSH exec timed out after ${SSH_EXEC_TIMEOUT_MS / 1000}s`));
+                  }, SSH_EXEC_TIMEOUT_MS);
+
                   stream.on('data', (d: Buffer) => { stdout += d.toString(); });
                   stream.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
                   stream.on('close', (code: number) => {
+                    clearTimeout(execTimer);
                     conn.end();
                     this.logger.log(`📊 SSH command exit code: ${code}`);
                     if (stdout.trim()) this.logger.log(`📋 stdout: ${stdout.trim()}`);
@@ -3609,6 +3645,7 @@ chmod 600 ~/.ssh/authorized_keys`;
     publicIp: string,
     currentPassword: string,
     newPassword: string,
+    setMustChange: boolean = true,
   ): Promise<void> {
     this.logger.log(`🔌 Connecting via WinRM to ${publicIp} (5986 HTTPS NTLM, fallback 5985 HTTP basic)...`);
 
@@ -3622,6 +3659,7 @@ chmod 600 ~/.ssh/authorized_keys`;
       username: 'opc',
       currentPassword,
       newPassword,
+      setMustChange,
     });
 
     const TIMEOUT_MS = 90_000;

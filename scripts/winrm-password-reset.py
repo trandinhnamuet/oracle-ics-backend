@@ -15,6 +15,7 @@ ip = data['ip']
 username = data['username']
 current_password = data['currentPassword']
 new_password = data['newPassword']
+set_must_change = data.get('setMustChange', True)
 
 # Attempt order:
 #   1. HTTPS (5986) + NTLM + .\username  — standard OCI Windows setup
@@ -32,15 +33,24 @@ SESSION_ATTEMPTS = [
 pw_b64 = base64.b64encode(new_password.encode('utf-8')).decode('ascii')
 
 # PowerShell script that decodes the password and runs "net user".
-# /logonpasswordchg:yes sets the "must change password at next logon" flag
-# so the customer is forced to set their own private password on first RDP login.
-ps_script = (
-    f"$b=[Convert]::FromBase64String('{pw_b64}');"
-    f"$p=[Text.Encoding]::UTF8.GetString($b);"
-    f"net user {username} $p /logonpasswordchg:yes;"    # set new password + must-change
-    f"schtasks /delete /tn OCI_ClearPwFlag /f 2>$null;"  # delete clearing task
-    f"net user {username} /logonpasswordchg:yes"          # re-assert must-change AFTER task deletion
-)
+# set_must_change=True (initial VM setup): force must-change on first RDP login.
+# set_must_change=False (user-initiated reset): user chose their own password, no must-change.
+if set_must_change:
+    ps_script = (
+        f"$b=[Convert]::FromBase64String('{pw_b64}');"
+        f"$p=[Text.Encoding]::UTF8.GetString($b);"
+        f"net user {username} $p /logonpasswordchg:yes;"    # set new password + must-change
+        f"schtasks /delete /tn OCI_ClearPwFlag /f 2>$null;"  # delete clearing task
+        f"net user {username} /logonpasswordchg:yes"          # re-assert must-change AFTER task deletion
+    )
+else:
+    ps_script = (
+        f"$b=[Convert]::FromBase64String('{pw_b64}');"
+        f"$p=[Text.Encoding]::UTF8.GetString($b);"
+        f"net user {username} $p /logonpasswordchg:no;"      # set new password, no must-change
+        f"schtasks /delete /tn OCI_ClearPwFlag /f 2>$null;"  # delete clearing task if still present
+        f"net user {username} /logonpasswordchg:no"           # ensure no must-change flag
+    )
 
 last_error = None
 attempt_errors = []
