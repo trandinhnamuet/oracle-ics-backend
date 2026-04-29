@@ -790,51 +790,39 @@ export class AuthService {
   async forgotPassword(forgotPasswordDto: ForgotPasswordDto, lang: string = DEFAULT_LANG) {
     const { email } = forgotPasswordDto;
 
-    // SECURITY: To prevent account enumeration, always return the same generic
-    // success response regardless of whether the email exists. Only perform the
-    // OTP generation / email send when the user actually exists.
-    const genericResponse = {
+    const user = await this.userRepository.findOne({ where: { email } });
+    if (!user) {
+      this.logger.log(`forgotPassword requested for non-existent email: ${email}`);
+      throw new BadRequestException(t('forgotPassword.notFound', lang));
+    }
+
+    // Enforce shared hourly OTP limit before generating/sending
+    await this.otpService.checkAndRecordHourlySend(email);
+
+    // Generate 6-digit OTP
+    const otp = this.generateOtp();
+    const otpExpiresAt = new Date();
+    otpExpiresAt.setMinutes(otpExpiresAt.getMinutes() + 10); // OTP valid for 10 minutes
+
+    // Save OTP to user
+    user.passwordResetOtp = otp;
+    user.passwordResetOtpExpiresAt = otpExpiresAt;
+    await this.userRepository.save(user);
+
+    // Send OTP email
+    await this.emailService.sendPasswordReset({
+      to: email,
+      userName: `${user.firstName} ${user.lastName}`,
+      resetCode: otp,
+      expirationMinutes: 10,
+      lang,
+    });
+
+    return {
       message: t('forgotPassword.success', lang),
       email,
       success: true,
     };
-
-    const user = await this.userRepository.findOne({ where: { email } });
-    if (!user) {
-      this.logger.log(`forgotPassword requested for non-existent email (uniform response returned)`);
-      return genericResponse;
-    }
-
-    try {
-      // Enforce shared hourly OTP limit before generating/sending
-      await this.otpService.checkAndRecordHourlySend(email);
-
-      // Generate 6-digit OTP
-      const otp = this.generateOtp();
-      const otpExpiresAt = new Date();
-      otpExpiresAt.setMinutes(otpExpiresAt.getMinutes() + 10); // OTP valid for 10 minutes
-
-      // Save OTP to user
-      user.passwordResetOtp = otp;
-      user.passwordResetOtpExpiresAt = otpExpiresAt;
-      await this.userRepository.save(user);
-
-      // Send OTP email
-      await this.emailService.sendPasswordReset({
-        to: email,
-        userName: `${user.firstName} ${user.lastName}`,
-        resetCode: otp,
-        expirationMinutes: 10,
-        lang,
-      });
-    } catch (err) {
-      // Do not leak failure reasons (e.g. rate-limit message) — log internally
-      // and return the same generic response. This preserves the
-      // non-enumeration guarantee.
-      this.logger.error(`forgotPassword: failed to dispatch OTP for ${email}: ${err?.message}`);
-    }
-
-    return genericResponse;
   }
 
   /**

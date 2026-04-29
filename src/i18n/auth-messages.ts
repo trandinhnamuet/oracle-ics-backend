@@ -54,7 +54,7 @@ const messages: Record<Lang, DeepMessages> = {
       sessionExpired: 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.',
     },
     forgotPassword: {
-      notFound: 'Tài khoản chưa được đăng ký. Vui lòng kiểm tra lại email.',
+      notFound: 'Email này chưa được đăng ký.',
       success: 'OTP đặt lại mật khẩu đã được gửi đến email của bạn.',
     },
     verifyResetOtp: {
