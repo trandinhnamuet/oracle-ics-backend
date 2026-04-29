@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, ForbiddenException, Logger } from '@nestjs/common';
 import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import { Subscription } from '../../entities/subscription.entity';
@@ -251,6 +251,68 @@ export class SubscriptionService {
     this.schedulePendingDeletion(savedSubscription.id);
 
     return { subscription: savedSubscription, payment: savedPayment };
+  }
+
+  /**
+   * Renew the QR payment for an existing PENDING subscription without creating a new subscription.
+   * Marks any previous pending payment as expired, generates a new transaction code,
+   * and resets the auto-deletion timer.
+   */
+  async renewPaymentForPendingSubscription(
+    subscriptionId: string,
+    userId: number,
+  ): Promise<{ subscription: Subscription; payment: Payment }> {
+    const subscription = await this.subscriptionRepository.findOne({
+      where: { id: subscriptionId },
+      relations: ['cloudPackage'],
+    });
+
+    if (!subscription) {
+      throw new NotFoundException(`Subscription ${subscriptionId} not found`);
+    }
+
+    if (subscription.user_id !== userId) {
+      throw new ForbiddenException('You do not have access to this subscription');
+    }
+
+    if (subscription.status !== 'pending') {
+      throw new BadRequestException('Only pending subscriptions can have their payment renewed');
+    }
+
+    // Mark any existing pending payments for this subscription as expired
+    await this.paymentRepository.update(
+      { subscription_id: subscriptionId, status: 'pending' },
+      { status: 'expired' },
+    );
+
+    const cloudPackage =
+      subscription.cloudPackage ??
+      (await this.cloudPackageRepository.findOne({ where: { id: subscription.cloud_package_id } }));
+
+    const transactionCode = `SUB${Date.now()}${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
+
+    const payment = this.paymentRepository.create({
+      user_id: userId,
+      cloud_package_id: subscription.cloud_package_id,
+      subscription_id: subscriptionId,
+      payment_method: 'sepay_qr',
+      payment_type: 'subscription',
+      amount: subscription.amount_paid,
+      status: 'pending',
+      transaction_code: transactionCode,
+      description: `Subscription payment renewal for ${cloudPackage?.name ?? subscription.cloud_package_id}`,
+    });
+
+    const savedPayment = await this.paymentRepository.save(payment);
+
+    // Reset the pending deletion timer — give another full window from now
+    this.schedulePendingDeletion(subscriptionId);
+
+    this.logger.log(
+      `[renewPayment] New payment ${savedPayment.id} (${transactionCode}) created for subscription ${subscriptionId}`,
+    );
+
+    return { subscription, payment: savedPayment };
   }
 
   async findAll(queryParams?: {
