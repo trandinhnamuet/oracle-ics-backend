@@ -603,25 +603,6 @@ export class VmSubscriptionService implements OnModuleInit, OnModuleDestroy {
     const vmDetail = await this.vmProvisioningService.getVmById(subscription.user_id, vm.id);
     this.logger.debug('VM details retrieved from OCI');
 
-    // On-demand Windows credential fetch: if OS is Windows and no password yet
-    // Try fetching as long as VM is not terminated (OCI API will return null if not ready)
-    const isWindowsVm = vmDetail.operatingSystem?.toLowerCase().includes('windows');
-    if (isWindowsVm && !vmDetail.windowsInitialPassword && vmDetail.lifecycleState !== 'TERMINATED' && vmDetail.lifecycleState !== 'TERMINATING') {
-      this.logger.log(`🪟 [OnDemand] Windows VM without password, trying OCI credential API...`);
-      try {
-        const credentials = await this.ociService.getWindowsInitialCredentials(vmDetail.instanceId);
-        if (credentials?.password) {
-          await this.vmInstanceRepo.update(vm.id, { windows_initial_password: credentials.password });
-          vmDetail.windowsInitialPassword = credentials.password;
-          this.logger.log(`🎉 [OnDemand] Windows password retrieved and saved for VM ${vm.id}`);
-        } else {
-          this.logger.log(`⏳ [OnDemand] Windows credentials not ready yet for VM ${vm.id}`);
-        }
-      } catch (credErr) {
-        this.logger.warn(`⚠️  [OnDemand] Could not fetch Windows credentials: ${credErr.message}`);
-      }
-    }
-
     return {
       subscription: {
         id: subscription.id,
