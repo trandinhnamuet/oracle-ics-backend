@@ -143,7 +143,8 @@ export class AuthService {
     // Record OTP verification in login history (for admin users only)
     if (user.role === 'admin') {
       try {
-        const { browser, os, deviceType } = this.parseUserAgent(request.headers['user-agent'] || '');
+        const userAgentStr: string = request.headers?.['user-agent'] || '';
+        const { browser, os, deviceType } = this.parseUserAgent(userAgentStr);
         const geo = GeolocationUtil.getLocationFromIP(ipv4 || ipv6);
         await this.adminLoginHistoryService.recordLogin({
           adminId: user.id,
@@ -159,7 +160,7 @@ export class AuthService {
           browser,
           os,
           deviceType,
-          userAgent: request.headers['user-agent'] || null,
+          userAgent: userAgentStr || null,
           twoFaStatus: 'not_enabled',
           sessionId: this.generateSessionId(),
           isNewDevice: false,
@@ -275,88 +276,74 @@ export class AuthService {
     let ipV6: string | null = null;
     let ip: string | null = null;
 
-    const headers = request.headers || {};
-
-    const normalizeHeader = (h: any) => {
-      if (!h) return [] as string[];
-      if (Array.isArray(h)) return h.flatMap(v => String(v).split(',')).map((s: string) => s.trim()).filter(Boolean);
-      return String(h).split(',').map((s: string) => s.trim()).filter(Boolean);
-    };
-
-    const isPrivateIP = (candidate: string) => {
-      if (!candidate) return true;
-      const c = candidate.trim();
-      return (/^10\./.test(c) || /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(c) || /^192\.168\./.test(c) || /^127\./.test(c) || /^169\.254\./.test(c) || /^fc00:/i.test(c) || /^fe80:/i.test(c) || c === '::1' || c === 'localhost');
-    };
-
-    // 1. Prefer a public IP from X-Forwarded-For (many proxies append IPs)
-    const xForwardedFor = headers['x-forwarded-for'] || headers['X-Forwarded-For'];
-    const xffIps = normalizeHeader(xForwardedFor);
-    if (xffIps.length > 0) {
-      // pick the first non-private IP, otherwise fallback to the first entry
-      const publicCandidate = xffIps.find((c) => !isPrivateIP(c));
-      ip = publicCandidate || xffIps[0];
-      this.logger.debug(`Found IP from x-forwarded-for: ${ip} (all: ${xffIps.join(',')})`);
+    // 1. Try x-forwarded-for header (nginx, apache, common proxy, load balancer)
+    // This is the most important header when behind a proxy/load balancer
+    if (!ip) {
+      const xForwardedFor = request.headers?.['x-forwarded-for'];
+      if (typeof xForwardedFor === 'string') {
+        const ips = xForwardedFor.split(',').map((i: string) => i.trim());
+        // Take the first IP (client's real IP, not proxy IP)
+        ip = ips[0];
+        this.logger.debug(`Found IP from x-forwarded-for: ${ip}`);
+      }
     }
 
     // 2. Try x-real-ip header (nginx)
     if (!ip) {
-      const xReal = headers['x-real-ip'];
-      if (xReal) {
-        ip = Array.isArray(xReal) ? String(xReal[0]) : String(xReal);
+      ip = request.headers?.['x-real-ip'];
+      if (ip) {
         this.logger.debug(`Found IP from x-real-ip: ${ip}`);
       }
     }
 
     // 3. Try cf-connecting-ip header (Cloudflare)
     if (!ip) {
-      const cf = headers['cf-connecting-ip'];
-      if (cf) {
-        ip = Array.isArray(cf) ? String(cf[0]) : String(cf);
+      ip = request.headers?.['cf-connecting-ip'];
+      if (ip) {
         this.logger.debug(`Found IP from cf-connecting-ip: ${ip}`);
       }
     }
 
     // 4. Try x-client-ip header (some proxies)
     if (!ip) {
-      const xClient = headers['x-client-ip'];
-      if (xClient) {
-        ip = Array.isArray(xClient) ? String(xClient[0]) : String(xClient);
+      ip = request.headers?.['x-client-ip'];
+      if (ip) {
         this.logger.debug(`Found IP from x-client-ip: ${ip}`);
       }
     }
 
-    // 5. Fallback to connection.remoteAddress or socket.remoteAddress or request.ip
+    // 5. Fallback: use request.ip first (respects Express "trust proxy" + X-Forwarded-For),
+    //    then raw socket address as last resort.
     if (!ip) {
-      ip = request.connection?.remoteAddress || request.socket?.remoteAddress || request.ip;
+      ip = request.ip || request.connection?.remoteAddress || request.socket?.remoteAddress;
       if (ip) {
-        this.logger.debug(`Found IP from socket/request: ${ip}`);
+        this.logger.debug(`Found IP from request.ip / socket: ${ip}`);
       }
     }
 
     // Parse IPv4 vs IPv6
     if (ip) {
-      ip = String(ip).trim();
-      // Remove IPv6 zone id if present
-      const percentIndex = ip.indexOf('%');
-      if (percentIndex > -1) ip = ip.slice(0, percentIndex);
-
-      // IPv4-mapped IPv6 like ::ffff:192.0.2.1
-      if (ip.includes('::ffff:')) {
-        const v4 = ip.split('::ffff:')[1];
-        ipV4 = v4;
-      }
-      // Plain IPv4
-      else if (ip.includes('.') && !ip.includes(':')) {
+      // Clean up the IP
+      ip = ip.trim();
+      
+      // Check if it's IPv4 (contains dots and no colons)
+      if (ip.includes('.') && !ip.includes(':')) {
         ipV4 = ip;
-      }
-      // IPv6 loopback
-      else if (ip === '::1' || ip === 'localhost') {
-        ipV4 = '127.0.0.1';
-      }
-      // Pure IPv6
+      } 
+      // Check if it's IPv6 or IPv4-mapped IPv6 (contains colons)
       else if (ip.includes(':')) {
-        ipV6 = ip;
+        // IPv4-mapped IPv6 like ::ffff:192.0.2.1
+        if (ip.includes('::ffff:')) {
+          ipV4 = ip.split('::ffff:')[1];
+        } 
+        // Localhost IPv6
+        else if (ip === '::1' || ip === 'localhost') {
+          ipV4 = '127.0.0.1';
+        } 
+        // Pure IPv6
+        else {
+          ipV6 = ip;
+        }
       }
     }
 

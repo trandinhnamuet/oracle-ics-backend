@@ -1,5 +1,5 @@
 import { Logger } from '@nestjs/common';
-// import * as geoip from 'geoip-lite';
+import * as geoip from 'geoip-lite';
 
 export interface GeoLocation {
   country: string | null;
@@ -39,7 +39,16 @@ export class GeolocationUtil {
         return defaultLocation;
       }
 
-      // geoip-lite not installed, return default location
+      // Look up geolocation using geoip-lite (offline GeoLite2 database)
+      const geo = geoip.lookup(ip);
+      if (geo) {
+        return {
+          country: geo.country || null,
+          city: geo.city || null,
+          timezone: geo.timezone || null,
+        };
+      }
+
       return defaultLocation;
     } catch (error) {
       this.logger.warn(`Failed to lookup geolocation for IP ${ip}:`, error);
