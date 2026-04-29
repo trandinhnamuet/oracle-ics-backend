@@ -1201,16 +1201,17 @@ export class VmProvisioningService {
               this.logger.error(`❌ [Background] VM ${vmId} no longer in database`);
               return;
             }
-            // Save OCI initial password first (needed as currentPassword for reset)
-            freshVm.windows_initial_password = credentials.password;
-            await this.vmInstanceRepo.save(freshVm);
-            credentialsSaved = true;
             this.logger.log(`🎉 [Background] VM ${vmId}: Windows credentials retrieved on attempt ${attempt}`);
             this.logger.log(`🎉 [Background] Username: ${credentials.username}`);
-            this.logger.log(`🎉 [Background] OCI initial password saved to database`);
 
             // Perform password reset to enforce /logonpasswordchg:yes and delete
             // the OCI_ClearPwFlag scheduled task (which would otherwise override the flag).
+            // NOTE: We intentionally do NOT save the OCI initial password to the DB up-front.
+            // The password reset takes ~30-60s; if we persisted the OCI password before the
+            // reset finished, frontend polling would briefly expose the OCI initial password
+            // (which becomes invalid the moment the reset completes). We only write to the DB
+            // AFTER the reset finishes — either the new reset password on success, or the OCI
+            // initial password as a fallback if the reset itself failed.
             let emailPassword = credentials.password;
             try {
               this.logger.log(`🔐 [Background] VM ${vmId}: Resetting password to enforce must-change-on-first-login...`);
@@ -1244,7 +1245,8 @@ export class VmProvisioningService {
                 false, // passwordInitialized = false (fresh VM, flag not cleared yet)
               );
 
-              // Save new password to DB
+              // Save new password to DB only after successful reset — prevents frontend from
+              // showing the intermediate OCI password before the reset completes.
               freshVm.windows_initial_password = newPassword;
               freshVm.windows_password_initialized = true;
               await this.vmInstanceRepo.save(freshVm);
@@ -1252,8 +1254,11 @@ export class VmProvisioningService {
               this.logger.log(`✅ [Background] VM ${vmId}: Password reset OK — must-change flag set, OCI_ClearPwFlag task deleted`);
             } catch (resetErr: any) {
               this.logger.error(`❌ [Background] VM ${vmId}: Password reset failed, will send OCI initial password: ${resetErr.message}`);
-              // Fall back: email the OCI initial password; customer may not be forced to change
+              // Reset failed — save OCI initial password to DB as fallback so user can still connect.
+              freshVm.windows_initial_password = credentials.password;
+              await this.vmInstanceRepo.save(freshVm);
             }
+            credentialsSaved = true;
 
             // Send email notification with password
             try {
