@@ -124,7 +124,13 @@ export class ImageController {
       res.status(404).json({ message: 'File not found' });
       return;
     }
-    res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}"`);
+    // Allow cross-origin embedding (e.g. admin.oraclecloud.vn loading images
+    // whose URL origin is oraclecloud.vn).  helmet() sets same-origin by
+    // default which breaks <img> tags in cross-origin pages.
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    // inline so browsers render images/PDFs in-tab; attachment would force a
+    // download dialog when the Eye button opens the URL directly.
+    res.setHeader('Content-Disposition', `inline; filename="${safeFilename}"`);
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.sendFile(filePath);
   }
