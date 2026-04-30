@@ -57,6 +57,51 @@ export class GeolocationUtil {
   }
 
   /**
+   * Get geolocation from browser-provided coordinates via Nominatim reverse geocoding.
+   * Returns city/country names; falls back to formatted coordinates string if API fails.
+   */
+  static async getLocationFromCoordinates(latitude: number, longitude: number): Promise<GeoLocation> {
+    try {
+      const url = `https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json&accept-language=en`;
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent': 'OracleICS-LoginHistory/1.0',
+          'Accept': 'application/json',
+        },
+        signal: AbortSignal.timeout(5000),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Nominatim returned ${response.status}`);
+      }
+
+      const data: any = await response.json();
+      const address = data?.address || {};
+
+      const city =
+        address.city ||
+        address.town ||
+        address.village ||
+        address.municipality ||
+        address.county ||
+        null;
+
+      const country = address.country_code?.toUpperCase() || null;
+      const timezone = null; // Nominatim does not return timezone
+
+      return { country, city, timezone };
+    } catch (error) {
+      this.logger.warn(`Failed to reverse geocode (${latitude}, ${longitude}):`, error);
+      // Fallback: store formatted coordinates so location is not lost
+      return {
+        country: null,
+        city: `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`,
+        timezone: null,
+      };
+    }
+  }
+
+  /**
    * Check if IP is private
    */
   private static isPrivateIP(ip: string): boolean {
