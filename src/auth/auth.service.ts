@@ -473,6 +473,15 @@ export class AuthService {
 
     this.logger.debug(`Login attempt - Email: ${email}, IPv4: ${ipV4}, IPv6: ${ipV6}`);
 
+    // Resolve geolocation once: prefer browser coordinates over IP lookup
+    const resolveGeo = async () => {
+      if (loginDto.latitude != null && loginDto.longitude != null) {
+        this.logger.debug(`Using browser coordinates for geo: (${loginDto.latitude}, ${loginDto.longitude})`);
+        return GeolocationUtil.getLocationFromCoordinates(loginDto.latitude, loginDto.longitude);
+      }
+      return GeolocationUtil.getLocationFromIP(ipV4 || ipV6);
+    };
+
     // Find user
     const user = await this.userRepository.findOne({ where: { email } });
     
@@ -480,7 +489,7 @@ export class AuthService {
     if (!user) {
       try {
         const { browser, os, deviceType } = this.parseUserAgent(userAgent);
-        const geo = GeolocationUtil.getLocationFromIP(ipV4 || ipV6);
+        const geo = await resolveGeo();
         
         await this.adminLoginHistoryService.recordLogin({
           adminId: null,
@@ -524,7 +533,7 @@ export class AuthService {
       // Record failed login
       try {
         const { browser, os, deviceType } = this.parseUserAgent(userAgent);
-        const geo = GeolocationUtil.getLocationFromIP(ipV4 || ipV6);
+        const geo = await resolveGeo();
         
         await this.adminLoginHistoryService.recordLogin({
           adminId: user.role === 'admin' ? user.id : null,
@@ -559,7 +568,7 @@ export class AuthService {
       this.logger.warn(`Admin-only login rejected for non-admin: ${email} (role: ${user.role})`);
       try {
         const { browser, os, deviceType } = this.parseUserAgent(userAgent);
-        const geo = GeolocationUtil.getLocationFromIP(ipV4 || ipV6);
+        const geo = await resolveGeo();
         await this.adminLoginHistoryService.recordLogin({
           adminId: null,
           username: user.email,
@@ -650,7 +659,7 @@ export class AuthService {
     if (user.role === 'admin') {
       try {
         const { browser, os, deviceType } = this.parseUserAgent(userAgent);
-        const geo = GeolocationUtil.getLocationFromIP(ipV4 || ipV6);
+        const geo = await resolveGeo();
         const isNewDevice = await this.adminLoginHistoryService.isNewDevice(user.id, ipV4 || ipV6 || '');
 
         await this.adminLoginHistoryService.recordLogin({

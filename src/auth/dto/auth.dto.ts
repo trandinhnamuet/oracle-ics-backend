@@ -1,4 +1,4 @@
-import { IsEmail, IsNotEmpty, MinLength, IsString, Length, IsOptional, Matches } from 'class-validator';
+import { IsEmail, IsNotEmpty, MinLength, IsString, Length, IsOptional, Matches, IsNumber, Min, Max } from 'class-validator';
 
 const PASSWORD_REGEX = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^a-zA-Z0-9]).{8,}$/;
 
@@ -8,6 +8,18 @@ export class LoginDto {
 
   @IsNotEmpty()
   password: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(-90)
+  @Max(90)
+  latitude?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(-180)
+  @Max(180)
+  longitude?: number;
 }
 
 export class RegisterDto {
