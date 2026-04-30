@@ -1255,7 +1255,10 @@ export class VmProvisioningService {
             } catch (resetErr: any) {
               this.logger.error(`❌ [Background] VM ${vmId}: Password reset failed, will send OCI initial password: ${resetErr.message}`);
               // Reset failed — save OCI initial password to DB as fallback so user can still connect.
+              // Also mark as initialized so the recovery path in getSubscriptionVm knows the background
+              // job finished and the stored password (OCI initial) is the current valid password.
               freshVm.windows_initial_password = credentials.password;
+              freshVm.windows_password_initialized = true;
               await this.vmInstanceRepo.save(freshVm);
             }
             credentialsSaved = true;

@@ -603,6 +603,33 @@ export class VmSubscriptionService implements OnModuleInit, OnModuleDestroy {
     const vmDetail = await this.vmProvisioningService.getVmById(subscription.user_id, vm.id);
     this.logger.debug('VM details retrieved from OCI');
 
+    // Recovery: if the background password-setup job was killed (e.g. server restart) before it
+    // could save the initial password, the VM will be stuck showing "Password is being generated"
+    // forever. Detect this by checking: Windows VM, no password, not initialized, VM started >30 min ago.
+    // 30 min is safely past the maximum background job runtime (~23 min), so there is no race
+    // condition with a still-running background job.
+    const isWindowsVm = vmDetail.operatingSystem?.toLowerCase().includes('windows');
+    if (isWindowsVm && !vmDetail.windowsInitialPassword && !vm.windows_password_initialized) {
+      const startedAt = vm.vm_started_at ?? vm.created_at;
+      const minutesSinceStart = startedAt ? (Date.now() - new Date(startedAt).getTime()) / 60_000 : 0;
+      if (minutesSinceStart > 30) {
+        this.logger.warn(`⚠️ [Recovery] VM ${vm.id} has no password after ${Math.round(minutesSinceStart)} min — fetching OCI initial credentials`);
+        try {
+          const credentials = await this.ociService.getWindowsInitialCredentials(vmDetail.instanceId);
+          if (credentials?.password) {
+            await this.vmInstanceRepo.update(vm.id, {
+              windows_initial_password: credentials.password,
+              windows_password_initialized: true,
+            });
+            vmDetail.windowsInitialPassword = credentials.password;
+            this.logger.log(`✅ [Recovery] Saved OCI initial password for VM ${vm.id}`);
+          }
+        } catch (recoveryErr: any) {
+          this.logger.warn(`⚠️ [Recovery] Could not fetch OCI credentials: ${recoveryErr.message}`);
+        }
+      }
+    }
+
     return {
       subscription: {
         id: subscription.id,
