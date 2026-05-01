@@ -1069,6 +1069,8 @@ runcmd:
           'try {',
           '  if (-not (Get-NetFirewallRule -Name "WinRM-HTTP-In-TCP" -ErrorAction SilentlyContinue)) { New-NetFirewallRule -Name "WinRM-HTTP-In-TCP" -DisplayName "WinRM HTTP (5985)" -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 5985 }',
           '} catch {}',
+          '# Guaranteed netsh fallback for WinRM 5985 — works on all Windows versions regardless of WMI/CIM availability',
+          'try { netsh advfirewall firewall add rule name="WinRM-HTTP-5985-In" dir=in action=allow protocol=TCP localport=5985 profile=any 2>$null } catch {}',
           'try { Restart-Service WinRM -Force -ErrorAction SilentlyContinue } catch {}',
           '',
           '# ===== OpenSSH Server (comprehensive setup) =====',
@@ -1154,14 +1156,38 @@ runcmd:
           '    [System.IO.File]::WriteAllText($sshdCfgPath, "PubkeyAuthentication yes`nMatch Group administrators`n       AuthorizedKeysFile __PROGRAMDATA__/ssh/administrators_authorized_keys`n")',
           '  }',
           '} catch {}',
-          '# 4. Start sshd service',
+          '# 4. Start sshd service — verify the service exists; if not, retry installation',
           'try {',
+          '  $sshdSvcCheck = Get-Service -Name sshd -ErrorAction SilentlyContinue',
+          '  if (-not $sshdSvcCheck) {',
+          '    # Service not registered — attempt the manual GitHub install once more as a last resort',
+          '    try {',
+          '      $sshdExe = "$env:SystemRoot\\System32\\OpenSSH\\sshd.exe"',
+          '      if (-not (Test-Path $sshdExe)) {',
+          '        $url = "https://github.com/PowerShell/Win32-OpenSSH/releases/download/v9.5.0.0p1-Beta/OpenSSH-Win64.zip"',
+          '        $zipPath = "$env:TEMP\\OpenSSH-Win64-Retry.zip"',
+          '        $extractPath = "$env:TEMP\\OpenSSH-Extract-Retry"',
+          '        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12',
+          '        (New-Object System.Net.WebClient).DownloadFile($url, $zipPath)',
+          '        try { Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force } catch { Add-Type -Assembly System.IO.Compression.FileSystem -ErrorAction SilentlyContinue; [System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $extractPath) }',
+          '        $srcDir = Get-ChildItem $extractPath -Directory | Select-Object -First 1',
+          '        $destDir = "$env:ProgramFiles\\OpenSSH"',
+          '        if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }',
+          '        Copy-Item "$($srcDir.FullName)\\*" $destDir -Recurse -Force',
+          '        & "$destDir\\install-sshd.ps1" 2>$null',
+          '        Remove-Item $zipPath -Force -ErrorAction SilentlyContinue',
+          '        Remove-Item $extractPath -Recurse -Force -ErrorAction SilentlyContinue',
+          '      }',
+          '    } catch {}',
+          '  }',
           '  Set-Service -Name sshd -StartupType Automatic -ErrorAction SilentlyContinue',
           '  Start-Service sshd -ErrorAction SilentlyContinue',
           '} catch {}',
           '# 5. Firewall: force-enable any existing port-22 rules + add a backup allow rule',
           'try { Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object { $_.Enabled -eq $false -and ($_.DisplayName -like "*SSH*" -or $_.DisplayName -like "*sshd*" -or $_.Name -like "*SSH*") } | Set-NetFirewallRule -Enabled True -ErrorAction SilentlyContinue } catch {}',
           'try { New-NetFirewallRule -Name "AllowSSH22-OCI" -DisplayName "Allow SSH Port 22 (OCI)" -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 -ErrorAction SilentlyContinue } catch {}',
+          '# Guaranteed netsh fallback for SSH 22 — works on all Windows versions regardless of WMI/CIM availability',
+          'try { netsh advfirewall firewall add rule name="SSH-TCP-22-In" dir=in action=allow protocol=TCP localport=22 profile=any 2>$null } catch {}',
           '',
           '# ===== Admin SSH keys (embedded directly — no timing dependency on cloudbase-init) =====',
           '# Decode the base64-embedded SSH public keys and write them to administrators_authorized_keys.',
@@ -1184,9 +1210,18 @@ runcmd:
           '# 6. Restart sshd to pick up config + authorized keys changes, then verify',
           'try {',
           '  Restart-Service sshd -Force -ErrorAction SilentlyContinue',
-          '  Start-Sleep 2',
+          '  Start-Sleep 5',
           '  $sshdSvc = Get-Service sshd -ErrorAction SilentlyContinue',
-          '  if ($sshdSvc -and $sshdSvc.Status -ne "Running") { Start-Service sshd -ErrorAction SilentlyContinue }',
+          '  if ($sshdSvc -and $sshdSvc.Status -ne "Running") {',
+          '    # One more start attempt after 5s grace period',
+          '    Start-Service sshd -ErrorAction SilentlyContinue',
+          '    Start-Sleep 3',
+          '    $sshdSvc = Get-Service sshd -ErrorAction SilentlyContinue',
+          '    if ($sshdSvc -and $sshdSvc.Status -ne "Running") {',
+          '      # Last resort: invoke the binary directly to surface failure into the transcript log',
+          '      try { sc.exe start sshd 2>$null } catch {}',
+          '    }',
+          '  }',
           '} catch {}',
           '',
           '# Stop transcript log',
@@ -3083,6 +3118,7 @@ chmod 600 ~/.ssh/authorized_keys`;
       // cloudbase-init SetUserPasswordPlugin overrides it.
       const winrmRetryDelays = passwordInitialized ? [0, 15_000] : [0, 30_000, 45_000];
 
+      let sawAuthError = false;
       for (let attempt = 1; attempt <= winrmMaxAttempts; attempt++) {
         try {
           if (attempt > 1) {
@@ -3104,6 +3140,7 @@ chmod 600 ~/.ssh/authorized_keys`;
             winrmErr.message.toLowerCase().includes('401') ||
             winrmErr.message.toLowerCase().includes('auth')
           );
+          if (isAuthError) sawAuthError = true;
           if (attempt === winrmMaxAttempts) {
             this.logger.warn(`⚠️ WinRM strategy failed (attempt ${attempt}/${winrmMaxAttempts}): ${winrmErr.message}`);
             break;
@@ -3121,17 +3158,40 @@ chmod 600 ~/.ssh/authorized_keys`;
           this.logger.log(`🔄 WinRM failed (attempt ${attempt}/${winrmMaxAttempts}) — ${isAuthError ? 'auth rejected, must-change-password flag may still be active' : 'connection issue, will retry'} — retrying...`);
         }
       }
+
+      // Recovery pre-step: if WinRM fails with auth rejection on an already-initialized
+      // VM, the must-change-password flag may still be active (user hasn't logged in via
+      // RDP yet). Try to clear it via a SHORT, single-line OCI Run Command, then retry
+      // WinRM one more time. This is much faster than the full Run Command strategy
+      // because the script is one line and runs fast on agents that ARE responsive.
+      if (passwordInitialized && sawAuthError) {
+        this.logger.log(`🔁 WinRM failed with auth error on initialized VM — attempting to clear must-change flag via OCI Run Command, then retry WinRM...`);
+        try {
+          await this.tryClearMustChangeFlagViaRunCommand(instanceId, compartmentId, 60_000);
+          this.logger.log(`✅ must-change flag cleared via Run Command — retrying WinRM once...`);
+          try {
+            await this.changePasswordViaWinrm(publicIp, currentPassword, newPassword, setMustChange);
+            this.logger.log(`✅ Password changed via WinRM (after must-change clear)`);
+            return;
+          } catch (retryErr: any) {
+            if (retryErr instanceof BadRequestException) throw retryErr;
+            this.logger.warn(`⚠️ WinRM retry after must-change clear failed: ${retryErr.message}`);
+          }
+        } catch (clearErr: any) {
+          this.logger.warn(`⚠️ Could not clear must-change flag via Run Command: ${clearErr.message}`);
+        }
+      }
       // Note: WinRM ports (5985+5986) are intentionally kept open for future resets.
     } else {
       this.logger.log(`⏭️ WinRM skipped: ${!subnetId ? 'no subnet' : !publicIp ? 'no public IP' : 'no current password in DB'}`);
     }
 
-    // ── Strategy 2: OCI Run Command (timeout 2 min) ──
-    // Reduced from 5 min because the Cloud Agent on most VMs is unreliable.
-    // If the command stays VISIBLE/ACCEPTED, polling longer never helps.
-    this.logger.log(`📡 Strategy 2: OCI Run Command (timeout 2 min)...`);
+    // ── Strategy 2: OCI Run Command (timeout 8 min) ──
+    // Increased from 2 min: the Cloud Agent on Windows can be slow to dispatch — 2 min wasn't
+    // long enough on heavily-loaded VMs. 8 min gives the agent a real chance to pick the command up.
+    this.logger.log(`📡 Strategy 2: OCI Run Command (timeout 8 min)...`);
     try {
-      await this.tryRunCommandPasswordReset(instanceId, compartmentId, newPassword, 120_000, setMustChange);
+      await this.tryRunCommandPasswordReset(instanceId, compartmentId, newPassword, 480_000, setMustChange);
       this.logger.log(`✅ Password changed via OCI Run Command`);
       return;
     } catch (runCmdErr: any) {
@@ -3197,6 +3257,80 @@ chmod 600 ~/.ssh/authorized_keys`;
   }
 
   /**
+   * Pre-step recovery: send a short, single-line OCI Run Command that just clears the
+   * must-change-password flag on the opc account. Used when WinRM fails with auth
+   * rejection on an already-initialized VM — the must-change flag may still be active
+   * because the user hasn't logged in via RDP yet, which blocks NTLM. Clearing the flag
+   * unblocks the next WinRM attempt.
+   *
+   * Uses a short timeout (60s default) because the script is trivial; if the agent is
+   * unresponsive at all, this returns quickly and we move on to other strategies.
+   */
+  private async tryClearMustChangeFlagViaRunCommand(
+    instanceId: string,
+    compartmentId: string,
+    maxWaitMs: number = 60_000,
+  ): Promise<void> {
+    // Make sure the plugin is enabled — non-fatal if this fails
+    try { await this.enableRunCommandPlugin(instanceId); } catch {}
+
+    // Wrap the trivial command via cmd→powershell -EncodedCommand so it survives
+    // ExecutionPolicy and any cmd.exe metacharacter quirks.
+    const psScriptText = `net user opc /logonpasswordchg:no\r\nWrite-Output 'CLEAR_OK'`;
+    const encodedCmd = Buffer.from(psScriptText, 'utf16le').toString('base64');
+    const script = `powershell.exe -NonInteractive -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodedCmd}`;
+
+    const createResponse = await this.computeInstanceAgentClient.createInstanceAgentCommand({
+      createInstanceAgentCommandDetails: {
+        compartmentId,
+        executionTimeOutInSeconds: 30,
+        displayName: 'Clear must-change flag',
+        target: { instanceId },
+        content: {
+          source: {
+            sourceType: 'TEXT',
+            text: script,
+          } as oci.computeinstanceagent.models.InstanceAgentCommandSourceViaTextDetails,
+          output: {
+            outputType: 'TEXT',
+          } as oci.computeinstanceagent.models.InstanceAgentCommandOutputViaTextDetails,
+        },
+      },
+    });
+    const commandId = createResponse.instanceAgentCommand.id;
+    this.logger.log(`✅ OCI Run Command created (clear-flag): ${commandId}`);
+
+    const pollIntervalMs = 5_000;
+    const startTime = Date.now();
+    while (Date.now() - startTime < maxWaitMs) {
+      await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+      try {
+        const execResponse = await this.computeInstanceAgentClient.getInstanceAgentCommandExecution({
+          instanceAgentCommandId: commandId,
+          instanceId,
+        });
+        const execution = execResponse.instanceAgentCommandExecution;
+        const lifecycleState = execution.lifecycleState;
+        this.logger.log(`📊 clear-flag status — lifecycle: ${lifecycleState}`);
+        if (lifecycleState === oci.computeinstanceagent.models.InstanceAgentCommandExecution.LifecycleState.Succeeded) {
+          return;
+        }
+        if (
+          lifecycleState === oci.computeinstanceagent.models.InstanceAgentCommandExecution.LifecycleState.Failed ||
+          lifecycleState === oci.computeinstanceagent.models.InstanceAgentCommandExecution.LifecycleState.TimedOut ||
+          lifecycleState === oci.computeinstanceagent.models.InstanceAgentCommandExecution.LifecycleState.Canceled
+        ) {
+          throw new Error(`clear-flag Run Command failed with state: ${lifecycleState}`);
+        }
+      } catch (pollError: any) {
+        if (pollError?.statusCode === 404 || String(pollError?.message).includes('404')) continue;
+        throw pollError;
+      }
+    }
+    throw new Error(`clear-flag Run Command timed out (${maxWaitMs / 1000}s)`);
+  }
+
+  /**
    * Try to reset password via OCI Run Command.
    * @param maxWaitMs  Maximum poll time in ms (default 8 min)
    */
@@ -3256,11 +3390,13 @@ chmod 600 ~/.ssh/authorized_keys`;
 
     // Step 3: Create the Run Command — use base64-encoded PowerShell to avoid ALL
     // command-line escaping issues with special chars in the password (@ ! $ # & etc.).
-    // OCI Run Command on Windows executes via PowerShell by default.
+    // We wrap the PowerShell as a cmd.exe-friendly invocation that runs
+    // `powershell.exe -EncodedCommand BASE64`. This bypasses any ExecutionPolicy
+    // restrictions on the VM and avoids the OCA's PowerShell-direct mode.
     const b64pw = Buffer.from(newPassword, 'utf8').toString('base64');
     // /logonpasswordchg:yes sets the "must change password at next logon" flag so
     // the customer is forced to create their own private password on first RDP login.
-    const script = setMustChange
+    const psScriptText = setMustChange
       ? [
           `$b=[System.Convert]::FromBase64String('${b64pw}')`,
           `$p=[System.Text.Encoding]::UTF8.GetString($b)`,
@@ -3278,10 +3414,16 @@ chmod 600 ~/.ssh/authorized_keys`;
           `Write-Output 'PASSWORD_CHANGED_OK'`,
         ].join('\r\n');
 
+    // PowerShell -EncodedCommand expects UTF-16LE base64. We then invoke it through
+    // powershell.exe with -ExecutionPolicy Bypass so even the most locked-down VM
+    // executes the script.
+    const encodedCmd = Buffer.from(psScriptText, 'utf16le').toString('base64');
+    const script = `powershell.exe -NonInteractive -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodedCmd}`;
+
     const createResponse = await this.computeInstanceAgentClient.createInstanceAgentCommand({
       createInstanceAgentCommandDetails: {
         compartmentId,
-        executionTimeOutInSeconds: 60,
+        executionTimeOutInSeconds: 120,
         displayName: 'Reset Windows Password',
         target: { instanceId },
         content: {
@@ -3463,7 +3605,11 @@ chmod 600 ~/.ssh/authorized_keys`;
                 username: 'opc',
                 privateKey: Buffer.from(adminPrivateKey, 'utf8'),
                 ...(currentPassword ? { password: currentPassword, tryKeyboard: true } : {}),
-                readyTimeout: 90_000,
+                // 30s readyTimeout: when Windows Firewall drops port-22 packets, the handshake
+                // never completes; 90s × 3 attempts = 4.5 min of dead time. 30s × 3 = 1.5 min,
+                // giving a much better user experience while still tolerating slow handshakes
+                // on functional VMs.
+                readyTimeout: 30_000,
                 algorithms: {
                   serverHostKey: ['rsa-sha2-512', 'rsa-sha2-256', 'ssh-rsa', 'ecdsa-sha2-nistp256', 'ecdsa-sha2-nistp384', 'ssh-ed25519'],
                 },
