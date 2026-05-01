@@ -18,13 +18,16 @@ new_password = data['newPassword']
 set_must_change = data.get('setMustChange', True)
 
 # Attempt order:
-#   1. HTTPS (5986) + NTLM + .\username  — standard OCI Windows setup
-#   2. HTTPS (5986) + NTLM + username    — some images drop the .\ prefix
-#   3. HTTP  (5985) + basic + username   — fallback when NTLM fails over IP
+#   1. HTTPS (5986) + NTLM  + .\username  — standard OCI Windows setup
+#   2. HTTPS (5986) + NTLM  + username    — some images drop the .\ prefix
+#   3. HTTPS (5986) + basic + username    — basic over HTTPS (not blocked by must-change
+#                                           on some Windows configs that reject NTLM)
+#   4. HTTP  (5985) + basic + username    — fallback when HTTPS unavailable
 #      (basic auth is enabled in user_data setup script; needs AllowUnencrypted=true)
 SESSION_ATTEMPTS = [
     ('https', 5986, 'ntlm',  f'.\\{username}'),
     ('https', 5986, 'ntlm',  username),
+    ('https', 5986, 'basic', username),
     ('http',  5985, 'basic', username),
 ]
 
