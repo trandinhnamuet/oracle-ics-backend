@@ -127,10 +127,14 @@ async function bootstrap() {
       'http://localhost:3001',
       'http://localhost:5173',
       'https://oracle-ics-frontend.vercel.app',
-      'https://oraclecloud.vn',
+      'https://oraclecloud.vn', //2 main domain
       'http://oraclecloud.vn',
       'https://admin.oraclecloud.vn',
       'http://admin.oraclecloud.vn',
+      'https://sandbox.oraclecloud.vn',  //2 sandbox domain
+      'http://sandbox.oraclecloud.vn',
+      'https://admin.sandbox.oraclecloud.vn',
+      'http://admin.sandbox.oraclecloud.vn',
     ],
     credentials: true,
     allowedHeaders: ['Content-Type', 'Authorization', 'Accept-Language'],
