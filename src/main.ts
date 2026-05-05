@@ -133,8 +133,8 @@ async function bootstrap() {
       'http://admin.oraclecloud.vn',
       'https://sandbox.oraclecloud.vn',  //2 sandbox domain
       'http://sandbox.oraclecloud.vn',
-      'https://admin.sandbox.oraclecloud.vn',
-      'http://admin.sandbox.oraclecloud.vn',
+      'https://sandbox.admin.oraclecloud.vn',
+      'http://sandbox.admin.oraclecloud.vn',
     ],
     credentials: true,
     allowedHeaders: ['Content-Type', 'Authorization', 'Accept-Language'],
