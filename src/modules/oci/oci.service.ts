@@ -1528,11 +1528,15 @@ runcmd:
   }
 
   /**
-   * Update SSH keys for an existing instance by directly modifying authorized_keys file via SSH
+   * Update SSH keys for an existing instance by directly modifying authorized_keys via SFTP.
    * OCI doesn't allow updating ssh_authorized_keys metadata after instance creation,
    * so we SSH into the instance and modify the file directly.
-   * Keeps admin key + max 2 user keys (3 total)
-   * 
+   * Keeps admin key + max 2 user keys (3 total).
+   *
+   * Uses SFTP with 900-byte read chunks instead of `exec cat` to avoid Path MTU Discovery
+   * black-hole issues on NAT/PPPoE links (MTU ≤ 1492). Servers behind such links would
+   * silently drop the large TCP segment carrying the exec response, causing a hang.
+   *
    * @param instanceId - The OCID of the instance
    * @param newSshKey - The new SSH public key to add
    * @param publicIp - Public IP of the instance
@@ -1540,12 +1544,12 @@ runcmd:
    * @param adminPrivateKey - Admin private key string (decrypted)
    * @param adminPublicKey - Admin public key (used to identify admin key in authorized_keys)
    * @param homeUser - Target user whose authorized_keys to update (defaults to username).
-   *                   When different from username, sudo is used (e.g., SSH as 'opc', update 'centos').
+   *                   When different from username, sudo is used (e.g., SSH as 'opc', update 'root').
    * @returns Updated key info
    */
   async updateInstanceSshKeys(
-    instanceId: string, 
-    newSshKey: string, 
+    instanceId: string,
+    newSshKey: string,
     publicIp: string,
     username: string,
     adminPrivateKey: string,
@@ -1553,211 +1557,288 @@ runcmd:
     homeUser?: string,
   ): Promise<{ id: string; keysCount: number; userKeysCount: number; removedOldest: boolean }> {
     const MAX_RETRIES = 8;
-    const RETRY_DELAY_MS = 15000; // 15s between retries
+    const RETRY_DELAY_MS = 15000;
 
     const attempt = async (retryNum: number): Promise<{ id: string; keysCount: number; userKeysCount: number; removedOldest: boolean }> => {
-    try {
-      const targetUser = homeUser || username;
-      const useSudo = targetUser !== username;
-      const { Client } = await import('ssh2');
-      
-      return await new Promise<{ id: string; keysCount: number; userKeysCount: number; removedOldest: boolean }>((resolve, reject) => {
-        const conn = new Client();
-        
-        this.logger.log(`🔐 Connecting to ${username}@${publicIp} via SSH${useSudo ? ` (will update ${targetUser}'s authorized_keys via sudo)` : ''}...`);
-        
-        conn.on('ready', () => {
-          this.logger.log(`✅ SSH connection established`);
-          
-          // Read current authorized_keys
-          this.logger.log(`📖 Reading current authorized_keys...`);
-          const targetHome = targetUser === 'root' ? '/root' : `/home/${targetUser}`;
-          const readCmd = useSudo
-            ? `sudo mkdir -p ${targetHome}/.ssh && sudo chmod 700 ${targetHome}/.ssh; sudo cat ${targetHome}/.ssh/authorized_keys 2>/dev/null || true`
-            : 'cat ~/.ssh/authorized_keys';
-          conn.exec(readCmd, (err, stream) => {
-            if (err) {
-              conn.end();
-              return reject(new Error(`Failed to read authorized_keys: ${err.message}`));
-            }
-            
-            let currentKeys = '';
-            
-            stream.on('data', (data: Buffer) => {
-              currentKeys += data.toString();
-            });
-            
-            stream.stderr.on('data', (data: Buffer) => {
-              this.logger.error(`stderr: ${data}`);
-            });
-            
-            stream.on('close', (code: number) => {
-              if (code !== 0) {
-                conn.end();
-                return reject(new Error(`Failed to read authorized_keys, exit code: ${code}`));
-              }
-              
-              // Parse existing keys
-              const existingKeys = currentKeys
-                .split('\n')
-                .map(key => key.trim())
-                .filter(key => key.length > 0);
-              
-              this.logger.log(`📋 Found ${existingKeys.length} existing keys`);
+      try {
+        const targetUser = homeUser || username;
+        const useSudo = targetUser !== username;
+        const { Client } = await import('ssh2');
 
-              // Identify admin key: prefer explicit match by public key value (prevents
-              // misidentification after multiple rotations). Fall back to position[0] only
-              // if no adminPublicKey was provided.
-              const adminKeyNormalized = adminPublicKey?.trim();
-              let adminKey: string | null = null;
-              if (adminKeyNormalized) {
-                // Match by the key material (first two space-separated tokens: type + base64)
-                // so that differing comments don't break the match.
-                const adminKeyParts = adminKeyNormalized.split(' ').slice(0, 2).join(' ');
-                adminKey = existingKeys.find(k => k.split(' ').slice(0, 2).join(' ') === adminKeyParts) ?? null;
-                if (!adminKey) {
-                  this.logger.warn(`⚠️  Admin public key not found in authorized_keys — it will be added`);
-                  adminKey = adminKeyNormalized;
-                } else {
-                  this.logger.log(`✅ Admin key identified by explicit match (not position)`);
-                }
-              } else {
-                adminKey = existingKeys.length > 0 ? existingKeys[0] : null;
-                this.logger.warn(`⚠️  No adminPublicKey provided — using position[0] as fallback`);
-              }
-              
-              // Get user keys only (exclude admin key)
-              const adminKeyParts = adminKey ? adminKey.split(' ').slice(0, 2).join(' ') : null;
-              const existingUserKeys = adminKeyParts
-                ? existingKeys.filter(k => k.split(' ').slice(0, 2).join(' ') !== adminKeyParts)
-                : existingKeys;
-              
-              // Add new user key to the beginning
-              const updatedUserKeys = [newSshKey, ...existingUserKeys];
-              
-              // Keep only the 2 most recent user keys
-              const finalUserKeys = updatedUserKeys.slice(0, 2);
-              
-              // Combine: Admin key first, then user keys
-              const finalKeys = adminKey 
-                ? [adminKey, ...finalUserKeys]
-                : finalUserKeys;
-              
-              // Create new authorized_keys content
-              const newAuthorizedKeysContent = finalKeys.join('\n') + '\n';
-              
-              // Write new authorized_keys file
-              this.logger.log(`✍️  Writing updated authorized_keys (${finalKeys.length} keys)...`);
-              
-              // Use heredoc to write authorized_keys; always use sudo when targetUser differs from SSH user
-              const command = useSudo
-                ? `sudo tee ${targetHome}/.ssh/authorized_keys > /dev/null << 'EOF_SSH_KEYS'
-${newAuthorizedKeysContent}EOF_SSH_KEYS
-sudo chmod 600 ${targetHome}/.ssh/authorized_keys
-sudo chown ${targetUser}:${targetUser} ${targetHome}/.ssh/authorized_keys ${targetHome}/.ssh
-sudo sed -i 's/^#*PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config 2>/dev/null; sudo grep -q 'PermitRootLogin' /etc/ssh/sshd_config 2>/dev/null || echo 'PermitRootLogin prohibit-password' | sudo tee -a /etc/ssh/sshd_config > /dev/null
-sudo systemctl reload sshd 2>/dev/null || sudo service sshd reload 2>/dev/null || true`
-                : `cat > ~/.ssh/authorized_keys << 'EOF_SSH_KEYS'
-${newAuthorizedKeysContent}EOF_SSH_KEYS
-chmod 600 ~/.ssh/authorized_keys`;
-              
-              conn.exec(command, (err, stream) => {
-                if (err) {
-                  conn.end();
-                  return reject(new Error(`Failed to write authorized_keys: ${err.message}`));
-                }
-                
-                let stdout = '';
-                let stderr = '';
-                
-                // Pipe stdout to drain stream (important!)
-                stream.on('data', (data: Buffer) => {
-                  stdout += data.toString();
-                });
-                
-                stream.stderr.on('data', (data: Buffer) => {
-                  stderr += data.toString();
-                });
-                
-                stream.on('close', (code: number) => {
-                  conn.end();
-                  
-                  if (code !== 0) {
-                    this.logger.error(`Write failed. stderr: ${stderr}`);
-                    return reject(new Error(`Failed to write authorized_keys, exit code: ${code}`));
-                  }
-                  
-                  this.logger.log(
-                    `✅ SSH keys updated successfully for instance ${instanceId}. ` +
-                    `Total keys: ${finalKeys.length} (1 admin + ${finalUserKeys.length} user keys)`
-                  );
-                  
-                  resolve({
-                    id: instanceId,
-                    keysCount: finalKeys.length,
-                    userKeysCount: finalUserKeys.length,
-                    removedOldest: existingUserKeys.length >= 2,
-                  });
-                });
-                
-                // Add timeout to prevent hanging forever
-                const timeout = setTimeout(() => {
-                  conn.end();
-                  reject(new Error('SSH command timeout after 30 seconds'));
-                }, 30000);
-                
-                stream.on('close', () => {
-                  clearTimeout(timeout);
-                });
-              });
-            });
+        return await new Promise<{ id: string; keysCount: number; userKeysCount: number; removedOldest: boolean }>((resolve, reject) => {
+          const conn = new Client();
+          let settled = false;
+          const settle = (fn: () => void) => {
+            if (!settled) { settled = true; fn(); conn.end(); }
+          };
+
+          this.logger.log(`🔐 Connecting to ${username}@${publicIp} via SSH${useSudo ? ` (will update ${targetUser}'s authorized_keys via sudo)` : ''}...`);
+
+          conn.on('ready', () => {
+            this.logger.log(`✅ SSH connection established`);
+            this.performSftpKeyUpdate(conn, instanceId, newSshKey, adminPublicKey, targetUser, useSudo)
+              .then(result => settle(() => resolve(result)))
+              .catch(err => settle(() => reject(err)));
+          });
+
+          conn.on('error', (err) => {
+            this.logger.error(`❌ SSH connection error: ${err.message}`);
+            this.logger.error(`   Error code: ${err['code']}`);
+            this.logger.error(`   Error level: ${err['level']}`);
+            settle(() => reject(new Error(`SSH connection failed: ${err.message}`)));
+          });
+
+          const sshConfig = {
+            host: publicIp,
+            port: 22,
+            username: username,
+            privateKeyFormat: adminPrivateKey.includes('BEGIN RSA PRIVATE KEY') ? 'PKCS#1' :
+                             adminPrivateKey.includes('BEGIN PRIVATE KEY') ? 'PKCS#8' : 'UNKNOWN',
+            privateKeyLength: adminPrivateKey.length,
+            readyTimeout: 60000,
+          };
+          this.logger.log(`🔧 SSH Config: ${JSON.stringify(sshConfig, null, 2)}`);
+
+          conn.connect({
+            host: publicIp,
+            port: 22,
+            username: username,
+            privateKey: Buffer.from(adminPrivateKey, 'utf8'),
+            readyTimeout: 60000,
+            debug: (msg) => this.logger.debug(`SSH2 Debug: ${msg}`),
           });
         });
-        
-        conn.on('error', (err) => {
-          this.logger.error(`❌ SSH connection error: ${err.message}`);
-          this.logger.error(`   Error code: ${err['code']}`);
-          this.logger.error(`   Error level: ${err['level']}`);
-          reject(new Error(`SSH connection failed: ${err.message}`));
-        });
-        
-        // Debug: Log SSH connection configuration
-        const sshConfig = {
-          host: publicIp,
-          port: 22,
-          username: username,
-          privateKeyFormat: adminPrivateKey.includes('BEGIN RSA PRIVATE KEY') ? 'PKCS#1' : 
-                           adminPrivateKey.includes('BEGIN PRIVATE KEY') ? 'PKCS#8' : 'UNKNOWN',
-          privateKeyLength: adminPrivateKey.length,
-          privateKeyStart: adminPrivateKey.substring(0, 50),
-          readyTimeout: 60000,
-        };
-        this.logger.log(`🔧 SSH Config: ${JSON.stringify(sshConfig, null, 2)}`);
-        
-        // Connect to the instance
-        conn.connect({
-          host: publicIp,
-          port: 22,
-          username: username,
-          privateKey: Buffer.from(adminPrivateKey, 'utf8'),
-          readyTimeout: 60000,
-          debug: (msg) => this.logger.debug(`SSH2 Debug: ${msg}`),
-        });
-      });
-    } catch (error) {
-      const isRetryable = error['code'] === 'ECONNREFUSED' || 
-                          (error.message && (error.message.includes('ECONNREFUSED') || error.message.includes('Timed out while waiting for handshake')));
-      if (isRetryable && retryNum < MAX_RETRIES) {
-        this.logger.warn(`⏳ SSH not ready (${error['code'] || 'timeout'}) for ${publicIp}, retry ${retryNum}/${MAX_RETRIES} in ${RETRY_DELAY_MS / 1000}s...`);
-        await new Promise(res => setTimeout(res, RETRY_DELAY_MS));
-        return attempt(retryNum + 1);
+      } catch (error) {
+        const msg: string = error.message || '';
+        const isRetryable =
+          error['code'] === 'ECONNREFUSED' ||
+          msg.includes('ECONNREFUSED') ||
+          msg.includes('Timed out while waiting for handshake') ||
+          msg.includes('operation global timeout') ||
+          msg.includes('SSH command timeout');
+        if (isRetryable && retryNum < MAX_RETRIES) {
+          this.logger.warn(`⏳ SSH not ready (${error['code'] || 'timeout'}) for ${publicIp}, retry ${retryNum}/${MAX_RETRIES} in ${RETRY_DELAY_MS / 1000}s...`);
+          await new Promise(res => setTimeout(res, RETRY_DELAY_MS));
+          return attempt(retryNum + 1);
+        }
+        this.logger.error('Error updating instance SSH keys via SSH:', error);
+        throw error;
       }
-      this.logger.error('Error updating instance SSH keys via SSH:', error);
-      throw error;
-    }
     };
 
     return attempt(1);
+  }
+
+  /**
+   * Core SFTP-based logic for reading and rewriting authorized_keys.
+   *
+   * Strategy (avoids Path MTU black-hole):
+   *   1. If sudo needed: `exec` a no-output command to stage the file in /tmp.
+   *   2. SFTP-read the staged (or direct) file in 900-byte chunks — each server
+   *      response packet stays well under any PPPoE/NAT MTU limit.
+   *   3. Compute the new key list.
+   *   4. SFTP-write the new content to a /tmp scratch file (upload = client→server,
+   *      unaffected by the server-to-client MTU constraint).
+   *   5. `exec` a no-output command to mv/chmod/reload into place.
+   */
+  private async performSftpKeyUpdate(
+    conn: any,
+    instanceId: string,
+    newSshKey: string,
+    adminPublicKey: string | undefined,
+    targetUser: string,
+    useSudo: boolean,
+  ): Promise<{ id: string; keysCount: number; userKeysCount: number; removedOldest: boolean }> {
+    const targetHome = targetUser === 'root' ? '/root' : `/home/${targetUser}`;
+    const authKeysPath = `${targetHome}/.ssh/authorized_keys`;
+    const tmpTag = `${Date.now()}_${process.pid}`;
+    const tmpReadPath = `/tmp/.ak_r_${tmpTag}`;
+    const tmpWritePath = `/tmp/.ak_w_${tmpTag}`;
+
+    const sftp = await this.openSftp(conn);
+
+    // Step 1 (sudo only): copy authorized_keys to a /tmp path the SSH user can read via SFTP.
+    // This exec returns no stdout, so no large TCP response packet is sent server→client.
+    if (useSudo) {
+      this.logger.log(`📁 Staging ${authKeysPath} → ${tmpReadPath} for SFTP read...`);
+      await this.sshExec(conn,
+        `sudo mkdir -p ${targetHome}/.ssh && sudo chmod 700 ${targetHome}/.ssh; ` +
+        `sudo cp ${authKeysPath} ${tmpReadPath} 2>/dev/null && sudo chmod 644 ${tmpReadPath} || touch ${tmpReadPath}`
+      );
+    }
+
+    // Step 2: Read file via SFTP with 900-byte chunks (each response packet < 1492 bytes).
+    this.logger.log(`📖 Reading current authorized_keys via SFTP (chunked)...`);
+    const readPath = useSudo ? tmpReadPath : authKeysPath;
+    const currentContent = await this.sftpReadChunked(sftp, readPath);
+
+    const existingKeys = currentContent.split('\n').map(k => k.trim()).filter(k => k.length > 0);
+    this.logger.log(`📋 Found ${existingKeys.length} existing keys`);
+
+    // Identify admin key by key-material match (type + base64, ignoring comment field).
+    const adminKeyNormalized = adminPublicKey?.trim();
+    let adminKey: string | null = null;
+    if (adminKeyNormalized) {
+      const adminKeyMaterial = adminKeyNormalized.split(' ').slice(0, 2).join(' ');
+      adminKey = existingKeys.find(k => k.split(' ').slice(0, 2).join(' ') === adminKeyMaterial) ?? null;
+      if (!adminKey) {
+        this.logger.warn(`⚠️  Admin public key not found in authorized_keys — it will be added`);
+        adminKey = adminKeyNormalized;
+      } else {
+        this.logger.log(`✅ Admin key identified by explicit match (not position)`);
+      }
+    } else {
+      adminKey = existingKeys.length > 0 ? existingKeys[0] : null;
+      this.logger.warn(`⚠️  No adminPublicKey provided — using position[0] as fallback`);
+    }
+
+    // Step 3: Build updated key list (admin key first, then ≤2 most-recent user keys).
+    const adminKeyMaterial = adminKey ? adminKey.split(' ').slice(0, 2).join(' ') : null;
+    const existingUserKeys = adminKeyMaterial
+      ? existingKeys.filter(k => k.split(' ').slice(0, 2).join(' ') !== adminKeyMaterial)
+      : existingKeys;
+    const finalUserKeys = [newSshKey, ...existingUserKeys].slice(0, 2);
+    const finalKeys = adminKey ? [adminKey, ...finalUserKeys] : finalUserKeys;
+    const newContent = finalKeys.join('\n') + '\n';
+
+    // Step 4: Write new content to /tmp via SFTP.
+    // Data flows client→server (upload) — not affected by server-to-client MTU constraint.
+    this.logger.log(`✍️  Writing updated authorized_keys via SFTP (${finalKeys.length} keys)...`);
+    await this.sftpWriteFile(sftp, tmpWritePath, newContent);
+
+    // Step 5: Move temp file into place. These exec commands produce no significant output.
+    if (useSudo) {
+      await this.sshExec(conn,
+        `sudo mv ${tmpWritePath} ${authKeysPath}; ` +
+        `sudo chmod 600 ${authKeysPath}; ` +
+        `sudo chown ${targetUser}:${targetUser} ${authKeysPath} ${targetHome}/.ssh; ` +
+        `sudo rm -f ${tmpReadPath} 2>/dev/null; ` +
+        `sudo sed -i 's/^#*PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config 2>/dev/null; ` +
+        `sudo grep -q 'PermitRootLogin' /etc/ssh/sshd_config 2>/dev/null || ` +
+          `echo 'PermitRootLogin prohibit-password' | sudo tee -a /etc/ssh/sshd_config > /dev/null; ` +
+        `sudo systemctl reload sshd 2>/dev/null || sudo service sshd reload 2>/dev/null || true`
+      );
+    } else {
+      await this.sftpRename(sftp, tmpWritePath, authKeysPath);
+      await this.sshExec(conn, `chmod 600 ${authKeysPath}`);
+    }
+
+    this.logger.log(
+      `✅ SSH keys updated successfully for instance ${instanceId}. ` +
+      `Total keys: ${finalKeys.length} (1 admin + ${finalUserKeys.length} user keys)`
+    );
+
+    return {
+      id: instanceId,
+      keysCount: finalKeys.length,
+      userKeysCount: finalUserKeys.length,
+      removedOldest: existingUserKeys.length >= 2,
+    };
+  }
+
+  private openSftp(conn: any): Promise<any> {
+    return new Promise((resolve, reject) => {
+      conn.sftp((err: Error | undefined, sftp: any) => {
+        if (err) reject(new Error(`Failed to open SFTP subsystem: ${err.message}`));
+        else resolve(sftp);
+      });
+    });
+  }
+
+  /**
+   * Read a remote file via SFTP using small chunks (default 900 bytes) so that
+   * each SSH channel-data packet returned by the server is well within a 1492-byte
+   * PPPoE/NAT MTU frame after SSH encryption overhead is added.
+   */
+  private sftpReadChunked(sftp: any, remotePath: string, chunkSize = 900): Promise<string> {
+    return new Promise((resolve, reject) => {
+      sftp.open(remotePath, 'r', (openErr: any, handle: Buffer) => {
+        if (openErr) {
+          // SSH_FX_NO_SUCH_FILE (code 2) → treat as empty authorized_keys
+          if (openErr.code === 2) return resolve('');
+          return reject(new Error(`SFTP open(${remotePath}) failed: ${openErr.message}`));
+        }
+
+        const chunks: Buffer[] = [];
+        let offset = 0;
+
+        const readNext = () => {
+          const buf = Buffer.alloc(chunkSize);
+          sftp.read(handle, buf, 0, chunkSize, offset, (readErr: any, bytesRead: number, data: Buffer) => {
+            if (readErr) {
+              sftp.close(handle, () => {});
+              return reject(new Error(`SFTP read failed: ${readErr.message}`));
+            }
+            if (bytesRead === 0) {
+              return sftp.close(handle, (closeErr: any) => {
+                if (closeErr) this.logger.warn(`SFTP close warning: ${closeErr.message}`);
+                resolve(Buffer.concat(chunks).toString('utf8'));
+              });
+            }
+            chunks.push(data.slice(0, bytesRead));
+            offset += bytesRead;
+            readNext();
+          });
+        };
+
+        readNext();
+      });
+    });
+  }
+
+  private sftpWriteFile(sftp: any, remotePath: string, content: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const buf = Buffer.from(content, 'utf8');
+      sftp.open(remotePath, 'w', { mode: 0o600 }, (openErr: any, handle: Buffer) => {
+        if (openErr) return reject(new Error(`SFTP open(${remotePath}) for write failed: ${openErr.message}`));
+        sftp.write(handle, buf, 0, buf.length, 0, (writeErr: any) => {
+          sftp.close(handle, (closeErr: any) => {
+            if (writeErr) return reject(new Error(`SFTP write failed: ${writeErr.message}`));
+            if (closeErr) this.logger.warn(`SFTP close (write) warning: ${closeErr.message}`);
+            resolve();
+          });
+        });
+      });
+    });
+  }
+
+  private sftpRename(sftp: any, oldPath: string, newPath: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      sftp.rename(oldPath, newPath, (err: any) => {
+        if (err) reject(new Error(`SFTP rename(${oldPath} → ${newPath}) failed: ${err.message}`));
+        else resolve();
+      });
+    });
+  }
+
+  /**
+   * Run a shell command over SSH and wait for completion.
+   * stdout/stderr are drained but not returned to the caller — no large data
+   * is awaited from the server, so this is safe regardless of MTU constraints.
+   */
+  private sshExec(conn: any, cmd: string, timeoutMs = 30000): Promise<void> {
+    return new Promise((resolve, reject) => {
+      conn.exec(cmd, (err: Error | undefined, stream: any) => {
+        if (err) return reject(new Error(`exec start failed: ${err.message}`));
+
+        let stderr = '';
+        stream.on('data', () => { /* drain stdout */ });
+        stream.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
+
+        const timer = setTimeout(
+          () => reject(new Error('SSH command timeout after 30 seconds')),
+          timeoutMs,
+        );
+
+        stream.on('close', (code: number) => {
+          clearTimeout(timer);
+          if (code !== 0) {
+            this.logger.warn(`⚠️  exec exited ${code}. stderr: ${stderr.slice(0, 300)}`);
+          }
+          resolve();
+        });
+      });
+    });
   }
 
   /**
