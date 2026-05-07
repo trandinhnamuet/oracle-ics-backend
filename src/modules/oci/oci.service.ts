@@ -2253,8 +2253,18 @@ runcmd:
       this.logger.log(`Found compartment ID: ${compartmentId}`);
       
       // Step 2: Terminate all instances
+      // Wrap in try-catch: if listing fails (e.g. OCI 404/403 for compartment), treat as empty list
+      // so we can still proceed to delete VCNs and the compartment.
       this.logger.log('Terminating all instances...');
-      const instances = await this.listInstances(compartmentId);
+      let instances: Awaited<ReturnType<typeof this.listInstances>> = [];
+      try {
+        instances = await this.listInstances(compartmentId);
+      } catch (err) {
+        this.logger.warn(
+          `Could not list instances in compartment ${compartmentId}: ${err.message}. ` +
+          `Assuming no instances and continuing deletion.`
+        );
+      }
       
       for (const instance of instances) {
         if (instance.lifecycleState !== 'TERMINATED' && instance.lifecycleState !== 'TERMINATING') {
@@ -2268,37 +2278,48 @@ runcmd:
       }
       
       // Step 3: Wait for instances to terminate
-      // BUG FIX: must also wait for already-TERMINATING instances, not just newly-terminated ones.
-      // Previously, if all instances were already TERMINATING, the wait was skipped entirely,
-      // causing subnet deletion to fail (VNICs still attached) → VCN deletion fails → compartment deletion fails.
       const instancesToWaitFor = instances.filter(
         i => i.lifecycleState !== 'TERMINATED'
       );
       if (instancesToWaitFor.length > 0) {
         this.logger.log(`Waiting for ${instancesToWaitFor.length} instances to fully terminate...`);
-        await this.sleep(15000); // Wait 15 seconds initially
+        await this.sleep(15000);
         
         let maxRetries = 30; // up to 5 minutes
         while (maxRetries > 0) {
-          const currentInstances = await this.listInstances(compartmentId);
+          let currentInstances: typeof instances = [];
+          try {
+            currentInstances = await this.listInstances(compartmentId);
+          } catch {
+            // If we can't list anymore, assume they're gone
+            this.logger.warn('Could not re-list instances, assuming all terminated');
+            break;
+          }
           const runningInstances = currentInstances.filter(
             i => i.lifecycleState !== 'TERMINATED'
           );
-          
           if (runningInstances.length === 0) {
             this.logger.log('All instances terminated');
             break;
           }
-          
           this.logger.log(`Waiting for ${runningInstances.length} instances to terminate... (${maxRetries} retries left)`);
-          await this.sleep(10000); // Wait 10 seconds
+          await this.sleep(10000);
           maxRetries--;
         }
       }
       
       // Step 4: Delete VCN resources
+      // Wrap in try-catch: if listing VCNs fails, treat as empty (continue to delete compartment)
       this.logger.log('Deleting VCN resources...');
-      const vcns = await this.listVcns(compartmentId);
+      let vcns: Awaited<ReturnType<typeof this.listVcns>> = [];
+      try {
+        vcns = await this.listVcns(compartmentId);
+      } catch (err) {
+        this.logger.warn(
+          `Could not list VCNs in compartment ${compartmentId}: ${err.message}. ` +
+          `Assuming no VCNs and continuing deletion.`
+        );
+      }
       
       for (const vcn of vcns) {
         this.logger.log(`Processing VCN: ${vcn.displayName} (${vcn.id})`);
