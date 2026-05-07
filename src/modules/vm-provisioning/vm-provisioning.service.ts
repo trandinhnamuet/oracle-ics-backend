@@ -898,10 +898,13 @@ export class VmProvisioningService {
     
     // Convert email to compartment name format
     // Example: trandinhnamuet@gmail.com -> trandinhnamuet-gmail-com
-    const compartmentName = user.email
+    // If COMPARTMENT_PREFIX is set: sandbox-trandinhnamuet-gmail-com
+    const emailPart = user.email
       .toLowerCase()
       .replace('@', '-')
       .replace(/\./g, '-');
+    const compartmentPrefix = process.env.COMPARTMENT_PREFIX?.trim();
+    const compartmentName = compartmentPrefix ? `${compartmentPrefix}-${emailPart}` : emailPart;
     const compartmentDesc = `Compartment for user ${user.email}`;
 
     const ociCompartment = await this.ociService.createCompartment(
