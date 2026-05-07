@@ -2,6 +2,16 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
 
 export class InsertCloudPackagesData20251021100000 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
+    // Check if data already exists to prevent duplication
+    const existingData = await queryRunner.query(`
+      SELECT COUNT(*) as count FROM oracle.cloud_packages WHERE name = 'Starter 1'
+    `);
+    
+    if (existingData[0].count > 0) {
+      console.log('⏭️ Cloud packages data already exists, skipping insertion');
+      return;
+    }
+
     // Starter Plans
     const starterPlans = [
       {
@@ -245,7 +255,7 @@ export class InsertCloudPackagesData20251021100000 implements MigrationInterface
         ram: '16GB RAM',
         memory: '1024GB SSD Storage',
         feature: '1 GPU Tesla P100',
-        bandwidth: 'Hạ tầng AI chuyên dụng'
+        bandwidth: 'Dedicated AI infrastructure'
       },
       {
         name: 'VM.GPU.A10.1',
@@ -256,7 +266,7 @@ export class InsertCloudPackagesData20251021100000 implements MigrationInterface
         ram: '24GB RAM',
         memory: '1024GB SSD Storage',
         feature: '1 GPU A10 Tensor Core',
-        bandwidth: 'Hạ tầng AI chuyên dụng'
+        bandwidth: 'Dedicated AI infrastructure'
       },
       {
         name: 'BM.GPU2.2',
@@ -267,7 +277,7 @@ export class InsertCloudPackagesData20251021100000 implements MigrationInterface
         ram: '32GB RAM',
         memory: '1024GB SSD Storage',
         feature: '2 GPU Tesla P100',
-        bandwidth: 'Hạ tầng AI chuyên dụng'
+        bandwidth: 'Dedicated AI infrastructure'
       },
       {
         name: 'VM.GPU.A10.2',
@@ -278,7 +288,7 @@ export class InsertCloudPackagesData20251021100000 implements MigrationInterface
         ram: '48GB RAM',
         memory: '1024GB SSD Storage',
         feature: '2 GPU A10 Tensor Core',
-        bandwidth: 'Hạ tầng AI chuyên dụng'
+        bandwidth: 'Dedicated AI infrastructure'
       }
     ];
 
