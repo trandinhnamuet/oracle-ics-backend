@@ -2285,7 +2285,7 @@ runcmd:
         this.logger.log(`Waiting for ${instancesToWaitFor.length} instances to fully terminate...`);
         await this.sleep(15000);
         
-        let maxRetries = 30; // up to 5 minutes
+        let maxRetries = 60; // up to 10 minutes
         while (maxRetries > 0) {
           let currentInstances: typeof instances = [];
           try {
@@ -2305,6 +2305,9 @@ runcmd:
           this.logger.log(`Waiting for ${runningInstances.length} instances to terminate... (${maxRetries} retries left)`);
           await this.sleep(10000);
           maxRetries--;
+        }
+        if (maxRetries === 0) {
+          this.logger.warn(`Instance wait timed out after 10 minutes. Proceeding with VCN/compartment deletion anyway (VNICs may still be detaching).`);
         }
       }
       
@@ -2334,7 +2337,33 @@ runcmd:
             this.logger.warn(`Failed to delete subnet ${subnet.id}: ${err.message}`);
           }
         }
-        
+
+        // DB fallback: if OCI listSubnets returned nothing, try using subnet OCID stored
+        // in vcn_resources (subnet may be invisible to listSubnets when TERMINATING or in
+        // a non-standard compartment hierarchy).
+        if (subnets.length === 0) {
+          try {
+            const dbRows: Array<{ subnet_id: string }> = await this.dataSource.query(
+              `SELECT subnet_id FROM oracle.vcn_resources WHERE vcn_id = $1 AND subnet_id IS NOT NULL`,
+              [vcn.id]
+            );
+            for (const row of dbRows) {
+              this.logger.log(`DB fallback: attempting to delete subnet ${row.subnet_id}`);
+              try {
+                await this.deleteSubnet(row.subnet_id);
+                this.logger.log(`DB fallback: deleted subnet ${row.subnet_id}`);
+              } catch (err) {
+                this.logger.warn(`DB fallback: could not delete subnet ${row.subnet_id}: ${err.message}`);
+              }
+            }
+            if (dbRows.length > 0) {
+              await this.sleep(5000);
+            }
+          } catch (err) {
+            this.logger.warn(`DB fallback subnet lookup failed: ${err.message}`);
+          }
+        }
+
         // Wait for subnets to be deleted
         if (subnets.length > 0) {
           await this.sleep(5000);
@@ -2447,22 +2476,42 @@ runcmd:
         // Step 4.9: Delete VCN (with retry - subnets/routes may take time to fully clear in OCI)
         this.logger.log(`Deleting VCN: ${vcn.displayName}`);
         let vcnDeleted = false;
-        for (let attempt = 1; attempt <= 5; attempt++) {
+        for (let attempt = 1; attempt <= 10; attempt++) {
           try {
             await this.deleteVcn(vcn.id);
             vcnDeleted = true;
             break;
           } catch (err) {
-            if (attempt < 5) {
-              this.logger.warn(`VCN deletion attempt ${attempt} failed for ${vcn.id}: ${err.message}. Retrying in 10s...`);
-              await this.sleep(10000);
+            if (attempt < 10) {
+              const isSubnetIssue = err.message?.toLowerCase().includes('subnet');
+              if (isSubnetIssue) {
+                this.logger.warn(`VCN deletion attempt ${attempt} failed (subnet in use) for ${vcn.id}. Re-attempting subnet cleanup then waiting 30s...`);
+                // Re-attempt subnet deletion: both OCI list and DB fallback
+                try {
+                  const subnetsRetry = await this.listSubnets(compartmentId, vcn.id);
+                  for (const s of subnetsRetry) {
+                    try { await this.deleteSubnet(s.id); } catch {}
+                  }
+                  const dbRows: Array<{ subnet_id: string }> = await this.dataSource.query(
+                    `SELECT subnet_id FROM oracle.vcn_resources WHERE vcn_id = $1 AND subnet_id IS NOT NULL`,
+                    [vcn.id]
+                  );
+                  for (const row of dbRows) {
+                    try { await this.deleteSubnet(row.subnet_id); } catch {}
+                  }
+                } catch {}
+                await this.sleep(30000); // Wait 30s for VNIC/instance teardown
+              } else {
+                this.logger.warn(`VCN deletion attempt ${attempt} failed for ${vcn.id}: ${err.message}. Retrying in 10s...`);
+                await this.sleep(10000);
+              }
             } else {
-              this.logger.error(`Failed to delete VCN ${vcn.id} after 5 attempts: ${err.message}`);
+              this.logger.error(`Failed to delete VCN ${vcn.id} after ${attempt} attempts: ${err.message}`);
             }
           }
         }
         if (!vcnDeleted) {
-          throw new Error(`Cannot delete compartment "${compartmentName}": VCN ${vcn.id} (${vcn.displayName}) could not be deleted after 5 attempts. Check OCI for remaining resources.`);
+          throw new Error(`Cannot delete compartment "${compartmentName}": VCN ${vcn.id} (${vcn.displayName}) could not be deleted after 10 attempts. Check OCI for remaining resources.`);
         }
       }
       
