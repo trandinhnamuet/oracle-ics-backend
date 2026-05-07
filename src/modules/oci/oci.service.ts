@@ -2268,14 +2268,17 @@ runcmd:
       }
       
       // Step 3: Wait for instances to terminate
-      const activeInstances = instances.filter(
-        i => i.lifecycleState !== 'TERMINATED' && i.lifecycleState !== 'TERMINATING'
+      // BUG FIX: must also wait for already-TERMINATING instances, not just newly-terminated ones.
+      // Previously, if all instances were already TERMINATING, the wait was skipped entirely,
+      // causing subnet deletion to fail (VNICs still attached) → VCN deletion fails → compartment deletion fails.
+      const instancesToWaitFor = instances.filter(
+        i => i.lifecycleState !== 'TERMINATED'
       );
-      if (activeInstances.length > 0) {
-        this.logger.log('Waiting for instances to terminate...');
+      if (instancesToWaitFor.length > 0) {
+        this.logger.log(`Waiting for ${instancesToWaitFor.length} instances to fully terminate...`);
         await this.sleep(15000); // Wait 15 seconds initially
         
-        let maxRetries = 20;
+        let maxRetries = 30; // up to 5 minutes
         while (maxRetries > 0) {
           const currentInstances = await this.listInstances(compartmentId);
           const runningInstances = currentInstances.filter(
@@ -2287,7 +2290,7 @@ runcmd:
             break;
           }
           
-          this.logger.log(`Waiting for ${runningInstances.length} instances to terminate...`);
+          this.logger.log(`Waiting for ${runningInstances.length} instances to terminate... (${maxRetries} retries left)`);
           await this.sleep(10000); // Wait 10 seconds
           maxRetries--;
         }
@@ -2418,30 +2421,67 @@ runcmd:
         }
         
         // Wait for all sub-resources to be deleted
-        await this.sleep(5000);
+        await this.sleep(10000);
         
-        // Step 4.9: Delete VCN
+        // Step 4.9: Delete VCN (with retry - subnets/routes may take time to fully clear in OCI)
         this.logger.log(`Deleting VCN: ${vcn.displayName}`);
-        try {
-          await this.deleteVcn(vcn.id);
-        } catch (err) {
-          this.logger.warn(`Failed to delete VCN ${vcn.id}: ${err.message}`);
+        let vcnDeleted = false;
+        for (let attempt = 1; attempt <= 5; attempt++) {
+          try {
+            await this.deleteVcn(vcn.id);
+            vcnDeleted = true;
+            break;
+          } catch (err) {
+            if (attempt < 5) {
+              this.logger.warn(`VCN deletion attempt ${attempt} failed for ${vcn.id}: ${err.message}. Retrying in 10s...`);
+              await this.sleep(10000);
+            } else {
+              this.logger.error(`Failed to delete VCN ${vcn.id} after 5 attempts: ${err.message}`);
+            }
+          }
+        }
+        if (!vcnDeleted) {
+          throw new Error(`Cannot delete compartment "${compartmentName}": VCN ${vcn.id} (${vcn.displayName}) could not be deleted after 5 attempts. Check OCI for remaining resources.`);
         }
       }
       
       // Step 5: Wait before deleting compartment
       if (vcns.length > 0) {
         this.logger.log('Waiting for VCN resources to finalize...');
-        await this.sleep(5000);
+        await this.sleep(10000);
       }
       
-      // Step 6: Delete compartment
+      // Step 6: Delete compartment (with retry)
       this.logger.log(`Deleting compartment: ${compartmentName}`);
-      await this.deleteCompartment(compartmentId);
+      let ociDeleteError: Error | null = null;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          await this.deleteCompartment(compartmentId);
+          ociDeleteError = null;
+          break;
+        } catch (err) {
+          ociDeleteError = err;
+          if (attempt < 3) {
+            this.logger.warn(`Compartment OCI deletion attempt ${attempt} failed: ${err.message}. Retrying in 15s...`);
+            await this.sleep(15000);
+          }
+        }
+      }
       
-      // Step 7: Clean up database records
+      // Step 7: Clean up database records regardless of OCI deletion status
+      // Even if OCI deletion call fails (compartment may still be DELETING in OCI),
+      // we must clean the DB so the user record is gone and won't be reused.
       this.logger.log('Cleaning up database records...');
-      await this.cleanupDatabaseRecords(compartmentId, instances.map(i => i.id));
+      try {
+        await this.cleanupDatabaseRecords(compartmentId, instances.map(i => i.id));
+      } catch (dbErr) {
+        this.logger.error('Failed to clean up database records:', dbErr);
+      }
+      
+      if (ociDeleteError) {
+        this.logger.error(`OCI compartment deletion failed after retries: ${ociDeleteError.message}`);
+        throw ociDeleteError;
+      }
       
       this.logger.log(`Successfully deleted compartment: ${compartmentName}`);
       
