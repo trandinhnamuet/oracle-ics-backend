@@ -13,7 +13,7 @@ export class CreateWalletTransactionsTable20251013100004 implements MigrationInt
       CREATE TABLE oracle.wallet_transactions (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         wallet_id INTEGER NOT NULL,
-        payment_id UUID NOT NULL,
+        payment_id UUID,
         change_amount NUMERIC(18,6) NOT NULL,
         balance_after NUMERIC(18,6),
         type TEXT,
