@@ -1071,13 +1071,38 @@ export class VmProvisioningService {
           userCompartment.compartment_ocid,
           availableVcn.id,
         );
+        let subnetOcid: string;
+        let subnetName: string;
+
         const availableSubnet = subnets.find((s: any) => s.lifecycleState === 'AVAILABLE');
-        if (!availableSubnet) {
-          throw new InternalServerErrorException(
-            `No available subnet found in existing VCN ${availableVcn.id}.`
+        if (availableSubnet) {
+          subnetOcid = availableSubnet.id;
+          subnetName = availableSubnet.displayName || '';
+          this.logger.log(`Reusing existing subnet: ${subnetOcid}`);
+        } else {
+          // No available subnet — create one in the existing VCN
+          this.logger.log(
+            `No available subnet in VCN ${availableVcn.id} (${subnets.length} subnets found, none AVAILABLE). Creating new subnet...`
           );
+          const ads = await this.ociService.listAvailabilityDomains(userCompartment.compartment_ocid);
+          const adName = ads[0]?.name;
+          if (!adName) throw new InternalServerErrorException('No availability domains found');
+          const newSubnetName = `subnet-${userCompartment.user_id}-${Date.now()}`;
+          const newSubnetDnsLabel = `sub${userCompartment.user_id}${Date.now().toString().slice(-7)}`.slice(0, 15);
+          const newSubnet = await this.ociService.createSubnet(
+            userCompartment.compartment_ocid,
+            availableVcn.id,
+            newSubnetName,
+            subnetCidr,
+            adName,
+            newSubnetDnsLabel,
+          );
+          subnetOcid = newSubnet.id;
+          subnetName = newSubnetName;
+          this.logger.log(`Created new subnet in existing VCN: ${subnetOcid}`);
         }
-        this.logger.log(`Reusing subnet: ${availableSubnet.id}`);
+
+        const reuseVcnDetails = await this.ociService.getVcn(availableVcn.id);
 
         vcnResource = this.vcnResourceRepo.create({
           user_id: userCompartment.user_id,
@@ -1085,8 +1110,9 @@ export class VmProvisioningService {
           vcn_ocid: availableVcn.id,
           vcn_name: availableVcn.displayName || vcnName,
           vcn_cidr_block: availableVcn.cidrBlock,
-          subnet_ocid: availableSubnet.id,
-          subnet_name: availableSubnet.displayName || '',
+          subnet_ocid: subnetOcid,
+          subnet_name: subnetName,
+          route_table_id: reuseVcnDetails.defaultRouteTableId || '',
           region: userCompartment.region,
           lifecycle_state: 'AVAILABLE',
         }) as VcnResource;
