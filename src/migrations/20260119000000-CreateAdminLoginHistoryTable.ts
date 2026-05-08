@@ -25,7 +25,7 @@ export class CreateAdminLoginHistoryTable20260119000000 implements MigrationInte
           {
             name: 'admin_id',
             type: 'int',
-            isNullable: false,
+            isNullable: true,
           },
           {
             name: 'username',
