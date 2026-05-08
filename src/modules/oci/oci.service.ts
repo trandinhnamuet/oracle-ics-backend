@@ -2260,6 +2260,59 @@ runcmd:
   }
 
   /**
+   * Search ALL compartments in the tenancy for any VCN that has an AVAILABLE subnet.
+   * Returns the first match found. Used as a last resort when per-compartment limits are exhausted.
+   */
+  async findAnyAvailableVcnWithSubnet(): Promise<{ compartmentId: string; vcnId: string; vcnName: string; vcnCidr: string; subnetId: string; subnetName: string } | null> {
+    try {
+      const tenancyId = await this.getTenancyId();
+
+      // Include root tenancy and all sub-compartments
+      const compartmentIds: string[] = [tenancyId];
+      try {
+        const comps = await this.identityClient.listCompartments({
+          compartmentId: tenancyId,
+          compartmentIdInSubtree: true,
+          limit: 100,
+        });
+        for (const c of comps.items) {
+          if (c.lifecycleState === 'ACTIVE') compartmentIds.push(c.id);
+        }
+      } catch (e) {
+        this.logger.warn(`Could not list sub-compartments: ${e.message}`);
+      }
+
+      for (const compId of compartmentIds) {
+        try {
+          const vcns = await this.virtualNetworkClient.listVcns({ compartmentId: compId });
+          for (const vcn of vcns.items.filter(v => v.lifecycleState === 'AVAILABLE')) {
+            const subs = await this.virtualNetworkClient.listSubnets({ compartmentId: compId, vcnId: vcn.id });
+            const availSub = subs.items.find(s => s.lifecycleState === 'AVAILABLE');
+            if (availSub) {
+              this.logger.log(`Found usable VCN+subnet in compartment ${compId}: vcn=${vcn.id}, subnet=${availSub.id}`);
+              return {
+                compartmentId: compId,
+                vcnId: vcn.id,
+                vcnName: vcn.displayName || '',
+                vcnCidr: vcn.cidrBlock || '',
+                subnetId: availSub.id,
+                subnetName: availSub.displayName || '',
+              };
+            }
+          }
+        } catch (e) {
+          this.logger.warn(`Could not scan compartment ${compId}: ${e.message}`);
+        }
+      }
+
+      return null;
+    } catch (error) {
+      this.logger.error('Error in findAnyAvailableVcnWithSubnet:', error);
+      return null;
+    }
+  }
+
+  /**
    * Delete compartment and all its resources (runs in background)
    * @param compartmentName - The name of the compartment to delete
    */
