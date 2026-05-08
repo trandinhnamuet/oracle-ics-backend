@@ -1346,6 +1346,27 @@ runcmd:
   }
 
   /**
+   * List ALL VNIC attachments in a compartment (no instance filter)
+   * Used to wait for VNICs to fully detach after instance termination.
+   */
+  async listAllVnicAttachments(compartmentId: string) {
+    try {
+      const request: oci.core.requests.ListVnicAttachmentsRequest = {
+        compartmentId: compartmentId,
+      };
+      const response = await this.computeClient.listVnicAttachments(request);
+      return response.items.map(attachment => ({
+        id: attachment.id,
+        vnicId: attachment.vnicId,
+        lifecycleState: attachment.lifecycleState,
+      }));
+    } catch (error) {
+      this.logger.warn(`Could not list VNIC attachments for compartment ${compartmentId}: ${error.message}`);
+      return [];
+    }
+  }
+
+  /**
    * Get VNIC details including public IP
    * @param vnicId - The OCID of the VNIC
    */
@@ -2310,6 +2331,26 @@ runcmd:
           this.logger.warn(`Instance wait timed out after 10 minutes. Proceeding with VCN/compartment deletion anyway (VNICs may still be detaching).`);
         }
       }
+
+      // Step 3b: Wait for all VNIC attachments to fully detach
+      // VNICs can stay ATTACHED briefly after an instance becomes TERMINATED,
+      // and an attached VNIC keeps the subnet "in use", blocking VCN deletion.
+      this.logger.log('Waiting for all VNIC attachments to detach...');
+      let vnicRetries = 36; // up to 6 minutes (36 × 10s)
+      while (vnicRetries > 0) {
+        const vnics = await this.listAllVnicAttachments(compartmentId);
+        const attachedVnics = vnics.filter(v => v.lifecycleState === 'ATTACHED');
+        if (attachedVnics.length === 0) {
+          this.logger.log('All VNICs detached (or none found). Proceeding to VCN deletion.');
+          break;
+        }
+        this.logger.log(`Waiting for ${attachedVnics.length} VNIC(s) to detach... (${vnicRetries} retries left)`);
+        await this.sleep(10000);
+        vnicRetries--;
+      }
+      if (vnicRetries === 0) {
+        this.logger.warn('VNIC detach wait timed out after 6 minutes. Proceeding anyway.');
+      }
       
       // Step 4: Delete VCN resources
       // Wrap in try-catch: if listing VCNs fails, treat as empty (continue to delete compartment)
@@ -2485,7 +2526,7 @@ runcmd:
             if (attempt < 10) {
               const isSubnetIssue = err.message?.toLowerCase().includes('subnet');
               if (isSubnetIssue) {
-                this.logger.warn(`VCN deletion attempt ${attempt} failed (subnet in use) for ${vcn.id}. Re-attempting subnet cleanup then waiting 30s...`);
+                this.logger.warn(`VCN deletion attempt ${attempt} failed (subnet in use) for ${vcn.id}. Re-attempting subnet cleanup, then waiting for VNICs to detach...`);
                 // Re-attempt subnet deletion: both OCI list and DB fallback
                 try {
                   const subnetsRetry = await this.listSubnets(compartmentId, vcn.id);
@@ -2500,7 +2541,22 @@ runcmd:
                     try { await this.deleteSubnet(row.subnet_id); } catch {}
                   }
                 } catch {}
-                await this.sleep(30000); // Wait 30s for VNIC/instance teardown
+                // Poll VNIC attachments: wait until all VNICs are detached (up to 3 min per retry)
+                let vnicWaitRetries = 18; // 18 × 10s = 3 minutes
+                while (vnicWaitRetries > 0) {
+                  const vnics = await this.listAllVnicAttachments(compartmentId);
+                  const attachedVnics = vnics.filter(v => v.lifecycleState === 'ATTACHED');
+                  if (attachedVnics.length === 0) {
+                    this.logger.log(`VCN retry ${attempt}: all VNICs detached, will retry VCN deletion.`);
+                    break;
+                  }
+                  this.logger.log(`VCN retry ${attempt}: waiting for ${attachedVnics.length} VNIC(s) to detach (${vnicWaitRetries} left)...`);
+                  await this.sleep(10000);
+                  vnicWaitRetries--;
+                }
+                if (vnicWaitRetries === 0) {
+                  this.logger.warn(`VCN retry ${attempt}: VNIC wait timed out. Retrying VCN deletion anyway.`);
+                }
               } else {
                 this.logger.warn(`VCN deletion attempt ${attempt} failed for ${vcn.id}: ${err.message}. Retrying in 10s...`);
                 await this.sleep(10000);
