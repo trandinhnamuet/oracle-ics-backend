@@ -847,7 +847,8 @@ export class VmProvisioningService {
 
   /**
    * Ensure user has a compartment (create if not exists)
-   * If compartment was deleted from OCI, create a new one
+   * If compartment was deleted from OCI, find or create a new one.
+   * Falls back to root tenancy compartment when OCI compartment-count limit is exceeded.
    */
   private async ensureUserCompartment(userId: number): Promise<UserCompartment> {
     // Check if user has an ACTIVE compartment in database
@@ -859,46 +860,30 @@ export class VmProvisioningService {
       // Verify that the compartment still exists AND is ACTIVE in OCI
       try {
         const ociCompartment = await this.ociService.getCompartment(userCompartment.compartment_ocid);
-        
-        // Check if compartment is in ACTIVE state
+
         if (ociCompartment.lifecycleState !== 'ACTIVE') {
           const staleOcid = userCompartment.compartment_ocid;
           this.logger.warn(
-            `Compartment ${staleOcid} exists but is in ${ociCompartment.lifecycleState} state. ` +
-            `Need ACTIVE state. Creating new compartment...`
+            `Compartment ${staleOcid} exists but is in ${ociCompartment.lifecycleState} state. Will find or create new one...`
           );
-          
-          // Delete stale compartment record from database
           await this.userCompartmentRepo.remove(userCompartment);
-          // Will create new compartment below
         } else {
           this.logger.log(`Using existing ACTIVE compartment: ${userCompartment.compartment_ocid}`);
           return userCompartment;
         }
       } catch (error) {
-        // Compartment was deleted from OCI or not accessible
         const staleOcid = userCompartment.compartment_ocid;
-        this.logger.warn(`Compartment ${staleOcid} no longer exists in OCI. Creating new compartment for user ${userId}...`);
-        
-        // Delete stale compartment record from database
-        // This will cascade delete associated VCN and VMs (due to foreign keys)
+        this.logger.warn(`Compartment ${staleOcid} no longer exists in OCI. Will find or create for user ${userId}...`);
         await this.userCompartmentRepo.remove(userCompartment);
-        // Will create new compartment below
       }
     }
 
-    // Create new compartment in OCI
-    this.logger.log(`Creating new compartment for user ${userId}`);
-    
-    // Get user email to generate compartment name
+    // Get user info to build the compartment name
     const user = await this.userRepo.findOne({ where: { id: userId } });
     if (!user) {
       throw new NotFoundException(`User with ID ${userId} not found`);
     }
-    
-    // Convert email to compartment name format
-    // Example: trandinhnamuet@gmail.com -> trandinhnamuet-gmail-com
-    // If COMPARTMENT_PREFIX is set: sandbox-trandinhnamuet-gmail-com
+
     const emailPart = user.email
       .toLowerCase()
       .replace('@', '-')
@@ -907,26 +892,64 @@ export class VmProvisioningService {
     const compartmentName = compartmentPrefix ? `${compartmentPrefix}-${emailPart}` : emailPart;
     const compartmentDesc = `Compartment for user ${user.email}`;
 
-    const ociCompartment = await this.ociService.createCompartment(
-      compartmentName,
-      compartmentDesc,
-    );
+    // Step 1: Check if the compartment already exists in OCI (e.g. DB was wiped but OCI was not)
+    try {
+      const existingOciCompartment = await this.ociService.findCompartmentByName(compartmentName);
+      this.logger.log(`Found existing compartment in OCI by name '${compartmentName}': ${existingOciCompartment.id}. Reusing.`);
+      userCompartment = this.userCompartmentRepo.create({
+        user_id: userId,
+        compartment_ocid: existingOciCompartment.id,
+        compartment_name: compartmentName,
+        region: 'ap-tokyo-1',
+        lifecycle_state: 'ACTIVE',
+        created_at: new Date(),
+      }) as UserCompartment;
+      userCompartment = await this.userCompartmentRepo.save(userCompartment);
+      this.logger.log(`Saved existing OCI compartment to DB: ${userCompartment.compartment_ocid}`);
+      await this.waitForCompartmentReady(userCompartment.compartment_ocid);
+      return userCompartment;
+    } catch (_notFound) {
+      // Compartment does not exist yet in OCI — proceed to create
+      this.logger.log(`No existing compartment named '${compartmentName}' found in OCI. Will create.`);
+    }
 
-    // Save to database
+    // Step 2: Try to create a new compartment
+    this.logger.log(`Creating new compartment for user ${userId}`);
+    let ociCompartmentId: string;
+    let resolvedCompartmentName: string;
+
+    try {
+      const ociCompartment = await this.ociService.createCompartment(compartmentName, compartmentDesc);
+      ociCompartmentId = ociCompartment.id;
+      resolvedCompartmentName = compartmentName;
+      this.logger.log(`Compartment created: ${ociCompartmentId}`);
+    } catch (error) {
+      // OCI compartment-count limit exceeded — fall back to the root tenancy compartment
+      if (error?.serviceCode === 'LimitExceeded' || error?.message?.includes('compartment-count')) {
+        this.logger.warn(
+          `OCI compartment-count limit exceeded. Falling back to root tenancy compartment for user ${userId}.`
+        );
+        const tenancyId = await this.ociService.getTenancyId();
+        ociCompartmentId = tenancyId;
+        resolvedCompartmentName = 'root';
+        this.logger.log(`Using root tenancy compartment: ${tenancyId}`);
+      } else {
+        throw error;
+      }
+    }
+
     userCompartment = this.userCompartmentRepo.create({
       user_id: userId,
-      compartment_ocid: ociCompartment.id,
-      compartment_name: compartmentName,
-      region: 'ap-tokyo-1', // Default region
+      compartment_ocid: ociCompartmentId,
+      compartment_name: resolvedCompartmentName,
+      region: 'ap-tokyo-1',
       lifecycle_state: 'ACTIVE',
       created_at: new Date(),
     }) as UserCompartment;
 
     userCompartment = await this.userCompartmentRepo.save(userCompartment);
-    this.logger.log(`Compartment created: ${userCompartment.compartment_ocid}`);
+    this.logger.log(`Compartment saved to DB: ${userCompartment.compartment_ocid}`);
 
-    // Wait for compartment to be fully synchronized in OCI
-    // New compartments need time to propagate across OCI's distributed system
     this.logger.log('Waiting for compartment to be ready...');
     await this.waitForCompartmentReady(userCompartment.compartment_ocid);
 
