@@ -1060,18 +1060,44 @@ export class VmProvisioningService {
           `VCN count limit exceeded in compartment ${userCompartment.compartment_ocid}. ` +
           `Searching for an existing AVAILABLE VCN to reuse...`
         );
+        // First search current compartment, then fall back to full tenancy scan
+        let availableVcn: { id: string; displayName?: string; cidrBlock: string; lifecycleState: string } | undefined;
+        let vcnCompartmentId = userCompartment.compartment_ocid;
+
         const existingVcns = await this.ociService.listVcns(userCompartment.compartment_ocid);
-        const availableVcn = existingVcns.find(v => v.lifecycleState === 'AVAILABLE');
+        availableVcn = existingVcns.find(v => v.lifecycleState === 'AVAILABLE');
+
         if (!availableVcn) {
+          // Not found in current compartment — scan entire tenancy
+          this.logger.warn(`No VCN found in compartment ${userCompartment.compartment_ocid}. Scanning all compartments...`);
+          const anyVcn = await this.ociService.findAnyAvailableVcnWithSubnet();
+          if (anyVcn) {
+            this.logger.log(`Found VCN+subnet across tenancy in compartment ${anyVcn.compartmentId}: vcn=${anyVcn.vcnId}`);
+            vcnResource = this.vcnResourceRepo.create({
+              user_id: userCompartment.user_id,
+              compartment_id: anyVcn.compartmentId,
+              vcn_ocid: anyVcn.vcnId,
+              vcn_name: anyVcn.vcnName,
+              vcn_cidr_block: anyVcn.vcnCidr,
+              subnet_ocid: anyVcn.subnetId,
+              subnet_name: anyVcn.subnetName,
+              region: userCompartment.region,
+              lifecycle_state: 'AVAILABLE',
+            }) as VcnResource;
+            vcnResource = await this.vcnResourceRepo.save(vcnResource);
+            this.logger.log(`Saved cross-compartment VCN to DB: ${vcnResource.vcn_ocid}`);
+            return vcnResource;
+          }
           throw new InternalServerErrorException(
-            'VCN count limit exceeded and no existing AVAILABLE VCN found in this compartment. ' +
-            'Please delete unused VCNs via the OCI Console.'
+            'VCN count limit exceeded and no usable VCN+subnet found across the entire tenancy. ' +
+            'Please delete unused VCNs or request OCI service limit increases.'
           );
         }
+        vcnCompartmentId = userCompartment.compartment_ocid;
         this.logger.log(`Found existing VCN to reuse: ${availableVcn.id} (${availableVcn.displayName})`);
 
         const subnets = await this.ociService.listSubnets(
-          userCompartment.compartment_ocid,
+          vcnCompartmentId,
           availableVcn.id,
         );
         let subnetOcid: string = '';
@@ -1089,13 +1115,13 @@ export class VmProvisioningService {
           );
           let subnetCreated = false;
           try {
-            const ads = await this.ociService.listAvailabilityDomains(userCompartment.compartment_ocid);
+            const ads = await this.ociService.listAvailabilityDomains(vcnCompartmentId);
             const adName = ads[0]?.name;
             if (!adName) throw new Error('No availability domains found');
             const newSubnetName = `subnet-${userCompartment.user_id}-${Date.now()}`;
             const newSubnetDnsLabel = `sub${userCompartment.user_id}${Date.now().toString().slice(-7)}`.slice(0, 15);
             const newSubnet = await this.ociService.createSubnet(
-              userCompartment.compartment_ocid,
+              vcnCompartmentId,
               availableVcn.id,
               newSubnetName,
               subnetCidr,
@@ -1141,7 +1167,7 @@ export class VmProvisioningService {
 
         vcnResource = this.vcnResourceRepo.create({
           user_id: userCompartment.user_id,
-          compartment_id: userCompartment.compartment_ocid,
+          compartment_id: vcnCompartmentId,
           vcn_ocid: availableVcn.id,
           vcn_name: availableVcn.displayName || vcnName,
           vcn_cidr_block: availableVcn.cidrBlock,
