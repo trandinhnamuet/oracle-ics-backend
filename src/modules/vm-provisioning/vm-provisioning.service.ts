@@ -111,9 +111,12 @@ export class VmProvisioningService {
       this.logger.log(adminSshKey.public_key);
       this.logger.log(`📝 Admin Key Length: ${adminSshKey.public_key.length} characters`);
 
+      // Use the compartment where the VCN/subnet actually lives (may differ from userCompartment when quota fallback kicked in)
+      const launchCompartmentId = vcnResource.compartment_id || userCompartment.compartment_ocid;
+
       // Step 5: Get availability domain for launching instance
       const availabilityDomains = await this.ociService.listAvailabilityDomains(
-        userCompartment.compartment_ocid,
+        launchCompartmentId,
       );
       if (availabilityDomains.length === 0) {
         throw new InternalServerErrorException('No availability domains found');
@@ -128,7 +131,7 @@ export class VmProvisioningService {
       if (!user) {
         throw new NotFoundException(`User with ID ${userId} not found`);
       }
-      
+
       // Format email for instance name (e.g., trandinhnamuet@gmail.com -> trandinhnamuet-gmail-com)
       const emailPrefix = user.email
         .toLowerCase()
@@ -139,7 +142,7 @@ export class VmProvisioningService {
       // We'll update it with OCI details after successful launch
       const tempVmInstance = this.vmInstanceRepo.create({
         user_id: userId,
-        compartment_id: userCompartment.compartment_ocid,
+        compartment_id: launchCompartmentId,
         instance_id: 'PENDING', // Will be updated after OCI launch
         instance_name: 'PENDING', // Will be updated after OCI launch
         shape: createVmDto.shape,
@@ -217,7 +220,7 @@ export class VmProvisioningService {
           this.logger.log(`Attempting to launch with shape: ${shapeAttempt} (${ocpus} OCPU, ${memoryInGBs}GB)`);
 
           ociInstance = await this.ociService.launchInstance(
-            userCompartment.compartment_ocid,
+            launchCompartmentId,
             instanceName,
             availabilityDomain,
             vcnResource.subnet_ocid,
@@ -363,7 +366,7 @@ export class VmProvisioningService {
       let publicIp: string | null = null;
       try {
         publicIp = await this.ociService.getInstancePublicIp(
-          userCompartment.compartment_ocid,
+          launchCompartmentId,
           ociInstance.id,
         );
         
