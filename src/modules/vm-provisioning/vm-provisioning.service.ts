@@ -1042,13 +1042,60 @@ export class VmProvisioningService {
     // DNS label must be 1-15 chars, alphanumeric + hyphen
     const dnsLabel = `vcn${userCompartment.user_id}${Date.now().toString().slice(-6)}`.slice(0, 15);
 
-    // Step 1: Create VCN
-    const ociVcn = await this.ociService.createVcn(
-      userCompartment.compartment_ocid,
-      vcnName,
-      cidrBlock,
-      dnsLabel,
-    );
+    // Step 1: Create VCN — fall back to reusing an existing one if vcn-count limit is hit
+    let ociVcn: Awaited<ReturnType<typeof this.ociService.createVcn>>;
+    try {
+      ociVcn = await this.ociService.createVcn(
+        userCompartment.compartment_ocid,
+        vcnName,
+        cidrBlock,
+        dnsLabel,
+      );
+    } catch (vcnError) {
+      if (vcnError?.serviceCode === 'LimitExceeded' || vcnError?.message?.includes('vcn-count')) {
+        this.logger.warn(
+          `VCN count limit exceeded in compartment ${userCompartment.compartment_ocid}. ` +
+          `Searching for an existing AVAILABLE VCN to reuse...`
+        );
+        const existingVcns = await this.ociService.listVcns(userCompartment.compartment_ocid);
+        const availableVcn = existingVcns.find(v => v.lifecycleState === 'AVAILABLE');
+        if (!availableVcn) {
+          throw new InternalServerErrorException(
+            'VCN count limit exceeded and no existing AVAILABLE VCN found in this compartment. ' +
+            'Please delete unused VCNs via the OCI Console.'
+          );
+        }
+        this.logger.log(`Found existing VCN to reuse: ${availableVcn.id} (${availableVcn.displayName})`);
+
+        const subnets = await this.ociService.listSubnets(
+          userCompartment.compartment_ocid,
+          availableVcn.id,
+        );
+        const availableSubnet = subnets.find((s: any) => s.lifecycleState === 'AVAILABLE');
+        if (!availableSubnet) {
+          throw new InternalServerErrorException(
+            `No available subnet found in existing VCN ${availableVcn.id}.`
+          );
+        }
+        this.logger.log(`Reusing subnet: ${availableSubnet.id}`);
+
+        vcnResource = this.vcnResourceRepo.create({
+          user_id: userCompartment.user_id,
+          compartment_id: userCompartment.compartment_ocid,
+          vcn_ocid: availableVcn.id,
+          vcn_name: availableVcn.displayName || vcnName,
+          vcn_cidr_block: availableVcn.cidrBlock,
+          subnet_ocid: availableSubnet.id,
+          subnet_name: availableSubnet.displayName || '',
+          region: userCompartment.region,
+          lifecycle_state: 'AVAILABLE',
+        }) as VcnResource;
+        vcnResource = await this.vcnResourceRepo.save(vcnResource);
+        this.logger.log(`Saved reused VCN to DB: ${vcnResource.vcn_ocid}`);
+        return vcnResource;
+      }
+      throw vcnError;
+    }
 
     // Step 2: Create Internet Gateway
     const igwName = `igw-${userCompartment.user_id}-${Date.now()}`;
