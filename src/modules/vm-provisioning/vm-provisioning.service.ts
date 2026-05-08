@@ -1071,8 +1071,8 @@ export class VmProvisioningService {
           userCompartment.compartment_ocid,
           availableVcn.id,
         );
-        let subnetOcid: string;
-        let subnetName: string;
+        let subnetOcid: string = '';
+        let subnetName: string = '';
 
         const availableSubnet = subnets.find((s: any) => s.lifecycleState === 'AVAILABLE');
         if (availableSubnet) {
@@ -1080,26 +1080,58 @@ export class VmProvisioningService {
           subnetName = availableSubnet.displayName || '';
           this.logger.log(`Reusing existing subnet: ${subnetOcid}`);
         } else {
-          // No available subnet — create one in the existing VCN
+          // No available subnet — try to create one in the existing VCN
           this.logger.log(
-            `No available subnet in VCN ${availableVcn.id} (${subnets.length} subnets found, none AVAILABLE). Creating new subnet...`
+            `No available subnet in VCN ${availableVcn.id} (${subnets.length} subnets total, none AVAILABLE). Attempting to create subnet...`
           );
-          const ads = await this.ociService.listAvailabilityDomains(userCompartment.compartment_ocid);
-          const adName = ads[0]?.name;
-          if (!adName) throw new InternalServerErrorException('No availability domains found');
-          const newSubnetName = `subnet-${userCompartment.user_id}-${Date.now()}`;
-          const newSubnetDnsLabel = `sub${userCompartment.user_id}${Date.now().toString().slice(-7)}`.slice(0, 15);
-          const newSubnet = await this.ociService.createSubnet(
-            userCompartment.compartment_ocid,
-            availableVcn.id,
-            newSubnetName,
-            subnetCidr,
-            adName,
-            newSubnetDnsLabel,
-          );
-          subnetOcid = newSubnet.id;
-          subnetName = newSubnetName;
-          this.logger.log(`Created new subnet in existing VCN: ${subnetOcid}`);
+          let subnetCreated = false;
+          try {
+            const ads = await this.ociService.listAvailabilityDomains(userCompartment.compartment_ocid);
+            const adName = ads[0]?.name;
+            if (!adName) throw new Error('No availability domains found');
+            const newSubnetName = `subnet-${userCompartment.user_id}-${Date.now()}`;
+            const newSubnetDnsLabel = `sub${userCompartment.user_id}${Date.now().toString().slice(-7)}`.slice(0, 15);
+            const newSubnet = await this.ociService.createSubnet(
+              userCompartment.compartment_ocid,
+              availableVcn.id,
+              newSubnetName,
+              subnetCidr,
+              adName,
+              newSubnetDnsLabel,
+            );
+            subnetOcid = newSubnet.id;
+            subnetName = newSubnetName;
+            subnetCreated = true;
+            this.logger.log(`Created new subnet in existing VCN: ${subnetOcid}`);
+          } catch (subnetErr) {
+            this.logger.warn(`Cannot create subnet in VCN ${availableVcn.id}: ${subnetErr.message}. Searching all compartments...`);
+          }
+
+          if (!subnetCreated) {
+            // Last resort: find any VCN with subnet across the entire tenancy
+            const anyVcn = await this.ociService.findAnyAvailableVcnWithSubnet();
+            if (!anyVcn) {
+              throw new InternalServerErrorException(
+                'No available VCN with subnet found across the entire OCI tenancy. ' +
+                'Please clean up unused resources or request OCI service limit increases.'
+              );
+            }
+            this.logger.log(`Using cross-compartment VCN ${anyVcn.vcnId} in compartment ${anyVcn.compartmentId}`);
+            vcnResource = this.vcnResourceRepo.create({
+              user_id: userCompartment.user_id,
+              compartment_id: anyVcn.compartmentId,
+              vcn_ocid: anyVcn.vcnId,
+              vcn_name: anyVcn.vcnName,
+              vcn_cidr_block: anyVcn.vcnCidr,
+              subnet_ocid: anyVcn.subnetId,
+              subnet_name: anyVcn.subnetName,
+              region: userCompartment.region,
+              lifecycle_state: 'AVAILABLE',
+            }) as VcnResource;
+            vcnResource = await this.vcnResourceRepo.save(vcnResource);
+            this.logger.log(`Saved cross-compartment VCN to DB: ${vcnResource.vcn_ocid}`);
+            return vcnResource;
+          }
         }
 
         const reuseVcnDetails = await this.ociService.getVcn(availableVcn.id);
