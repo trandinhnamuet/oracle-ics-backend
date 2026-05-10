@@ -1346,27 +1346,6 @@ runcmd:
   }
 
   /**
-   * List ALL VNIC attachments in a compartment (no instance filter)
-   * Used to wait for VNICs to fully detach after instance termination.
-   */
-  async listAllVnicAttachments(compartmentId: string) {
-    try {
-      const request: oci.core.requests.ListVnicAttachmentsRequest = {
-        compartmentId: compartmentId,
-      };
-      const response = await this.computeClient.listVnicAttachments(request);
-      return response.items.map(attachment => ({
-        id: attachment.id,
-        vnicId: attachment.vnicId,
-        lifecycleState: attachment.lifecycleState,
-      }));
-    } catch (error) {
-      this.logger.warn(`Could not list VNIC attachments for compartment ${compartmentId}: ${error.message}`);
-      return [];
-    }
-  }
-
-  /**
    * Get VNIC details including public IP
    * @param vnicId - The OCID of the VNIC
    */
@@ -2260,59 +2239,6 @@ runcmd:
   }
 
   /**
-   * Search ALL compartments in the tenancy for any VCN that has an AVAILABLE subnet.
-   * Returns the first match found. Used as a last resort when per-compartment limits are exhausted.
-   */
-  async findAnyAvailableVcnWithSubnet(): Promise<{ compartmentId: string; vcnId: string; vcnName: string; vcnCidr: string; subnetId: string; subnetName: string } | null> {
-    try {
-      const tenancyId = await this.getTenancyId();
-
-      // Include root tenancy and all sub-compartments
-      const compartmentIds: string[] = [tenancyId];
-      try {
-        const comps = await this.identityClient.listCompartments({
-          compartmentId: tenancyId,
-          compartmentIdInSubtree: true,
-          limit: 100,
-        });
-        for (const c of comps.items) {
-          if (c.lifecycleState === 'ACTIVE') compartmentIds.push(c.id);
-        }
-      } catch (e) {
-        this.logger.warn(`Could not list sub-compartments: ${e.message}`);
-      }
-
-      for (const compId of compartmentIds) {
-        try {
-          const vcns = await this.virtualNetworkClient.listVcns({ compartmentId: compId });
-          for (const vcn of vcns.items.filter(v => v.lifecycleState === 'AVAILABLE')) {
-            const subs = await this.virtualNetworkClient.listSubnets({ compartmentId: compId, vcnId: vcn.id });
-            const availSub = subs.items.find(s => s.lifecycleState === 'AVAILABLE');
-            if (availSub) {
-              this.logger.log(`Found usable VCN+subnet in compartment ${compId}: vcn=${vcn.id}, subnet=${availSub.id}`);
-              return {
-                compartmentId: compId,
-                vcnId: vcn.id,
-                vcnName: vcn.displayName || '',
-                vcnCidr: vcn.cidrBlock || '',
-                subnetId: availSub.id,
-                subnetName: availSub.displayName || '',
-              };
-            }
-          }
-        } catch (e) {
-          this.logger.warn(`Could not scan compartment ${compId}: ${e.message}`);
-        }
-      }
-
-      return null;
-    } catch (error) {
-      this.logger.error('Error in findAnyAvailableVcnWithSubnet:', error);
-      return null;
-    }
-  }
-
-  /**
    * Delete compartment and all its resources (runs in background)
    * @param compartmentName - The name of the compartment to delete
    */
@@ -2327,18 +2253,8 @@ runcmd:
       this.logger.log(`Found compartment ID: ${compartmentId}`);
       
       // Step 2: Terminate all instances
-      // Wrap in try-catch: if listing fails (e.g. OCI 404/403 for compartment), treat as empty list
-      // so we can still proceed to delete VCNs and the compartment.
       this.logger.log('Terminating all instances...');
-      let instances: Awaited<ReturnType<typeof this.listInstances>> = [];
-      try {
-        instances = await this.listInstances(compartmentId);
-      } catch (err) {
-        this.logger.warn(
-          `Could not list instances in compartment ${compartmentId}: ${err.message}. ` +
-          `Assuming no instances and continuing deletion.`
-        );
-      }
+      const instances = await this.listInstances(compartmentId);
       
       for (const instance of instances) {
         if (instance.lifecycleState !== 'TERMINATED' && instance.lifecycleState !== 'TERMINATING') {
@@ -2352,71 +2268,34 @@ runcmd:
       }
       
       // Step 3: Wait for instances to terminate
-      const instancesToWaitFor = instances.filter(
-        i => i.lifecycleState !== 'TERMINATED'
+      const activeInstances = instances.filter(
+        i => i.lifecycleState !== 'TERMINATED' && i.lifecycleState !== 'TERMINATING'
       );
-      if (instancesToWaitFor.length > 0) {
-        this.logger.log(`Waiting for ${instancesToWaitFor.length} instances to fully terminate...`);
-        await this.sleep(15000);
+      if (activeInstances.length > 0) {
+        this.logger.log('Waiting for instances to terminate...');
+        await this.sleep(15000); // Wait 15 seconds initially
         
-        let maxRetries = 60; // up to 10 minutes
+        let maxRetries = 20;
         while (maxRetries > 0) {
-          let currentInstances: typeof instances = [];
-          try {
-            currentInstances = await this.listInstances(compartmentId);
-          } catch {
-            // If we can't list anymore, assume they're gone
-            this.logger.warn('Could not re-list instances, assuming all terminated');
-            break;
-          }
+          const currentInstances = await this.listInstances(compartmentId);
           const runningInstances = currentInstances.filter(
             i => i.lifecycleState !== 'TERMINATED'
           );
+          
           if (runningInstances.length === 0) {
             this.logger.log('All instances terminated');
             break;
           }
-          this.logger.log(`Waiting for ${runningInstances.length} instances to terminate... (${maxRetries} retries left)`);
-          await this.sleep(10000);
+          
+          this.logger.log(`Waiting for ${runningInstances.length} instances to terminate...`);
+          await this.sleep(10000); // Wait 10 seconds
           maxRetries--;
         }
-        if (maxRetries === 0) {
-          this.logger.warn(`Instance wait timed out after 10 minutes. Proceeding with VCN/compartment deletion anyway (VNICs may still be detaching).`);
-        }
-      }
-
-      // Step 3b: Wait for all VNIC attachments to fully detach
-      // VNICs can stay ATTACHED briefly after an instance becomes TERMINATED,
-      // and an attached VNIC keeps the subnet "in use", blocking VCN deletion.
-      this.logger.log('Waiting for all VNIC attachments to detach...');
-      let vnicRetries = 36; // up to 6 minutes (36 × 10s)
-      while (vnicRetries > 0) {
-        const vnics = await this.listAllVnicAttachments(compartmentId);
-        const attachedVnics = vnics.filter(v => v.lifecycleState === 'ATTACHED');
-        if (attachedVnics.length === 0) {
-          this.logger.log('All VNICs detached (or none found). Proceeding to VCN deletion.');
-          break;
-        }
-        this.logger.log(`Waiting for ${attachedVnics.length} VNIC(s) to detach... (${vnicRetries} retries left)`);
-        await this.sleep(10000);
-        vnicRetries--;
-      }
-      if (vnicRetries === 0) {
-        this.logger.warn('VNIC detach wait timed out after 6 minutes. Proceeding anyway.');
       }
       
       // Step 4: Delete VCN resources
-      // Wrap in try-catch: if listing VCNs fails, treat as empty (continue to delete compartment)
       this.logger.log('Deleting VCN resources...');
-      let vcns: Awaited<ReturnType<typeof this.listVcns>> = [];
-      try {
-        vcns = await this.listVcns(compartmentId);
-      } catch (err) {
-        this.logger.warn(
-          `Could not list VCNs in compartment ${compartmentId}: ${err.message}. ` +
-          `Assuming no VCNs and continuing deletion.`
-        );
-      }
+      const vcns = await this.listVcns(compartmentId);
       
       for (const vcn of vcns) {
         this.logger.log(`Processing VCN: ${vcn.displayName} (${vcn.id})`);
@@ -2431,33 +2310,7 @@ runcmd:
             this.logger.warn(`Failed to delete subnet ${subnet.id}: ${err.message}`);
           }
         }
-
-        // DB fallback: if OCI listSubnets returned nothing, try using subnet OCID stored
-        // in vcn_resources (subnet may be invisible to listSubnets when TERMINATING or in
-        // a non-standard compartment hierarchy).
-        if (subnets.length === 0) {
-          try {
-            const dbRows: Array<{ subnet_id: string }> = await this.dataSource.query(
-              `SELECT subnet_id FROM oracle.vcn_resources WHERE vcn_id = $1 AND subnet_id IS NOT NULL`,
-              [vcn.id]
-            );
-            for (const row of dbRows) {
-              this.logger.log(`DB fallback: attempting to delete subnet ${row.subnet_id}`);
-              try {
-                await this.deleteSubnet(row.subnet_id);
-                this.logger.log(`DB fallback: deleted subnet ${row.subnet_id}`);
-              } catch (err) {
-                this.logger.warn(`DB fallback: could not delete subnet ${row.subnet_id}: ${err.message}`);
-              }
-            }
-            if (dbRows.length > 0) {
-              await this.sleep(5000);
-            }
-          } catch (err) {
-            this.logger.warn(`DB fallback subnet lookup failed: ${err.message}`);
-          }
-        }
-
+        
         // Wait for subnets to be deleted
         if (subnets.length > 0) {
           await this.sleep(5000);
@@ -2565,102 +2418,30 @@ runcmd:
         }
         
         // Wait for all sub-resources to be deleted
-        await this.sleep(10000);
+        await this.sleep(5000);
         
-        // Step 4.9: Delete VCN (with retry - subnets/routes may take time to fully clear in OCI)
+        // Step 4.9: Delete VCN
         this.logger.log(`Deleting VCN: ${vcn.displayName}`);
-        let vcnDeleted = false;
-        for (let attempt = 1; attempt <= 10; attempt++) {
-          try {
-            await this.deleteVcn(vcn.id);
-            vcnDeleted = true;
-            break;
-          } catch (err) {
-            if (attempt < 10) {
-              const isSubnetIssue = err.message?.toLowerCase().includes('subnet');
-              if (isSubnetIssue) {
-                this.logger.warn(`VCN deletion attempt ${attempt} failed (subnet in use) for ${vcn.id}. Re-attempting subnet cleanup, then waiting for VNICs to detach...`);
-                // Re-attempt subnet deletion: both OCI list and DB fallback
-                try {
-                  const subnetsRetry = await this.listSubnets(compartmentId, vcn.id);
-                  for (const s of subnetsRetry) {
-                    try { await this.deleteSubnet(s.id); } catch {}
-                  }
-                  const dbRows: Array<{ subnet_id: string }> = await this.dataSource.query(
-                    `SELECT subnet_id FROM oracle.vcn_resources WHERE vcn_id = $1 AND subnet_id IS NOT NULL`,
-                    [vcn.id]
-                  );
-                  for (const row of dbRows) {
-                    try { await this.deleteSubnet(row.subnet_id); } catch {}
-                  }
-                } catch {}
-                // Poll VNIC attachments: wait until all VNICs are detached (up to 3 min per retry)
-                let vnicWaitRetries = 18; // 18 × 10s = 3 minutes
-                while (vnicWaitRetries > 0) {
-                  const vnics = await this.listAllVnicAttachments(compartmentId);
-                  const attachedVnics = vnics.filter(v => v.lifecycleState === 'ATTACHED');
-                  if (attachedVnics.length === 0) {
-                    this.logger.log(`VCN retry ${attempt}: all VNICs detached, will retry VCN deletion.`);
-                    break;
-                  }
-                  this.logger.log(`VCN retry ${attempt}: waiting for ${attachedVnics.length} VNIC(s) to detach (${vnicWaitRetries} left)...`);
-                  await this.sleep(10000);
-                  vnicWaitRetries--;
-                }
-                if (vnicWaitRetries === 0) {
-                  this.logger.warn(`VCN retry ${attempt}: VNIC wait timed out. Retrying VCN deletion anyway.`);
-                }
-              } else {
-                this.logger.warn(`VCN deletion attempt ${attempt} failed for ${vcn.id}: ${err.message}. Retrying in 10s...`);
-                await this.sleep(10000);
-              }
-            } else {
-              this.logger.error(`Failed to delete VCN ${vcn.id} after ${attempt} attempts: ${err.message}`);
-            }
-          }
-        }
-        if (!vcnDeleted) {
-          throw new Error(`Cannot delete compartment "${compartmentName}": VCN ${vcn.id} (${vcn.displayName}) could not be deleted after 10 attempts. Check OCI for remaining resources.`);
+        try {
+          await this.deleteVcn(vcn.id);
+        } catch (err) {
+          this.logger.warn(`Failed to delete VCN ${vcn.id}: ${err.message}`);
         }
       }
       
       // Step 5: Wait before deleting compartment
       if (vcns.length > 0) {
         this.logger.log('Waiting for VCN resources to finalize...');
-        await this.sleep(10000);
+        await this.sleep(5000);
       }
       
-      // Step 6: Delete compartment (with retry)
+      // Step 6: Delete compartment
       this.logger.log(`Deleting compartment: ${compartmentName}`);
-      let ociDeleteError: Error | null = null;
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        try {
-          await this.deleteCompartment(compartmentId);
-          ociDeleteError = null;
-          break;
-        } catch (err) {
-          ociDeleteError = err;
-          if (attempt < 3) {
-            this.logger.warn(`Compartment OCI deletion attempt ${attempt} failed: ${err.message}. Retrying in 15s...`);
-            await this.sleep(15000);
-          }
-        }
-      }
+      await this.deleteCompartment(compartmentId);
       
-      // Step 7: Clean up database records regardless of OCI deletion status
-      // Even if OCI deletion call fails (compartment may still be DELETING in OCI),
-      // we must clean the DB so the user record is gone and won't be reused.
+      // Step 7: Clean up database records
       this.logger.log('Cleaning up database records...');
-      try {
-        await this.cleanupDatabaseRecords(compartmentId, instances.map(i => i.id));
-      } catch (dbErr) {
-        this.logger.error('Failed to clean up database records:', dbErr);
-      }
-      
-      if (ociDeleteError) {
-        this.logger.error(`OCI compartment deletion failed after retries: ${ociDeleteError.message}`);
-        throw ociDeleteError;
-      }
+      await this.cleanupDatabaseRecords(compartmentId, instances.map(i => i.id));
       
       this.logger.log(`Successfully deleted compartment: ${compartmentName}`);
       

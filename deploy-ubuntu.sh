@@ -24,6 +24,13 @@ git fetch origin "${BRANCH}" --quiet || true
 git checkout "${BRANCH}" 2>/dev/null || true
 git pull origin "${BRANCH}"
 
+# Install Python dependencies (required for WinRM password reset)
+if [ -f requirements.txt ] && command -v pip3 >/dev/null 2>&1; then
+  echo "Installing Python dependencies from requirements.txt..."
+  pip3 install -r requirements.txt --break-system-packages --quiet 2>&1 || \
+    pip3 install -r requirements.txt --break-system-packages 2>&1 || true
+fi
+
 # Install deps if lockfile found
 if [ -f pnpm-lock.yaml ] && command -v pnpm >/dev/null 2>&1; then
   echo "Detected pnpm-lock.yaml -> running pnpm install"
