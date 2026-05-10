@@ -1921,6 +1921,54 @@ runcmd:
   }
 
   /**
+   * Scan all compartments in the tenancy to find any AVAILABLE VCN that has at least
+   * one AVAILABLE subnet. Used as last resort when VCN count limit is exceeded.
+   */
+  async findAnyAvailableVcnWithSubnet(): Promise<{
+    compartmentId: string;
+    vcnId: string;
+    vcnName: string;
+    vcnCidr: string;
+    subnetId: string;
+    subnetName: string;
+  } | null> {
+    try {
+      const compartments = await this.listCompartments();
+      for (const compartment of compartments) {
+        if ((compartment.lifecycleState as string) !== 'ACTIVE') continue;
+        try {
+          const vcns = await this.listVcns(compartment.id);
+          for (const vcn of vcns) {
+            if (vcn.lifecycleState !== 'AVAILABLE') continue;
+            try {
+              const subnets = await this.listSubnets(compartment.id, vcn.id);
+              const availableSubnet = (subnets as any[]).find(s => s.lifecycleState === 'AVAILABLE');
+              if (availableSubnet) {
+                return {
+                  compartmentId: compartment.id,
+                  vcnId: vcn.id,
+                  vcnName: vcn.displayName || '',
+                  vcnCidr: vcn.cidrBlock || '',
+                  subnetId: availableSubnet.id,
+                  subnetName: availableSubnet.displayName || '',
+                };
+              }
+            } catch {
+              // skip inaccessible subnets
+            }
+          }
+        } catch {
+          // skip inaccessible compartments
+        }
+      }
+      return null;
+    } catch (error) {
+      this.logger.error('Error in findAnyAvailableVcnWithSubnet:', error);
+      return null;
+    }
+  }
+
+  /**
    * Delete a subnet
    * @param subnetId - The OCID of the subnet
    */
