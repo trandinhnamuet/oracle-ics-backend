@@ -114,6 +114,19 @@ export class VmProvisioningService {
       // Use the compartment where the VCN/subnet actually lives (may differ from userCompartment when quota fallback kicked in)
       const launchCompartmentId = vcnResource.compartment_id || userCompartment.compartment_ocid;
 
+      // Step 4.5: Pre-flight compute quota check — fail fast if no shapes are available
+      const availableShapes = await this.ociService.listShapes(launchCompartmentId);
+      if (!availableShapes || availableShapes.length === 0) {
+        this.logger.error(`❌ No compute shapes available in OCI account (compartment: ${launchCompartmentId}). All compute quotas are 0.`);
+        throw new InternalServerErrorException(
+          'OCI compute quota exhausted: No compute shapes are available in this OCI account/region. ' +
+          'Please log in to the OCI Console → Governance & Administration → Limits, Quotas and Usage ' +
+          'and request a service limit increase for compute resources (standard-a1-core-count or standard-e4-core-count). ' +
+          'If this is an Always Free account, ensure the account is fully verified (phone verification required).',
+        );
+      }
+      this.logger.log(`✅ ${availableShapes.length} compute shapes available`);
+
       // Step 5: Get availability domain for launching instance
       const availabilityDomains = await this.ociService.listAvailabilityDomains(
         launchCompartmentId,
@@ -266,6 +279,17 @@ export class VmProvisioningService {
             consecutiveIncompatibilityErrors = 0;
           }
 
+          // Check if this is a compute quota exhausted error (all shape quotas are 0)
+          // OCI returns "Valid ratio range: 0 - 0" when the AD-level compute quota is 0
+          if (errorMessage.includes('Valid ratio range: 0 - 0') || errorMessage.includes('ratio range: 0')) {
+            this.logger.error(`Compute quota exhausted for shape ${shapeAttempt} in this OCI account/region`);
+            throw new InternalServerErrorException(
+              `Compute quota exhausted: The OCI account has zero compute capacity allocated in this region. ` +
+              `Please contact Oracle support to request a service limit increase for compute resources, ` +
+              `or verify that the OCI account is fully activated (phone verification may be required).`
+            );
+          }
+
           // Check if this is a capacity error that warrants trying fallback shapes
           if (errorMessage.includes('Out of host capacity')) {
             if (shapeAttempt !== shapesToTry[shapesToTry.length - 1]) {
@@ -284,7 +308,21 @@ export class VmProvisioningService {
               throw error;
             }
           }
-          
+
+          // NotAuthorizedOrNotFound on launchInstance = shape not available (quota 0) or resource missing
+          if (errorMessage.includes('Authorization failed or requested resource not found') ||
+              (error.statusCode === 404 && error.serviceCode === 'NotAuthorizedOrNotFound')) {
+            this.logger.error(`Shape ${shapeAttempt} not available (404 NotAuthorizedOrNotFound) — quota may be 0`);
+            if (shapeAttempt !== shapesToTry[shapesToTry.length - 1]) {
+              continue;
+            }
+            throw new InternalServerErrorException(
+              'OCI compute quota exhausted: All shapes returned NotAuthorizedOrNotFound. ' +
+              'The OCI account has zero compute capacity in this region. ' +
+              'Please request a service limit increase via the OCI Console or contact Oracle support.',
+            );
+          }
+
           // For any other error on last attempt, throw it
           if (shapeAttempt === shapesToTry[shapesToTry.length - 1]) {
             throw error;

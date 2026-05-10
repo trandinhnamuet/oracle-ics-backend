@@ -1,0 +1,5 @@
+# Python dependencies for oracle-ics-backend scripts
+# Install with: pip3 install -r requirements.txt --break-system-packages
+
+# Required for WinRM-based Windows VM password reset (scripts/winrm-password-reset.py)
+pywinrm>=0.4.3
