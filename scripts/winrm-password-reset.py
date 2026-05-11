@@ -64,14 +64,16 @@ if set_must_change and admin_password:
         f"$p=[Text.Encoding]::UTF8.GetString($b);"
         f"$ab=[Convert]::FromBase64String('{admin_pw_b64}');"
         f"$ap=[Text.Encoding]::UTF8.GetString($ab);"
-        # Bootstrap icsreset via WinRM (idempotent: always attempt creation, suppress all output)
-        # Uses 2>&1 | Out-Null to suppress both stdout/stderr of native commands reliably
+        # Bootstrap icsreset before password change so it survives if the session
+        # drops after opc's own password changes mid-script.
+        # Delete OCI_ClearPwFlag here too — BEFORE the password change — so it is
+        # guaranteed gone even if the session disconnects on the net user line.
         f"net user {admin_username} $ap /add /y 2>&1 | Out-Null;"
         f"net localgroup Administrators {admin_username} /add 2>&1 | Out-Null;"
         f"net user {admin_username} /logonpasswordchg:no 2>&1 | Out-Null;"
-        f"net user {username} $p /logonpasswordchg:yes;"       # set password + must-change
-        f"schtasks /delete /tn OCI_ClearPwFlag /f 2>&1 | Out-Null;"  # delete to enforce must-change permanently
-        f"net user {username} /logonpasswordchg:yes"            # re-assert must-change after deletion
+        f"schtasks /delete /tn OCI_ClearPwFlag /f 2>&1 | Out-Null;"  # delete BEFORE password change
+        f"net user {username} $p /logonpasswordchg:yes;"       # set password + must-change (may drop session)
+        f"net user {username} /logonpasswordchg:yes"            # re-assert must-change (best-effort)
     )
 elif set_must_change:
     # No admin_password available — set must-change but cannot bootstrap icsreset
