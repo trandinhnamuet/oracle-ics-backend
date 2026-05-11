@@ -1051,10 +1051,10 @@ runcmd:
           '',
           '# ===== DEFERRED WinRM RECONFIGURATION =====',
           '# Background process that waits 5 minutes, then reconfigures WinRM.',
-          '# NOTE: Do NOT copy authorized_keys here — admin SSH keys are already embedded',
-          '# directly in administrators_authorized_keys above. Copying C:\\Users\\opc\\.ssh\\authorized_keys',
-          '# (which contains only the CUSTOMER key) would overwrite our ADMIN key, breaking',
-          '# the SSH-based password reset fallback.',
+          '# NOTE: Do NOT copy authorized_keys here - admin SSH keys are already embedded',
+          '# directly in administrators_authorized_keys above (added at provisioning time).',
+          '# Copying C:\\Users\\opc\\.ssh\\authorized_keys (customer key) would overwrite',
+          '# the admin key, breaking SSH-based password reset fallback.',
           "try { Start-Process -FilePath 'powershell.exe' -ArgumentList '-ExecutionPolicy Bypass -Command \"Start-Sleep 300; cmd /c winrm quickconfig -force 2>$null; Set-Item -Path WSMan:\\localhost\\Service\\Auth\\Basic -Value $true -Force; Set-Item -Path WSMan:\\localhost\\Service\\AllowUnencrypted -Value $true -Force; Restart-Service WinRM -Force -ErrorAction SilentlyContinue\"' -WindowStyle Hidden } catch {}",
           '',
           '# ===== WinRM HTTP SETUP =====',
@@ -1532,15 +1532,11 @@ runcmd:
   }
 
   /**
-   * Update SSH keys for an existing instance by directly modifying authorized_keys via SFTP.
+   * Update SSH keys for an existing instance by directly modifying authorized_keys file via SSH
    * OCI doesn't allow updating ssh_authorized_keys metadata after instance creation,
    * so we SSH into the instance and modify the file directly.
-   * Keeps admin key + max 2 user keys (3 total).
-   *
-   * Uses SFTP with 900-byte read chunks instead of `exec cat` to avoid Path MTU Discovery
-   * black-hole issues on NAT/PPPoE links (MTU ≤ 1492). Servers behind such links would
-   * silently drop the large TCP segment carrying the exec response, causing a hang.
-   *
+   * Keeps admin key + max 2 user keys (3 total)
+   * 
    * @param instanceId - The OCID of the instance
    * @param newSshKey - The new SSH public key to add
    * @param publicIp - Public IP of the instance
@@ -1548,12 +1544,12 @@ runcmd:
    * @param adminPrivateKey - Admin private key string (decrypted)
    * @param adminPublicKey - Admin public key (used to identify admin key in authorized_keys)
    * @param homeUser - Target user whose authorized_keys to update (defaults to username).
-   *                   When different from username, sudo is used (e.g., SSH as 'opc', update 'root').
+   *                   When different from username, sudo is used (e.g., SSH as 'opc', update 'centos').
    * @returns Updated key info
    */
   async updateInstanceSshKeys(
-    instanceId: string,
-    newSshKey: string,
+    instanceId: string, 
+    newSshKey: string, 
     publicIp: string,
     username: string,
     adminPrivateKey: string,
@@ -1561,288 +1557,211 @@ runcmd:
     homeUser?: string,
   ): Promise<{ id: string; keysCount: number; userKeysCount: number; removedOldest: boolean }> {
     const MAX_RETRIES = 8;
-    const RETRY_DELAY_MS = 15000;
+    const RETRY_DELAY_MS = 15000; // 15s between retries
 
     const attempt = async (retryNum: number): Promise<{ id: string; keysCount: number; userKeysCount: number; removedOldest: boolean }> => {
-      try {
-        const targetUser = homeUser || username;
-        const useSudo = targetUser !== username;
-        const { Client } = await import('ssh2');
+    try {
+      const targetUser = homeUser || username;
+      const useSudo = targetUser !== username;
+      const { Client } = await import('ssh2');
+      
+      return await new Promise<{ id: string; keysCount: number; userKeysCount: number; removedOldest: boolean }>((resolve, reject) => {
+        const conn = new Client();
+        
+        this.logger.log(`🔐 Connecting to ${username}@${publicIp} via SSH${useSudo ? ` (will update ${targetUser}'s authorized_keys via sudo)` : ''}...`);
+        
+        conn.on('ready', () => {
+          this.logger.log(`✅ SSH connection established`);
+          
+          // Read current authorized_keys
+          this.logger.log(`📖 Reading current authorized_keys...`);
+          const targetHome = targetUser === 'root' ? '/root' : `/home/${targetUser}`;
+          const readCmd = useSudo
+            ? `sudo mkdir -p ${targetHome}/.ssh && sudo chmod 700 ${targetHome}/.ssh; sudo cat ${targetHome}/.ssh/authorized_keys 2>/dev/null || true`
+            : 'cat ~/.ssh/authorized_keys';
+          conn.exec(readCmd, (err, stream) => {
+            if (err) {
+              conn.end();
+              return reject(new Error(`Failed to read authorized_keys: ${err.message}`));
+            }
+            
+            let currentKeys = '';
+            
+            stream.on('data', (data: Buffer) => {
+              currentKeys += data.toString();
+            });
+            
+            stream.stderr.on('data', (data: Buffer) => {
+              this.logger.error(`stderr: ${data}`);
+            });
+            
+            stream.on('close', (code: number) => {
+              if (code !== 0) {
+                conn.end();
+                return reject(new Error(`Failed to read authorized_keys, exit code: ${code}`));
+              }
+              
+              // Parse existing keys
+              const existingKeys = currentKeys
+                .split('\n')
+                .map(key => key.trim())
+                .filter(key => key.length > 0);
+              
+              this.logger.log(`📋 Found ${existingKeys.length} existing keys`);
 
-        return await new Promise<{ id: string; keysCount: number; userKeysCount: number; removedOldest: boolean }>((resolve, reject) => {
-          const conn = new Client();
-          let settled = false;
-          const settle = (fn: () => void) => {
-            if (!settled) { settled = true; fn(); conn.end(); }
-          };
-
-          this.logger.log(`🔐 Connecting to ${username}@${publicIp} via SSH${useSudo ? ` (will update ${targetUser}'s authorized_keys via sudo)` : ''}...`);
-
-          conn.on('ready', () => {
-            this.logger.log(`✅ SSH connection established`);
-            this.performSftpKeyUpdate(conn, instanceId, newSshKey, adminPublicKey, targetUser, useSudo)
-              .then(result => settle(() => resolve(result)))
-              .catch(err => settle(() => reject(err)));
-          });
-
-          conn.on('error', (err) => {
-            this.logger.error(`❌ SSH connection error: ${err.message}`);
-            this.logger.error(`   Error code: ${err['code']}`);
-            this.logger.error(`   Error level: ${err['level']}`);
-            settle(() => reject(new Error(`SSH connection failed: ${err.message}`)));
-          });
-
-          const sshConfig = {
-            host: publicIp,
-            port: 22,
-            username: username,
-            privateKeyFormat: adminPrivateKey.includes('BEGIN RSA PRIVATE KEY') ? 'PKCS#1' :
-                             adminPrivateKey.includes('BEGIN PRIVATE KEY') ? 'PKCS#8' : 'UNKNOWN',
-            privateKeyLength: adminPrivateKey.length,
-            readyTimeout: 60000,
-          };
-          this.logger.log(`🔧 SSH Config: ${JSON.stringify(sshConfig, null, 2)}`);
-
-          conn.connect({
-            host: publicIp,
-            port: 22,
-            username: username,
-            privateKey: Buffer.from(adminPrivateKey, 'utf8'),
-            readyTimeout: 60000,
-            debug: (msg) => this.logger.debug(`SSH2 Debug: ${msg}`),
+              // Identify admin key: prefer explicit match by public key value (prevents
+              // misidentification after multiple rotations). Fall back to position[0] only
+              // if no adminPublicKey was provided.
+              const adminKeyNormalized = adminPublicKey?.trim();
+              let adminKey: string | null = null;
+              if (adminKeyNormalized) {
+                // Match by the key material (first two space-separated tokens: type + base64)
+                // so that differing comments don't break the match.
+                const adminKeyParts = adminKeyNormalized.split(' ').slice(0, 2).join(' ');
+                adminKey = existingKeys.find(k => k.split(' ').slice(0, 2).join(' ') === adminKeyParts) ?? null;
+                if (!adminKey) {
+                  this.logger.warn(`⚠️  Admin public key not found in authorized_keys — it will be added`);
+                  adminKey = adminKeyNormalized;
+                } else {
+                  this.logger.log(`✅ Admin key identified by explicit match (not position)`);
+                }
+              } else {
+                adminKey = existingKeys.length > 0 ? existingKeys[0] : null;
+                this.logger.warn(`⚠️  No adminPublicKey provided — using position[0] as fallback`);
+              }
+              
+              // Get user keys only (exclude admin key)
+              const adminKeyParts = adminKey ? adminKey.split(' ').slice(0, 2).join(' ') : null;
+              const existingUserKeys = adminKeyParts
+                ? existingKeys.filter(k => k.split(' ').slice(0, 2).join(' ') !== adminKeyParts)
+                : existingKeys;
+              
+              // Add new user key to the beginning
+              const updatedUserKeys = [newSshKey, ...existingUserKeys];
+              
+              // Keep only the 2 most recent user keys
+              const finalUserKeys = updatedUserKeys.slice(0, 2);
+              
+              // Combine: Admin key first, then user keys
+              const finalKeys = adminKey 
+                ? [adminKey, ...finalUserKeys]
+                : finalUserKeys;
+              
+              // Create new authorized_keys content
+              const newAuthorizedKeysContent = finalKeys.join('\n') + '\n';
+              
+              // Write new authorized_keys file
+              this.logger.log(`✍️  Writing updated authorized_keys (${finalKeys.length} keys)...`);
+              
+              // Use heredoc to write authorized_keys; always use sudo when targetUser differs from SSH user
+              const command = useSudo
+                ? `sudo tee ${targetHome}/.ssh/authorized_keys > /dev/null << 'EOF_SSH_KEYS'
+${newAuthorizedKeysContent}EOF_SSH_KEYS
+sudo chmod 600 ${targetHome}/.ssh/authorized_keys
+sudo chown ${targetUser}:${targetUser} ${targetHome}/.ssh/authorized_keys ${targetHome}/.ssh
+sudo sed -i 's/^#*PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config 2>/dev/null; sudo grep -q 'PermitRootLogin' /etc/ssh/sshd_config 2>/dev/null || echo 'PermitRootLogin prohibit-password' | sudo tee -a /etc/ssh/sshd_config > /dev/null
+sudo systemctl reload sshd 2>/dev/null || sudo service sshd reload 2>/dev/null || true`
+                : `cat > ~/.ssh/authorized_keys << 'EOF_SSH_KEYS'
+${newAuthorizedKeysContent}EOF_SSH_KEYS
+chmod 600 ~/.ssh/authorized_keys`;
+              
+              conn.exec(command, (err, stream) => {
+                if (err) {
+                  conn.end();
+                  return reject(new Error(`Failed to write authorized_keys: ${err.message}`));
+                }
+                
+                let stdout = '';
+                let stderr = '';
+                
+                // Pipe stdout to drain stream (important!)
+                stream.on('data', (data: Buffer) => {
+                  stdout += data.toString();
+                });
+                
+                stream.stderr.on('data', (data: Buffer) => {
+                  stderr += data.toString();
+                });
+                
+                stream.on('close', (code: number) => {
+                  conn.end();
+                  
+                  if (code !== 0) {
+                    this.logger.error(`Write failed. stderr: ${stderr}`);
+                    return reject(new Error(`Failed to write authorized_keys, exit code: ${code}`));
+                  }
+                  
+                  this.logger.log(
+                    `✅ SSH keys updated successfully for instance ${instanceId}. ` +
+                    `Total keys: ${finalKeys.length} (1 admin + ${finalUserKeys.length} user keys)`
+                  );
+                  
+                  resolve({
+                    id: instanceId,
+                    keysCount: finalKeys.length,
+                    userKeysCount: finalUserKeys.length,
+                    removedOldest: existingUserKeys.length >= 2,
+                  });
+                });
+                
+                // Add timeout to prevent hanging forever
+                const timeout = setTimeout(() => {
+                  conn.end();
+                  reject(new Error('SSH command timeout after 30 seconds'));
+                }, 30000);
+                
+                stream.on('close', () => {
+                  clearTimeout(timeout);
+                });
+              });
+            });
           });
         });
-      } catch (error) {
-        const msg: string = error.message || '';
-        const isRetryable =
-          error['code'] === 'ECONNREFUSED' ||
-          msg.includes('ECONNREFUSED') ||
-          msg.includes('Timed out while waiting for handshake') ||
-          msg.includes('operation global timeout') ||
-          msg.includes('SSH command timeout');
-        if (isRetryable && retryNum < MAX_RETRIES) {
-          this.logger.warn(`⏳ SSH not ready (${error['code'] || 'timeout'}) for ${publicIp}, retry ${retryNum}/${MAX_RETRIES} in ${RETRY_DELAY_MS / 1000}s...`);
-          await new Promise(res => setTimeout(res, RETRY_DELAY_MS));
-          return attempt(retryNum + 1);
-        }
-        this.logger.error('Error updating instance SSH keys via SSH:', error);
-        throw error;
+        
+        conn.on('error', (err) => {
+          this.logger.error(`❌ SSH connection error: ${err.message}`);
+          this.logger.error(`   Error code: ${err['code']}`);
+          this.logger.error(`   Error level: ${err['level']}`);
+          reject(new Error(`SSH connection failed: ${err.message}`));
+        });
+        
+        // Debug: Log SSH connection configuration
+        const sshConfig = {
+          host: publicIp,
+          port: 22,
+          username: username,
+          privateKeyFormat: adminPrivateKey.includes('BEGIN RSA PRIVATE KEY') ? 'PKCS#1' : 
+                           adminPrivateKey.includes('BEGIN PRIVATE KEY') ? 'PKCS#8' : 'UNKNOWN',
+          privateKeyLength: adminPrivateKey.length,
+          privateKeyStart: adminPrivateKey.substring(0, 50),
+          readyTimeout: 60000,
+        };
+        this.logger.log(`🔧 SSH Config: ${JSON.stringify(sshConfig, null, 2)}`);
+        
+        // Connect to the instance
+        conn.connect({
+          host: publicIp,
+          port: 22,
+          username: username,
+          privateKey: Buffer.from(adminPrivateKey, 'utf8'),
+          readyTimeout: 60000,
+          debug: (msg) => this.logger.debug(`SSH2 Debug: ${msg}`),
+        });
+      });
+    } catch (error) {
+      const isRetryable = error['code'] === 'ECONNREFUSED' || 
+                          (error.message && (error.message.includes('ECONNREFUSED') || error.message.includes('Timed out while waiting for handshake')));
+      if (isRetryable && retryNum < MAX_RETRIES) {
+        this.logger.warn(`⏳ SSH not ready (${error['code'] || 'timeout'}) for ${publicIp}, retry ${retryNum}/${MAX_RETRIES} in ${RETRY_DELAY_MS / 1000}s...`);
+        await new Promise(res => setTimeout(res, RETRY_DELAY_MS));
+        return attempt(retryNum + 1);
       }
+      this.logger.error('Error updating instance SSH keys via SSH:', error);
+      throw error;
+    }
     };
 
     return attempt(1);
-  }
-
-  /**
-   * Core SFTP-based logic for reading and rewriting authorized_keys.
-   *
-   * Strategy (avoids Path MTU black-hole):
-   *   1. If sudo needed: `exec` a no-output command to stage the file in /tmp.
-   *   2. SFTP-read the staged (or direct) file in 900-byte chunks — each server
-   *      response packet stays well under any PPPoE/NAT MTU limit.
-   *   3. Compute the new key list.
-   *   4. SFTP-write the new content to a /tmp scratch file (upload = client→server,
-   *      unaffected by the server-to-client MTU constraint).
-   *   5. `exec` a no-output command to mv/chmod/reload into place.
-   */
-  private async performSftpKeyUpdate(
-    conn: any,
-    instanceId: string,
-    newSshKey: string,
-    adminPublicKey: string | undefined,
-    targetUser: string,
-    useSudo: boolean,
-  ): Promise<{ id: string; keysCount: number; userKeysCount: number; removedOldest: boolean }> {
-    const targetHome = targetUser === 'root' ? '/root' : `/home/${targetUser}`;
-    const authKeysPath = `${targetHome}/.ssh/authorized_keys`;
-    const tmpTag = `${Date.now()}_${process.pid}`;
-    const tmpReadPath = `/tmp/.ak_r_${tmpTag}`;
-    const tmpWritePath = `/tmp/.ak_w_${tmpTag}`;
-
-    const sftp = await this.openSftp(conn);
-
-    // Step 1 (sudo only): copy authorized_keys to a /tmp path the SSH user can read via SFTP.
-    // This exec returns no stdout, so no large TCP response packet is sent server→client.
-    if (useSudo) {
-      this.logger.log(`📁 Staging ${authKeysPath} → ${tmpReadPath} for SFTP read...`);
-      await this.sshExec(conn,
-        `sudo mkdir -p ${targetHome}/.ssh && sudo chmod 700 ${targetHome}/.ssh; ` +
-        `sudo cp ${authKeysPath} ${tmpReadPath} 2>/dev/null && sudo chmod 644 ${tmpReadPath} || touch ${tmpReadPath}`
-      );
-    }
-
-    // Step 2: Read file via SFTP with 900-byte chunks (each response packet < 1492 bytes).
-    this.logger.log(`📖 Reading current authorized_keys via SFTP (chunked)...`);
-    const readPath = useSudo ? tmpReadPath : authKeysPath;
-    const currentContent = await this.sftpReadChunked(sftp, readPath);
-
-    const existingKeys = currentContent.split('\n').map(k => k.trim()).filter(k => k.length > 0);
-    this.logger.log(`📋 Found ${existingKeys.length} existing keys`);
-
-    // Identify admin key by key-material match (type + base64, ignoring comment field).
-    const adminKeyNormalized = adminPublicKey?.trim();
-    let adminKey: string | null = null;
-    if (adminKeyNormalized) {
-      const adminKeyMaterial = adminKeyNormalized.split(' ').slice(0, 2).join(' ');
-      adminKey = existingKeys.find(k => k.split(' ').slice(0, 2).join(' ') === adminKeyMaterial) ?? null;
-      if (!adminKey) {
-        this.logger.warn(`⚠️  Admin public key not found in authorized_keys — it will be added`);
-        adminKey = adminKeyNormalized;
-      } else {
-        this.logger.log(`✅ Admin key identified by explicit match (not position)`);
-      }
-    } else {
-      adminKey = existingKeys.length > 0 ? existingKeys[0] : null;
-      this.logger.warn(`⚠️  No adminPublicKey provided — using position[0] as fallback`);
-    }
-
-    // Step 3: Build updated key list (admin key first, then ≤2 most-recent user keys).
-    const adminKeyMaterial = adminKey ? adminKey.split(' ').slice(0, 2).join(' ') : null;
-    const existingUserKeys = adminKeyMaterial
-      ? existingKeys.filter(k => k.split(' ').slice(0, 2).join(' ') !== adminKeyMaterial)
-      : existingKeys;
-    const finalUserKeys = [newSshKey, ...existingUserKeys].slice(0, 2);
-    const finalKeys = adminKey ? [adminKey, ...finalUserKeys] : finalUserKeys;
-    const newContent = finalKeys.join('\n') + '\n';
-
-    // Step 4: Write new content to /tmp via SFTP.
-    // Data flows client→server (upload) — not affected by server-to-client MTU constraint.
-    this.logger.log(`✍️  Writing updated authorized_keys via SFTP (${finalKeys.length} keys)...`);
-    await this.sftpWriteFile(sftp, tmpWritePath, newContent);
-
-    // Step 5: Move temp file into place. These exec commands produce no significant output.
-    if (useSudo) {
-      await this.sshExec(conn,
-        `sudo mv ${tmpWritePath} ${authKeysPath}; ` +
-        `sudo chmod 600 ${authKeysPath}; ` +
-        `sudo chown ${targetUser}:${targetUser} ${authKeysPath} ${targetHome}/.ssh; ` +
-        `sudo rm -f ${tmpReadPath} 2>/dev/null; ` +
-        `sudo sed -i 's/^#*PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config 2>/dev/null; ` +
-        `sudo grep -q 'PermitRootLogin' /etc/ssh/sshd_config 2>/dev/null || ` +
-          `echo 'PermitRootLogin prohibit-password' | sudo tee -a /etc/ssh/sshd_config > /dev/null; ` +
-        `sudo systemctl reload sshd 2>/dev/null || sudo service sshd reload 2>/dev/null || true`
-      );
-    } else {
-      await this.sftpRename(sftp, tmpWritePath, authKeysPath);
-      await this.sshExec(conn, `chmod 600 ${authKeysPath}`);
-    }
-
-    this.logger.log(
-      `✅ SSH keys updated successfully for instance ${instanceId}. ` +
-      `Total keys: ${finalKeys.length} (1 admin + ${finalUserKeys.length} user keys)`
-    );
-
-    return {
-      id: instanceId,
-      keysCount: finalKeys.length,
-      userKeysCount: finalUserKeys.length,
-      removedOldest: existingUserKeys.length >= 2,
-    };
-  }
-
-  private openSftp(conn: any): Promise<any> {
-    return new Promise((resolve, reject) => {
-      conn.sftp((err: Error | undefined, sftp: any) => {
-        if (err) reject(new Error(`Failed to open SFTP subsystem: ${err.message}`));
-        else resolve(sftp);
-      });
-    });
-  }
-
-  /**
-   * Read a remote file via SFTP using small chunks (default 900 bytes) so that
-   * each SSH channel-data packet returned by the server is well within a 1492-byte
-   * PPPoE/NAT MTU frame after SSH encryption overhead is added.
-   */
-  private sftpReadChunked(sftp: any, remotePath: string, chunkSize = 900): Promise<string> {
-    return new Promise((resolve, reject) => {
-      sftp.open(remotePath, 'r', (openErr: any, handle: Buffer) => {
-        if (openErr) {
-          // SSH_FX_NO_SUCH_FILE (code 2) → treat as empty authorized_keys
-          if (openErr.code === 2) return resolve('');
-          return reject(new Error(`SFTP open(${remotePath}) failed: ${openErr.message}`));
-        }
-
-        const chunks: Buffer[] = [];
-        let offset = 0;
-
-        const readNext = () => {
-          const buf = Buffer.alloc(chunkSize);
-          sftp.read(handle, buf, 0, chunkSize, offset, (readErr: any, bytesRead: number, data: Buffer) => {
-            if (readErr) {
-              sftp.close(handle, () => {});
-              return reject(new Error(`SFTP read failed: ${readErr.message}`));
-            }
-            if (bytesRead === 0) {
-              return sftp.close(handle, (closeErr: any) => {
-                if (closeErr) this.logger.warn(`SFTP close warning: ${closeErr.message}`);
-                resolve(Buffer.concat(chunks).toString('utf8'));
-              });
-            }
-            chunks.push(data.slice(0, bytesRead));
-            offset += bytesRead;
-            readNext();
-          });
-        };
-
-        readNext();
-      });
-    });
-  }
-
-  private sftpWriteFile(sftp: any, remotePath: string, content: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const buf = Buffer.from(content, 'utf8');
-      sftp.open(remotePath, 'w', { mode: 0o600 }, (openErr: any, handle: Buffer) => {
-        if (openErr) return reject(new Error(`SFTP open(${remotePath}) for write failed: ${openErr.message}`));
-        sftp.write(handle, buf, 0, buf.length, 0, (writeErr: any) => {
-          sftp.close(handle, (closeErr: any) => {
-            if (writeErr) return reject(new Error(`SFTP write failed: ${writeErr.message}`));
-            if (closeErr) this.logger.warn(`SFTP close (write) warning: ${closeErr.message}`);
-            resolve();
-          });
-        });
-      });
-    });
-  }
-
-  private sftpRename(sftp: any, oldPath: string, newPath: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-      sftp.rename(oldPath, newPath, (err: any) => {
-        if (err) reject(new Error(`SFTP rename(${oldPath} → ${newPath}) failed: ${err.message}`));
-        else resolve();
-      });
-    });
-  }
-
-  /**
-   * Run a shell command over SSH and wait for completion.
-   * stdout/stderr are drained but not returned to the caller — no large data
-   * is awaited from the server, so this is safe regardless of MTU constraints.
-   */
-  private sshExec(conn: any, cmd: string, timeoutMs = 30000): Promise<void> {
-    return new Promise((resolve, reject) => {
-      conn.exec(cmd, (err: Error | undefined, stream: any) => {
-        if (err) return reject(new Error(`exec start failed: ${err.message}`));
-
-        let stderr = '';
-        stream.on('data', () => { /* drain stdout */ });
-        stream.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
-
-        const timer = setTimeout(
-          () => reject(new Error('SSH command timeout after 30 seconds')),
-          timeoutMs,
-        );
-
-        stream.on('close', (code: number) => {
-          clearTimeout(timer);
-          if (code !== 0) {
-            this.logger.warn(`⚠️  exec exited ${code}. stderr: ${stderr.slice(0, 300)}`);
-          }
-          resolve();
-        });
-      });
-    });
   }
 
   /**
@@ -3202,14 +3121,12 @@ runcmd:
     passwordInitialized: boolean = false,
   ): Promise<void> {
     this.logger.log(`🚀 Starting Windows password reset on instance: ${instanceId}`);
-    this.logger.log(`� Input: currentPassword=${currentPassword ? '***MASKED***' : 'NULL'} | newPassword=${newPassword ? '***MASKED***' : 'NULL'} | hasAdminKey=${!!adminPrivateKey}`);
     this.logger.log(`🔑 Password initialized (WinRM eligible): ${passwordInitialized}`);
     // For initial VM setup (not yet initialized), force must-change so customers are
     // required to set their own password on first login.
     // For user-initiated resets (already initialized), do NOT set must-change — the user
     // chose their own password and must-change would also block WinRM NTLM on the next reset.
     const setMustChange = !passwordInitialized;
-    this.logger.log(`🔧 Will use setMustChange=${setMustChange} (logic: !passwordInitialized = !${passwordInitialized} = ${setMustChange})`);
 
     // If subnetId is missing from DB record, look it up live from OCI so that
     // WinRM (Strategy 1) and SSH (Strategy 3) can open the required firewall ports.
@@ -3232,9 +3149,6 @@ runcmd:
     // Always attempt WinRM when we have the required info.
     // OCI Windows images (including 2016) have WinRM HTTPS enabled by default on port 5986.
     // The initial password from OCI credential retrieval works with NTLM auth.
-    // Tracks whether the OCI Cloud Agent on this VM was proved unresponsive (recovery timeout).
-    // Scoped here (outside Strategy 1 block) so Strategy 2 can read it.
-    let runCommandAgentUnresponsive = false;
     if (subnetId && publicIp && currentPassword) {
       this.logger.log(`🔐 Strategy 1: WinRM password reset (primary)...`);
       const secListId = await this.getSecurityListIdForSubnet(subnetId);
@@ -3290,7 +3204,7 @@ runcmd:
           const isTransientDrop = !!(winrmErr.message?.toLowerCase().includes('remotedisconnected') ||
             winrmErr.message?.toLowerCase().includes('connection aborted'));
           if (passwordInitialized && !isAuthError && !isTransientDrop) {
-            this.logger.warn(`⚠️ WinRM strategy failed (attempt ${attempt}): ${winrmErr.message}`);
+            this.logger.warn(`⚠️ WinRM sttrategy failed (attempt ${attempt}): ${winrmErr.message}`);
             break;
           }
           this.logger.log(`🔄 WinRM failed (attempt ${attempt}/${winrmMaxAttempts}) — ${isAuthError ? 'auth rejected, must-change-password flag may still be active' : 'connection issue, will retry'} — retrying...`);
@@ -3305,7 +3219,7 @@ runcmd:
       if (passwordInitialized && sawAuthError) {
         this.logger.log(`🔁 WinRM failed with auth error on initialized VM — attempting to clear must-change flag via OCI Run Command, then retry WinRM...`);
         try {
-          await this.tryClearMustChangeFlagViaRunCommand(instanceId, compartmentId, 180_000);
+          await this.tryClearMustChangeFlagViaRunCommand(instanceId, compartmentId, 60_000);
           this.logger.log(`✅ must-change flag cleared via Run Command — retrying WinRM once...`);
           try {
             await this.changePasswordViaWinrm(publicIp, currentPassword, newPassword, setMustChange);
@@ -3316,15 +3230,7 @@ runcmd:
             this.logger.warn(`⚠️ WinRM retry after must-change clear failed: ${retryErr.message}`);
           }
         } catch (clearErr: any) {
-          // If recovery Run Command timed out, the Cloud Agent is clearly not processing
-          // commands on this VM. Mark it so we skip Strategy 2 (same agent) to avoid
-          // wasting another 8 minutes polling a non-responsive agent.
-          if (clearErr.message?.includes('timed out')) {
-            runCommandAgentUnresponsive = true;
-            this.logger.warn(`⚠️ Recovery Run Command timed out — OCI Cloud Agent is NOT processing commands on this VM. Strategy 2 will be SKIPPED to save ~8 min.`);
-          } else {
-            this.logger.warn(`⚠️ Could not clear must-change flag via Run Command: ${clearErr.message}`);
-          }
+          this.logger.warn(`⚠️ Could not clear must-change flag via Run Command: ${clearErr.message}`);
         }
       }
       // Note: WinRM ports (5985+5986) are intentionally kept open for future resets.
@@ -3335,18 +3241,13 @@ runcmd:
     // ── Strategy 2: OCI Run Command (timeout 8 min) ──
     // Increased from 2 min: the Cloud Agent on Windows can be slow to dispatch — 2 min wasn't
     // long enough on heavily-loaded VMs. 8 min gives the agent a real chance to pick the command up.
-    // Skip if the recovery step already proved the agent is unresponsive.
-    if (runCommandAgentUnresponsive) {
-      this.logger.log(`⏭️ Strategy 2 (OCI Run Command): SKIPPED — agent proved unresponsive during recovery step (saving ~8 min)`);
-    } else {
-      this.logger.log(`📡 Strategy 2: OCI Run Command (timeout 8 min)...`);
-      try {
-        await this.tryRunCommandPasswordReset(instanceId, compartmentId, newPassword, 480_000, setMustChange);
-        this.logger.log(`✅ Password changed via OCI Run Command`);
-        return;
-      } catch (runCmdErr: any) {
-        this.logger.warn(`⚠️ OCI Run Command failed: ${runCmdErr.message}`);
-      }
+    this.logger.log(`📡 Strategy 2: OCI Run Command (timeout 8 min)...`);
+    try {
+      await this.tryRunCommandPasswordReset(instanceId, compartmentId, newPassword, 480_000, setMustChange);
+      this.logger.log(`✅ Password changed via OCI Run Command`);
+      return;
+    } catch (runCmdErr: any) {
+      this.logger.warn(`⚠️ OCI Run Command failed: ${runCmdErr.message}`);
     }
 
     // ── Strategy 3: SSH with system admin key ──
@@ -3360,17 +3261,9 @@ runcmd:
       } catch (sshErr: any) {
         this.logger.warn(`⚠️ SSH key-based reset failed: ${sshErr.message}`);
       }
-    } else {
-      this.logger.log(`⏭️ SSH skipped: ${!subnetId ? 'no subnet' : !publicIp ? 'no public IP' : 'no admin private key available'}`);
     }
 
-    const failedStrategies = [
-      `Strategy 1 (WinRM): ${!subnetId || !publicIp ? 'skipped' : !currentPassword ? 'skipped (no password)' : 'failed with auth/connection error'}`,
-      `Strategy 2 (OCI Run Command): failed or agent timeout`,
-      `Strategy 3 (SSH): ${!subnetId || !publicIp ? 'skipped' : !adminPrivateKey ? 'skipped (no key)' : 'failed'}`,
-    ].join(' | ');
-    this.logger.error(`❌ All password reset strategies failed: ${failedStrategies}`);
-    throw new Error(`All remote password change methods exhausted — ${failedStrategies} — manual intervention required.`);
+    throw new Error('All remote password change methods exhausted — manual intervention required.');
   }
 
   /**
@@ -3430,22 +3323,14 @@ runcmd:
     compartmentId: string,
     maxWaitMs: number = 60_000,
   ): Promise<void> {
-    this.logger.log(`🔁 Recovery: Attempting to clear must-change flag via short OCI Run Command (timeout: ${maxWaitMs / 1000}s)`);
-
     // Make sure the plugin is enabled — non-fatal if this fails
-    try { 
-      this.logger.log(`📡 Requesting Run Command plugin enablement for recovery...`);
-      await this.enableRunCommandPlugin(instanceId);
-    } catch (enableErr: any) {
-      this.logger.warn(`⚠️ Could not request plugin enablement for recovery: ${enableErr.message}`);
-    }
+    try { await this.enableRunCommandPlugin(instanceId); } catch {}
 
     // Wrap the trivial command via cmd→powershell -EncodedCommand so it survives
     // ExecutionPolicy and any cmd.exe metacharacter quirks.
     const psScriptText = `net user opc /logonpasswordchg:no\r\nWrite-Output 'CLEAR_OK'`;
     const encodedCmd = Buffer.from(psScriptText, 'utf16le').toString('base64');
     const script = `powershell.exe -NonInteractive -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodedCmd}`;
-    this.logger.log(`📝 Recovery script prepared (one-liner to clear must-change flag)`);
 
     const createResponse = await this.computeInstanceAgentClient.createInstanceAgentCommand({
       createInstanceAgentCommandDetails: {
@@ -3465,7 +3350,7 @@ runcmd:
       },
     });
     const commandId = createResponse.instanceAgentCommand.id;
-    this.logger.log(`✅ Recovery Run Command created: ${commandId}`);
+    this.logger.log(`✅ OCI Run Command created (clear-flag): ${commandId}`);
 
     const pollIntervalMs = 5_000;
     const startTime = Date.now();
@@ -3478,10 +3363,8 @@ runcmd:
         });
         const execution = execResponse.instanceAgentCommandExecution;
         const lifecycleState = execution.lifecycleState;
-        const elapsedSec = Math.round((Date.now() - startTime) / 1000);
-        this.logger.log(`📊 Recovery status [${elapsedSec}s] — lifecycle: ${lifecycleState}`);
+        this.logger.log(`📊 clear-flag status — lifecycle: ${lifecycleState}`);
         if (lifecycleState === oci.computeinstanceagent.models.InstanceAgentCommandExecution.LifecycleState.Succeeded) {
-          this.logger.log(`✅ Recovery succeeded — must-change flag cleared`);
           return;
         }
         if (
@@ -3489,18 +3372,13 @@ runcmd:
           lifecycleState === oci.computeinstanceagent.models.InstanceAgentCommandExecution.LifecycleState.TimedOut ||
           lifecycleState === oci.computeinstanceagent.models.InstanceAgentCommandExecution.LifecycleState.Canceled
         ) {
-          this.logger.error(`❌ Recovery failed with state: ${lifecycleState}`);
           throw new Error(`clear-flag Run Command failed with state: ${lifecycleState}`);
         }
       } catch (pollError: any) {
-        if (pollError?.statusCode === 404 || String(pollError?.message).includes('404')) {
-          this.logger.log(`⏳ Recovery command not yet picked up by agent...`);
-          continue;
-        }
+        if (pollError?.statusCode === 404 || String(pollError?.message).includes('404')) continue;
         throw pollError;
       }
     }
-    this.logger.error(`❌ Recovery timed out after ${maxWaitMs / 1000}s`);
     throw new Error(`clear-flag Run Command timed out (${maxWaitMs / 1000}s)`);
   }
 
@@ -3515,11 +3393,8 @@ runcmd:
     maxWaitMs: number = 120_000,
     setMustChange: boolean = true,
   ): Promise<void> {
-    this.logger.log(`🚀 Starting OCI Run Command password reset (timeout: ${maxWaitMs / 60000} min, setMustChange: ${setMustChange})`);
-
     // Step 1: Enable Run Command plugin
     try {
-      this.logger.log(`📡 Requesting Run Command plugin enablement...`);
       await this.enableRunCommandPlugin(instanceId);
     } catch (enableErr: any) {
       this.logger.warn(`⚠️ Could not request plugin enablement: ${enableErr.message}`);
@@ -3546,12 +3421,9 @@ runcmd:
           const rcPlugin = pluginsResp.items?.find(
             p => p.name === 'Compute Instance Run Command',
           );
-          const statusStr = rcPlugin?.status ?? 'NOT_FOUND';
-          const elapsedSec = Math.round((Date.now() - pluginStart) / 1000);
-          this.logger.log(`🔌 Run Command plugin status: ${statusStr} (waited ${elapsedSec}s / ${maxPluginWaitMs / 1000}s max)`);
+          this.logger.log(`🔌 Run Command plugin status: ${rcPlugin?.status ?? 'NOT FOUND'} (waited ${Math.round((Date.now() - pluginStart) / 1000)}s)`);
           if (rcPlugin?.status === 'RUNNING') {
             pluginRunning = true;
-            this.logger.log(`✅ Plugin is RUNNING`);
             break;
           }
         } catch (pollErr: any) {
@@ -3599,7 +3471,6 @@ runcmd:
     // executes the script.
     const encodedCmd = Buffer.from(psScriptText, 'utf16le').toString('base64');
     const script = `powershell.exe -NonInteractive -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodedCmd}`;
-    this.logger.log(`📝 Run Command script created (base64 UTF-16LE encoded PowerShell, length: ${encodedCmd.length} chars)`);
 
     const createResponse = await this.computeInstanceAgentClient.createInstanceAgentCommand({
       createInstanceAgentCommandDetails: {
@@ -3637,11 +3508,9 @@ runcmd:
         const execution = execResponse.instanceAgentCommandExecution;
         const lifecycleState = execution.lifecycleState;
         const deliveryState = execution.deliveryState;
-        const elapsedSec = Math.round((Date.now() - startTime) / 1000);
-        this.logger.log(`📊 Run Command status [${elapsedSec}s] — delivery: ${deliveryState}, lifecycle: ${lifecycleState}`);
+        this.logger.log(`📊 Run Command status — delivery: ${deliveryState}, lifecycle: ${lifecycleState}`);
 
         if (lifecycleState === oci.computeinstanceagent.models.InstanceAgentCommandExecution.LifecycleState.Succeeded) {
-          this.logger.log(`✅ Run Command succeeded`);
           return;
         }
 
@@ -3650,8 +3519,6 @@ runcmd:
           lifecycleState === oci.computeinstanceagent.models.InstanceAgentCommandExecution.LifecycleState.TimedOut ||
           lifecycleState === oci.computeinstanceagent.models.InstanceAgentCommandExecution.LifecycleState.Canceled
         ) {
-          const finalStatus = lifecycleState;
-          this.logger.error(`❌ Run Command final status: ${finalStatus}`);
           throw new Error(`Run Command failed with state: ${lifecycleState}`);
         }
       } catch (pollError: any) {
@@ -3694,8 +3561,7 @@ runcmd:
     currentPassword?: string,
     setMustChange: boolean = true,
   ): Promise<void> {
-    this.logger.log(`🔑 SSH password reset: adminKey=${adminPrivateKey ? 'present' : 'missing'}, currentPassword=${currentPassword ? 'present' : 'missing'}, setMustChange=${setMustChange}`);
-    this.logger.log(`🔐 Opening SSH port 22 in security list: ${securityListId}`);
+    this.logger.log(`🔑 Opening SSH port 22 in security list: ${securityListId}`);
     await this.ensureSshPortOpen(securityListId);
 
     try {
@@ -3721,7 +3587,6 @@ runcmd:
           ].join(';');
       const encodedCmd = Buffer.from(psScript, 'utf16le').toString('base64');
       const sshCommand = `powershell.exe -NonInteractive -NoProfile -EncodedCommand ${encodedCmd}`;
-      this.logger.log(`📝 SSH script prepared (base64 UTF-16LE encoded, length: ${encodedCmd.length} chars)`);
 
       const maxAttempts = 3;
       let lastError: Error = new Error('SSH attempts exhausted');
@@ -3732,7 +3597,7 @@ runcmd:
           await new Promise(r => setTimeout(r, 30_000));
         }
 
-        this.logger.log(`🔌 Connecting via SSH to ${publicIp}:22 as opc (attempt ${attempt}/${maxAttempts}) — authMethods=[${adminPrivateKey ? 'key' : ''}${currentPassword ? ',password' : ''}]...`);
+        this.logger.log(`🔌 Connecting via SSH to ${publicIp}:22 as opc (attempt ${attempt}/${maxAttempts})...`);
 
         const SSH_EXEC_TIMEOUT_MS = 90_000;
 
@@ -3995,8 +3860,6 @@ runcmd:
       setMustChange,
     });
 
-    this.logger.log(`📝 WinRM script params: IP=${publicIp}, user=opc, setMustChange=${setMustChange}`);
-
     const TIMEOUT_MS = 90_000;
 
     const { stdout, stderr, exitCode } = await new Promise<{ stdout: string; stderr: string; exitCode: number | null }>((resolve, reject) => {
@@ -4037,7 +3900,6 @@ runcmd:
         const parsed = JSON.parse(stdout);
         const stderrParsed: string = parsed.stderr || '';
         errorMsg = stderrParsed || parsed.error || errorMsg;
-        this.logger.log(`🔍 WinRM parsed JSON error: ${errorMsg}`);
         // Detect Windows password policy rejection (NET HELPMSG 2245)
         if (
           stderrParsed.toLowerCase().includes('password policy') ||
@@ -4045,23 +3907,17 @@ runcmd:
           stderrParsed.toLowerCase().includes('2245')
         ) {
           isPasswordRejected = true;
-          this.logger.log(`⚠️ Password rejected by Windows policy: ${errorMsg}`);
         }
         // When the Python script tried multiple auth methods (NTLM, basic), the final
         // error may be a timeout from the basic-auth fallback while the real issue was
         // NTLM credential rejection (must-change-password flag). Surface the auth error
         // so the retry loop in runWindowsPasswordReset correctly identifies it.
         if (parsed.attempts && Array.isArray(parsed.attempts)) {
-          this.logger.log(`📊 WinRM attempted ${parsed.attempts.length} authentication method(s)`);
-          parsed.attempts.forEach((attempt: any, idx: number) => {
-            this.logger.log(`  └─ Attempt ${idx + 1}: method=${attempt.method}, status=${attempt.error ? 'FAILED' : 'OK'}, error=${attempt.error || 'none'}`);
-          });
           const hasCredentialRejection = parsed.attempts.some((a: any) =>
             a.error && a.error.toLowerCase().includes('credentials were rejected'),
           );
           if (hasCredentialRejection && !errorMsg.toLowerCase().includes('rejected')) {
             errorMsg = `the specified credentials were rejected by the server (fallback: ${errorMsg})`;
-            this.logger.log(`🔑 Credential rejection detected in attempt logs, surfacing as primary error`);
           }
         }
       } catch { /* ignore parse error */ }
