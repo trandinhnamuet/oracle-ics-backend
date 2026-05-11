@@ -3198,12 +3198,14 @@ runcmd:
     passwordInitialized: boolean = false,
   ): Promise<void> {
     this.logger.log(`🚀 Starting Windows password reset on instance: ${instanceId}`);
+    this.logger.log(`� Input: currentPassword=${currentPassword ? '***MASKED***' : 'NULL'} | newPassword=${newPassword ? '***MASKED***' : 'NULL'} | hasAdminKey=${!!adminPrivateKey}`);
     this.logger.log(`🔑 Password initialized (WinRM eligible): ${passwordInitialized}`);
     // For initial VM setup (not yet initialized), force must-change so customers are
     // required to set their own password on first login.
     // For user-initiated resets (already initialized), do NOT set must-change — the user
     // chose their own password and must-change would also block WinRM NTLM on the next reset.
     const setMustChange = !passwordInitialized;
+    this.logger.log(`🔧 Will use setMustChange=${setMustChange} (logic: !passwordInitialized = !${passwordInitialized} = ${setMustChange})`);
 
     // If subnetId is missing from DB record, look it up live from OCI so that
     // WinRM (Strategy 1) and SSH (Strategy 3) can open the required firewall ports.
@@ -3338,9 +3340,17 @@ runcmd:
       } catch (sshErr: any) {
         this.logger.warn(`⚠️ SSH key-based reset failed: ${sshErr.message}`);
       }
+    } else {
+      this.logger.log(`⏭️ SSH skipped: ${!subnetId ? 'no subnet' : !publicIp ? 'no public IP' : 'no admin private key available'}`);
     }
 
-    throw new Error('All remote password change methods exhausted — manual intervention required.');
+    const failedStrategies = [
+      `Strategy 1 (WinRM): ${!subnetId || !publicIp ? 'skipped' : !currentPassword ? 'skipped (no password)' : 'failed with auth/connection error'}`,
+      `Strategy 2 (OCI Run Command): failed or agent timeout`,
+      `Strategy 3 (SSH): ${!subnetId || !publicIp ? 'skipped' : !adminPrivateKey ? 'skipped (no key)' : 'failed'}`,
+    ].join(' | ');
+    this.logger.error(`❌ All password reset strategies failed: ${failedStrategies}`);
+    throw new Error(`All remote password change methods exhausted — ${failedStrategies} — manual intervention required.`);
   }
 
   /**
@@ -3400,14 +3410,22 @@ runcmd:
     compartmentId: string,
     maxWaitMs: number = 60_000,
   ): Promise<void> {
+    this.logger.log(`🔁 Recovery: Attempting to clear must-change flag via short OCI Run Command (timeout: ${maxWaitMs / 1000}s)`);
+
     // Make sure the plugin is enabled — non-fatal if this fails
-    try { await this.enableRunCommandPlugin(instanceId); } catch {}
+    try { 
+      this.logger.log(`📡 Requesting Run Command plugin enablement for recovery...`);
+      await this.enableRunCommandPlugin(instanceId);
+    } catch (enableErr: any) {
+      this.logger.warn(`⚠️ Could not request plugin enablement for recovery: ${enableErr.message}`);
+    }
 
     // Wrap the trivial command via cmd→powershell -EncodedCommand so it survives
     // ExecutionPolicy and any cmd.exe metacharacter quirks.
     const psScriptText = `net user opc /logonpasswordchg:no\r\nWrite-Output 'CLEAR_OK'`;
     const encodedCmd = Buffer.from(psScriptText, 'utf16le').toString('base64');
     const script = `powershell.exe -NonInteractive -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodedCmd}`;
+    this.logger.log(`📝 Recovery script prepared (one-liner to clear must-change flag)`);
 
     const createResponse = await this.computeInstanceAgentClient.createInstanceAgentCommand({
       createInstanceAgentCommandDetails: {
@@ -3427,7 +3445,7 @@ runcmd:
       },
     });
     const commandId = createResponse.instanceAgentCommand.id;
-    this.logger.log(`✅ OCI Run Command created (clear-flag): ${commandId}`);
+    this.logger.log(`✅ Recovery Run Command created: ${commandId}`);
 
     const pollIntervalMs = 5_000;
     const startTime = Date.now();
@@ -3440,8 +3458,10 @@ runcmd:
         });
         const execution = execResponse.instanceAgentCommandExecution;
         const lifecycleState = execution.lifecycleState;
-        this.logger.log(`📊 clear-flag status — lifecycle: ${lifecycleState}`);
+        const elapsedSec = Math.round((Date.now() - startTime) / 1000);
+        this.logger.log(`📊 Recovery status [${elapsedSec}s] — lifecycle: ${lifecycleState}`);
         if (lifecycleState === oci.computeinstanceagent.models.InstanceAgentCommandExecution.LifecycleState.Succeeded) {
+          this.logger.log(`✅ Recovery succeeded — must-change flag cleared`);
           return;
         }
         if (
@@ -3449,13 +3469,18 @@ runcmd:
           lifecycleState === oci.computeinstanceagent.models.InstanceAgentCommandExecution.LifecycleState.TimedOut ||
           lifecycleState === oci.computeinstanceagent.models.InstanceAgentCommandExecution.LifecycleState.Canceled
         ) {
+          this.logger.error(`❌ Recovery failed with state: ${lifecycleState}`);
           throw new Error(`clear-flag Run Command failed with state: ${lifecycleState}`);
         }
       } catch (pollError: any) {
-        if (pollError?.statusCode === 404 || String(pollError?.message).includes('404')) continue;
+        if (pollError?.statusCode === 404 || String(pollError?.message).includes('404')) {
+          this.logger.log(`⏳ Recovery command not yet picked up by agent...`);
+          continue;
+        }
         throw pollError;
       }
     }
+    this.logger.error(`❌ Recovery timed out after ${maxWaitMs / 1000}s`);
     throw new Error(`clear-flag Run Command timed out (${maxWaitMs / 1000}s)`);
   }
 
@@ -3470,8 +3495,11 @@ runcmd:
     maxWaitMs: number = 120_000,
     setMustChange: boolean = true,
   ): Promise<void> {
+    this.logger.log(`🚀 Starting OCI Run Command password reset (timeout: ${maxWaitMs / 60000} min, setMustChange: ${setMustChange})`);
+
     // Step 1: Enable Run Command plugin
     try {
+      this.logger.log(`📡 Requesting Run Command plugin enablement...`);
       await this.enableRunCommandPlugin(instanceId);
     } catch (enableErr: any) {
       this.logger.warn(`⚠️ Could not request plugin enablement: ${enableErr.message}`);
@@ -3498,9 +3526,12 @@ runcmd:
           const rcPlugin = pluginsResp.items?.find(
             p => p.name === 'Compute Instance Run Command',
           );
-          this.logger.log(`🔌 Run Command plugin status: ${rcPlugin?.status ?? 'NOT FOUND'} (waited ${Math.round((Date.now() - pluginStart) / 1000)}s)`);
+          const statusStr = rcPlugin?.status ?? 'NOT_FOUND';
+          const elapsedSec = Math.round((Date.now() - pluginStart) / 1000);
+          this.logger.log(`🔌 Run Command plugin status: ${statusStr} (waited ${elapsedSec}s / ${maxPluginWaitMs / 1000}s max)`);
           if (rcPlugin?.status === 'RUNNING') {
             pluginRunning = true;
+            this.logger.log(`✅ Plugin is RUNNING`);
             break;
           }
         } catch (pollErr: any) {
@@ -3548,6 +3579,7 @@ runcmd:
     // executes the script.
     const encodedCmd = Buffer.from(psScriptText, 'utf16le').toString('base64');
     const script = `powershell.exe -NonInteractive -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodedCmd}`;
+    this.logger.log(`📝 Run Command script created (base64 UTF-16LE encoded PowerShell, length: ${encodedCmd.length} chars)`);
 
     const createResponse = await this.computeInstanceAgentClient.createInstanceAgentCommand({
       createInstanceAgentCommandDetails: {
@@ -3585,9 +3617,11 @@ runcmd:
         const execution = execResponse.instanceAgentCommandExecution;
         const lifecycleState = execution.lifecycleState;
         const deliveryState = execution.deliveryState;
-        this.logger.log(`📊 Run Command status — delivery: ${deliveryState}, lifecycle: ${lifecycleState}`);
+        const elapsedSec = Math.round((Date.now() - startTime) / 1000);
+        this.logger.log(`📊 Run Command status [${elapsedSec}s] — delivery: ${deliveryState}, lifecycle: ${lifecycleState}`);
 
         if (lifecycleState === oci.computeinstanceagent.models.InstanceAgentCommandExecution.LifecycleState.Succeeded) {
+          this.logger.log(`✅ Run Command succeeded`);
           return;
         }
 
@@ -3596,6 +3630,8 @@ runcmd:
           lifecycleState === oci.computeinstanceagent.models.InstanceAgentCommandExecution.LifecycleState.TimedOut ||
           lifecycleState === oci.computeinstanceagent.models.InstanceAgentCommandExecution.LifecycleState.Canceled
         ) {
+          const finalStatus = lifecycleState;
+          this.logger.error(`❌ Run Command final status: ${finalStatus}`);
           throw new Error(`Run Command failed with state: ${lifecycleState}`);
         }
       } catch (pollError: any) {
@@ -3638,7 +3674,8 @@ runcmd:
     currentPassword?: string,
     setMustChange: boolean = true,
   ): Promise<void> {
-    this.logger.log(`🔑 Opening SSH port 22 in security list: ${securityListId}`);
+    this.logger.log(`🔑 SSH password reset: adminKey=${adminPrivateKey ? 'present' : 'missing'}, currentPassword=${currentPassword ? 'present' : 'missing'}, setMustChange=${setMustChange}`);
+    this.logger.log(`🔐 Opening SSH port 22 in security list: ${securityListId}`);
     await this.ensureSshPortOpen(securityListId);
 
     try {
@@ -3664,6 +3701,7 @@ runcmd:
           ].join(';');
       const encodedCmd = Buffer.from(psScript, 'utf16le').toString('base64');
       const sshCommand = `powershell.exe -NonInteractive -NoProfile -EncodedCommand ${encodedCmd}`;
+      this.logger.log(`📝 SSH script prepared (base64 UTF-16LE encoded, length: ${encodedCmd.length} chars)`);
 
       const maxAttempts = 3;
       let lastError: Error = new Error('SSH attempts exhausted');
@@ -3674,7 +3712,7 @@ runcmd:
           await new Promise(r => setTimeout(r, 30_000));
         }
 
-        this.logger.log(`🔌 Connecting via SSH to ${publicIp}:22 as opc (attempt ${attempt}/${maxAttempts})...`);
+        this.logger.log(`🔌 Connecting via SSH to ${publicIp}:22 as opc (attempt ${attempt}/${maxAttempts}) — authMethods=[${adminPrivateKey ? 'key' : ''}${currentPassword ? ',password' : ''}]...`);
 
         const SSH_EXEC_TIMEOUT_MS = 90_000;
 
@@ -3937,6 +3975,8 @@ runcmd:
       setMustChange,
     });
 
+    this.logger.log(`📝 WinRM script params: IP=${publicIp}, user=opc, setMustChange=${setMustChange}`);
+
     const TIMEOUT_MS = 90_000;
 
     const { stdout, stderr, exitCode } = await new Promise<{ stdout: string; stderr: string; exitCode: number | null }>((resolve, reject) => {
@@ -3977,6 +4017,7 @@ runcmd:
         const parsed = JSON.parse(stdout);
         const stderrParsed: string = parsed.stderr || '';
         errorMsg = stderrParsed || parsed.error || errorMsg;
+        this.logger.log(`🔍 WinRM parsed JSON error: ${errorMsg}`);
         // Detect Windows password policy rejection (NET HELPMSG 2245)
         if (
           stderrParsed.toLowerCase().includes('password policy') ||
@@ -3984,17 +4025,23 @@ runcmd:
           stderrParsed.toLowerCase().includes('2245')
         ) {
           isPasswordRejected = true;
+          this.logger.log(`⚠️ Password rejected by Windows policy: ${errorMsg}`);
         }
         // When the Python script tried multiple auth methods (NTLM, basic), the final
         // error may be a timeout from the basic-auth fallback while the real issue was
         // NTLM credential rejection (must-change-password flag). Surface the auth error
         // so the retry loop in runWindowsPasswordReset correctly identifies it.
         if (parsed.attempts && Array.isArray(parsed.attempts)) {
+          this.logger.log(`📊 WinRM attempted ${parsed.attempts.length} authentication method(s)`);
+          parsed.attempts.forEach((attempt: any, idx: number) => {
+            this.logger.log(`  └─ Attempt ${idx + 1}: method=${attempt.method}, status=${attempt.error ? 'FAILED' : 'OK'}, error=${attempt.error || 'none'}`);
+          });
           const hasCredentialRejection = parsed.attempts.some((a: any) =>
             a.error && a.error.toLowerCase().includes('credentials were rejected'),
           );
           if (hasCredentialRejection && !errorMsg.toLowerCase().includes('rejected')) {
             errorMsg = `the specified credentials were rejected by the server (fallback: ${errorMsg})`;
+            this.logger.log(`🔑 Credential rejection detected in attempt logs, surfacing as primary error`);
           }
         }
       } catch { /* ignore parse error */ }
