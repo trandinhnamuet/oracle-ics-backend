@@ -3199,11 +3199,17 @@ runcmd:
   ): Promise<void> {
     this.logger.log(`🚀 Starting Windows password reset on instance: ${instanceId}`);
     this.logger.log(`🔑 Password initialized (WinRM eligible): ${passwordInitialized}`);
-    // For initial VM setup (not yet initialized), force must-change so customers are
-    // required to set their own password on first login.
-    // For user-initiated resets (already initialized), do NOT set must-change — the user
-    // chose their own password and must-change would also block WinRM NTLM on the next reset.
-    const setMustChange = !passwordInitialized;
+    // Always use setMustChange = false.
+    // Setting must-change (logonpasswordchg:yes) blocks ALL WinRM auth transports (NTLM + basic)
+    // even when the correct password is used — Windows rejects any authentication when the
+    // account requires a password change. This caused user-triggered resets to fail on VMs
+    // that were provisioned with must-change set by background provisioning, because:
+    //   1. Background provisioning: sets newPassword + must-change + deletes OCI_ClearPwFlag
+    //   2. User reset: WinRM auth fails (must-change blocks it)
+    //   3. OCI Run Command timeout (agent not ready right after boot)
+    // Fix: never set must-change — the user's initial password is random and not guessable,
+    // so there is no security requirement to force an RDP password change on first login.
+    const setMustChange = false;
 
     // If subnetId is missing from DB record, look it up live from OCI so that
     // WinRM (Strategy 1) and SSH (Strategy 3) can open the required firewall ports.
