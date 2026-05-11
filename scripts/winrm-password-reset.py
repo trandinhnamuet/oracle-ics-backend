@@ -64,14 +64,13 @@ if set_must_change and admin_password:
         f"$p=[Text.Encoding]::UTF8.GetString($b);"
         f"$ab=[Convert]::FromBase64String('{admin_pw_b64}');"
         f"$ap=[Text.Encoding]::UTF8.GetString($ab);"
-        # Bootstrap icsreset if it doesn't exist so future WinRM resets work
-        f"if (-not (Get-LocalUser '{admin_username}' -ErrorAction SilentlyContinue)){{"
-        f"net user {admin_username} $ap /add /y /comment:'ICS Backend admin' 2>$null;"
-        f"net localgroup Administrators {admin_username} /add 2>$null;"
-        f"net user {admin_username} /logonpasswordchg:no /expires:never 2>$null"
-        f"}};"
+        # Bootstrap icsreset via WinRM (idempotent: always attempt creation, suppress all output)
+        # Uses 2>&1 | Out-Null to suppress both stdout/stderr of native commands reliably
+        f"net user {admin_username} $ap /add /y 2>&1 | Out-Null;"
+        f"net localgroup Administrators {admin_username} /add 2>&1 | Out-Null;"
+        f"net user {admin_username} /logonpasswordchg:no 2>&1 | Out-Null;"
         f"net user {username} $p /logonpasswordchg:yes;"       # set password + must-change
-        f"schtasks /delete /tn OCI_ClearPwFlag /f 2>$null;"    # delete to enforce must-change permanently
+        f"schtasks /delete /tn OCI_ClearPwFlag /f 2>&1 | Out-Null;"  # delete to enforce must-change permanently
         f"net user {username} /logonpasswordchg:yes"            # re-assert must-change after deletion
     )
 elif set_must_change:
