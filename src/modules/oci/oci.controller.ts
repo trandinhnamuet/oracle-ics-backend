@@ -123,9 +123,9 @@ export class OciController {
     try {
       const compartments = await this.ociService.listCompartments();
 
-      // Filter out DELETED compartments only - keep all other states
+      // Filter out DELETED and DELETING compartments
       const activeCompartments = compartments.filter(
-        (comp) => comp.lifecycleState !== 'DELETED'
+        (comp) => comp.lifecycleState !== 'DELETED' && comp.lifecycleState !== 'DELETING'
       );
 
       return {
