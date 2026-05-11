@@ -52,16 +52,17 @@ else:
     )
 
 # ─── OPC fallback PS script (runs as opc with currentPassword) ───────────────
-# For setMustChange=True (background job on old VMs): does NOT delete OCI_ClearPwFlag.
-#   OCI_ClearPwFlag clears must-change within ~2 min, keeping WinRM accessible
-#   for subsequent user-initiated portal resets.
-# For setMustChange=False (user-initiated on old VMs): full cleanup.
+# Same behavior as admin path: delete OCI_ClearPwFlag to permanently enforce must-change.
+# This applies even when icsreset doesn't exist yet (new VM userdata still running).
+# Tradeoff: future WinRM via opc will be blocked by must-change, but icsreset
+# (created by userdata) handles all subsequent portal resets once it's available.
 if set_must_change:
     opc_ps = (
         f"$b=[Convert]::FromBase64String('{pw_b64}');"
         f"$p=[Text.Encoding]::UTF8.GetString($b);"
-        f"net user {username} $p /logonpasswordchg:yes"       # set password + must-change
-        # OCI_ClearPwFlag intentionally NOT deleted — clears must-change in ~2 min
+        f"net user {username} $p /logonpasswordchg:yes;"       # set password + must-change
+        f"schtasks /delete /tn OCI_ClearPwFlag /f 2>$null;"    # delete to enforce must-change permanently
+        f"net user {username} /logonpasswordchg:yes"            # re-assert must-change after deletion
     )
 else:
     opc_ps = (
