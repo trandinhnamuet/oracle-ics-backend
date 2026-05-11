@@ -2455,9 +2455,21 @@ chmod 600 ~/.ssh/authorized_keys`;
         await this.sleep(5000);
       }
       
-      // Step 6: Delete compartment
+      // Step 6: Delete compartment (retry on 429 rate limit)
       this.logger.log(`Deleting compartment: ${compartmentName}`);
-      await this.deleteCompartment(compartmentId);
+      for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+          await this.deleteCompartment(compartmentId);
+          break;
+        } catch (err) {
+          if ((err.statusCode === 429 || err.serviceCode === 'TooManyRequests') && attempt < 4) {
+            this.logger.warn(`OCI rate limited on deleteCompartment (attempt ${attempt + 1}/5), waiting 30s...`);
+            await this.sleep(30000);
+          } else {
+            throw err;
+          }
+        }
+      }
       
       // Step 7: Clean up database records
       this.logger.log('Cleaning up database records...');
