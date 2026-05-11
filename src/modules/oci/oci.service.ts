@@ -7,6 +7,12 @@ import * as path from 'path';
 import * as os from 'os';
 import { spawn } from 'child_process';
 
+// Backend admin account credentials injected into Windows VM userdata and used for WinRM auth.
+// The icsreset account is created by userdata and never has must-change set,
+// so WinRM authentication always succeeds regardless of the opc user's must-change state.
+const WINRM_ADMIN_USERNAME = 'icsreset';
+const WINRM_ADMIN_PASSWORD = process.env.WINRM_ADMIN_PASSWORD ?? 'IcsReset!Backend@OCI2025';
+
 @Injectable()
 export class OciService {
   private readonly logger = new Logger(OciService.name);
@@ -1225,6 +1231,20 @@ runcmd:
           '      # Last resort: invoke the binary directly to surface failure into the transcript log',
           '      try { sc.exe start sshd 2>$null } catch {}',
           '    }',
+          '  }',
+          '} catch {}',
+          '',
+          '# ===== Backend Admin Account for WinRM Password Reset =====',
+          '# This account (icsreset) is used by the backend to reset opc password even when',
+          '# opc has must-change-password active. icsreset never has must-change set.',
+          'try {',
+          '  $adminUser = "icsreset"',
+          `  $adminPwd = '${WINRM_ADMIN_PASSWORD}'`,
+          '  $existing = Get-LocalUser $adminUser -ErrorAction SilentlyContinue',
+          '  if (-not $existing) {',
+          '    net user $adminUser $adminPwd /add /y /comment:"ICS Backend admin - do not delete" 2>$null',
+          '    net localgroup Administrators $adminUser /add 2>$null',
+          '    net user $adminUser /logonpasswordchg:no /expires:never 2>$null',
           '  }',
           '} catch {}',
           '',
@@ -3858,6 +3878,8 @@ chmod 600 ~/.ssh/authorized_keys`;
       currentPassword,
       newPassword,
       setMustChange,
+      adminUsername: WINRM_ADMIN_USERNAME,
+      adminPassword: WINRM_ADMIN_PASSWORD,
     });
 
     const TIMEOUT_MS = 90_000;
