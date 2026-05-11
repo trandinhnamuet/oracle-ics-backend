@@ -2259,14 +2259,15 @@ chmod 600 ~/.ssh/authorized_keys`;
       }
       
       // Step 3: Wait for instances to terminate
-      const activeInstances = instances.filter(
-        i => i.lifecycleState !== 'TERMINATED' && i.lifecycleState !== 'TERMINATING'
+      // FIX: also wait if instances are already TERMINATING (prior attempt)
+      const instancesNeedingWait = instances.filter(
+        i => i.lifecycleState !== 'TERMINATED'
       );
-      if (activeInstances.length > 0) {
+      if (instancesNeedingWait.length > 0) {
         this.logger.log('Waiting for instances to terminate...');
         await this.sleep(15000); // Wait 15 seconds initially
         
-        let maxRetries = 20;
+        let maxRetries = 40; // up to 40 × 10s = 400s
         while (maxRetries > 0) {
           const currentInstances = await this.listInstances(compartmentId);
           const runningInstances = currentInstances.filter(
@@ -2278,12 +2279,16 @@ chmod 600 ~/.ssh/authorized_keys`;
             break;
           }
           
-          this.logger.log(`Waiting for ${runningInstances.length} instances to terminate...`);
+          this.logger.log(`Waiting for ${runningInstances.length} instances to terminate (retries left: ${maxRetries})...`);
           await this.sleep(10000); // Wait 10 seconds
           maxRetries--;
         }
       }
       
+      // Extra wait after termination so OCI can release VNIC attachments from subnets
+      this.logger.log('Waiting for OCI to release VNIC attachments before deleting network resources...');
+      await this.sleep(30000); // 30 seconds for VNICs to be fully released
+
       // Step 4: Delete VCN resources
       this.logger.log('Deleting VCN resources...');
       const vcns = await this.listVcns(compartmentId);
@@ -2291,20 +2296,35 @@ chmod 600 ~/.ssh/authorized_keys`;
       for (const vcn of vcns) {
         this.logger.log(`Processing VCN: ${vcn.displayName} (${vcn.id})`);
         
-        // Step 4.1: Delete subnets first
+        // Step 4.1: Delete subnets first (with retry for VNIC-reference conflicts)
         const subnets = await this.listSubnets(compartmentId, vcn.id);
         for (const subnet of subnets) {
           this.logger.log(`Deleting subnet: ${subnet.displayName}`);
-          try {
-            await this.deleteSubnet(subnet.id);
-          } catch (err) {
-            this.logger.warn(`Failed to delete subnet ${subnet.id}: ${err.message}`);
+          let subnetDeleted = false;
+          for (let subnetRetry = 0; subnetRetry < 6; subnetRetry++) {
+            try {
+              await this.deleteSubnet(subnet.id);
+              subnetDeleted = true;
+              break;
+            } catch (err) {
+              // 409 Conflict means VNIC still attached - wait and retry
+              if (err.statusCode === 409 && subnetRetry < 5) {
+                this.logger.warn(`Subnet ${subnet.id} still has VNIC references (attempt ${subnetRetry + 1}/6), waiting 20s before retry...`);
+                await this.sleep(20000);
+              } else {
+                this.logger.warn(`Failed to delete subnet ${subnet.id}: ${err.message}`);
+                break;
+              }
+            }
+          }
+          if (!subnetDeleted) {
+            this.logger.warn(`Could not delete subnet ${subnet.id} after retries, continuing...`);
           }
         }
         
         // Wait for subnets to be deleted
         if (subnets.length > 0) {
-          await this.sleep(5000);
+          await this.sleep(10000);
         }
         
         // Step 4.2: Clear route tables (remove references to gateways)
@@ -2409,14 +2429,23 @@ chmod 600 ~/.ssh/authorized_keys`;
         }
         
         // Wait for all sub-resources to be deleted
-        await this.sleep(5000);
+        await this.sleep(10000);
         
-        // Step 4.9: Delete VCN
+        // Step 4.9: Delete VCN (with retry if subnets still pending deletion)
         this.logger.log(`Deleting VCN: ${vcn.displayName}`);
-        try {
-          await this.deleteVcn(vcn.id);
-        } catch (err) {
-          this.logger.warn(`Failed to delete VCN ${vcn.id}: ${err.message}`);
+        for (let vcnRetry = 0; vcnRetry < 5; vcnRetry++) {
+          try {
+            await this.deleteVcn(vcn.id);
+            break;
+          } catch (err) {
+            if ((err.statusCode === 409 || err.serviceCode === 'IncorrectState') && vcnRetry < 4) {
+              this.logger.warn(`VCN ${vcn.id} still has resources in use (attempt ${vcnRetry + 1}/5), waiting 20s before retry...`);
+              await this.sleep(20000);
+            } else {
+              this.logger.warn(`Failed to delete VCN ${vcn.id}: ${err.message}`);
+              break;
+            }
+          }
         }
       }
       
