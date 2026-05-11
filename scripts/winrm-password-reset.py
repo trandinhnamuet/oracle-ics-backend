@@ -37,21 +37,24 @@ pw_b64 = base64.b64encode(new_password.encode('utf-8')).decode('ascii')
 
 # PowerShell script that decodes the password and runs "net user".
 # set_must_change=True (initial VM setup): force must-change on first RDP login.
+#   NOTE: OCI_ClearPwFlag is intentionally NOT deleted here. It runs every 2 min for 60 min
+#   and clears /logonpasswordchg:yes automatically. This keeps WinRM accessible for
+#   subsequent user-initiated portal resets (which authenticate via WinRM with the DB
+#   password — blocked if must-change is permanently active).
 # set_must_change=False (user-initiated reset): user chose their own password, no must-change.
 if set_must_change:
     ps_script = (
         f"$b=[Convert]::FromBase64String('{pw_b64}');"
         f"$p=[Text.Encoding]::UTF8.GetString($b);"
-        f"net user {username} $p /logonpasswordchg:yes;"    # set new password + must-change
-        f"schtasks /delete /tn OCI_ClearPwFlag /f 2>$null;"  # delete clearing task
-        f"net user {username} /logonpasswordchg:yes"          # re-assert must-change AFTER task deletion
+        f"net user {username} $p /logonpasswordchg:yes"       # set new password + must-change
+        # OCI_ClearPwFlag keeps running — clears must-change within ~2 min so WinRM stays accessible
     )
 else:
     ps_script = (
         f"$b=[Convert]::FromBase64String('{pw_b64}');"
         f"$p=[Text.Encoding]::UTF8.GetString($b);"
         f"net user {username} $p /logonpasswordchg:no;"      # set new password, no must-change
-        f"schtasks /delete /tn OCI_ClearPwFlag /f 2>$null;"  # delete clearing task if still present
+        f"schtasks /delete /tn OCI_ClearPwFlag /f 2>$null;"  # delete clearing task — no longer needed
         f"net user {username} /logonpasswordchg:no"           # ensure no must-change flag
     )
 
