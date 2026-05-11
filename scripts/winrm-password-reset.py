@@ -4,12 +4,12 @@ Used by the NestJS backend to change Windows VM passwords via WinRM.
 Reads input as JSON from stdin for security (passwords not in CLI args).
 
 Two-tier authentication strategy:
-  1. Admin account (icsreset) — tried first. Created by userdata with no must-change,
-     so WinRM auth succeeds even when opc has must-change active.
-     Admin can set opc's password without knowing the current password.
-     Fully manages OCI_ClearPwFlag and must-change state.
-  2. OPC account fallback — used when icsreset doesn't exist (old VMs / userdata failure).
-     For setMustChange=True: does NOT delete OCI_ClearPwFlag so WinRM stays accessible.
+  1. Admin account (icsreset) — tried first. Has no must-change flag, so WinRM auth
+     succeeds even when opc has must-change active. Admin can set opc's password
+     without knowing the current password. Fully manages OCI_ClearPwFlag.
+  2. OPC account fallback — used when icsreset doesn't exist yet (userdata hasn't run
+     or cloudbase-init not installed). For setMustChange=True: bootstraps icsreset via
+     WinRM, then deletes OCI_ClearPwFlag and sets permanent must-change on opc.
      For setMustChange=False: deletes OCI_ClearPwFlag and clears must-change.
 
 Required: pip3 install pywinrm
@@ -28,8 +28,9 @@ set_must_change = data.get('setMustChange', True)
 admin_username = data.get('adminUsername', 'icsreset')
 admin_password = data.get('adminPassword')
 
-# Base64-encode the new password to safely handle special characters
+# Base64-encode passwords to safely handle special characters in PowerShell
 pw_b64 = base64.b64encode(new_password.encode('utf-8')).decode('ascii')
+admin_pw_b64 = base64.b64encode((admin_password or '').encode('utf-8')).decode('ascii')
 
 # ─── Admin PS script (runs as icsreset, which IS an admin) ───────────────────
 # Admin can set any user's password directly without knowing the current password.
@@ -52,17 +53,34 @@ else:
     )
 
 # ─── OPC fallback PS script (runs as opc with currentPassword) ───────────────
-# Same behavior as admin path: delete OCI_ClearPwFlag to permanently enforce must-change.
-# This applies even when icsreset doesn't exist yet (new VM userdata still running).
-# Tradeoff: future WinRM via opc will be blocked by must-change, but icsreset
-# (created by userdata) handles all subsequent portal resets once it's available.
-if set_must_change:
+# For setMustChange=True: first bootstraps the icsreset admin account (so future portal
+# resets work even after opc gets must-change), then deletes OCI_ClearPwFlag and sets
+# permanent must-change on opc. This works on VMs where userdata/cloudbase-init didn't
+# create icsreset automatically.
+# For setMustChange=False (user-initiated): full cleanup, no icsreset bootstrap needed.
+if set_must_change and admin_password:
     opc_ps = (
         f"$b=[Convert]::FromBase64String('{pw_b64}');"
         f"$p=[Text.Encoding]::UTF8.GetString($b);"
+        f"$ab=[Convert]::FromBase64String('{admin_pw_b64}');"
+        f"$ap=[Text.Encoding]::UTF8.GetString($ab);"
+        # Bootstrap icsreset if it doesn't exist so future WinRM resets work
+        f"if (-not (Get-LocalUser '{admin_username}' -ErrorAction SilentlyContinue)){{"
+        f"net user {admin_username} $ap /add /y /comment:'ICS Backend admin' 2>$null;"
+        f"net localgroup Administrators {admin_username} /add 2>$null;"
+        f"net user {admin_username} /logonpasswordchg:no /expires:never 2>$null"
+        f"}};"
         f"net user {username} $p /logonpasswordchg:yes;"       # set password + must-change
         f"schtasks /delete /tn OCI_ClearPwFlag /f 2>$null;"    # delete to enforce must-change permanently
         f"net user {username} /logonpasswordchg:yes"            # re-assert must-change after deletion
+    )
+elif set_must_change:
+    # No admin_password available — set must-change but cannot bootstrap icsreset
+    # Preserve OCI_ClearPwFlag so portal resets via opc remain possible
+    opc_ps = (
+        f"$b=[Convert]::FromBase64String('{pw_b64}');"
+        f"$p=[Text.Encoding]::UTF8.GetString($b);"
+        f"net user {username} $p /logonpasswordchg:yes"
     )
 else:
     opc_ps = (
