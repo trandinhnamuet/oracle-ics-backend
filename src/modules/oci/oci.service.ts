@@ -3228,6 +3228,9 @@ runcmd:
     // Always attempt WinRM when we have the required info.
     // OCI Windows images (including 2016) have WinRM HTTPS enabled by default on port 5986.
     // The initial password from OCI credential retrieval works with NTLM auth.
+    // Tracks whether the OCI Cloud Agent on this VM was proved unresponsive (recovery timeout).
+    // Scoped here (outside Strategy 1 block) so Strategy 2 can read it.
+    let runCommandAgentUnresponsive = false;
     if (subnetId && publicIp && currentPassword) {
       this.logger.log(`🔐 Strategy 1: WinRM password reset (primary)...`);
       const secListId = await this.getSecurityListIdForSubnet(subnetId);
@@ -3283,7 +3286,7 @@ runcmd:
           const isTransientDrop = !!(winrmErr.message?.toLowerCase().includes('remotedisconnected') ||
             winrmErr.message?.toLowerCase().includes('connection aborted'));
           if (passwordInitialized && !isAuthError && !isTransientDrop) {
-            this.logger.warn(`⚠️ WinRM sttrategy failed (attempt ${attempt}): ${winrmErr.message}`);
+            this.logger.warn(`⚠️ WinRM strategy failed (attempt ${attempt}): ${winrmErr.message}`);
             break;
           }
           this.logger.log(`🔄 WinRM failed (attempt ${attempt}/${winrmMaxAttempts}) — ${isAuthError ? 'auth rejected, must-change-password flag may still be active' : 'connection issue, will retry'} — retrying...`);
@@ -3309,7 +3312,15 @@ runcmd:
             this.logger.warn(`⚠️ WinRM retry after must-change clear failed: ${retryErr.message}`);
           }
         } catch (clearErr: any) {
-          this.logger.warn(`⚠️ Could not clear must-change flag via Run Command: ${clearErr.message}`);
+          // If recovery Run Command timed out, the Cloud Agent is clearly not processing
+          // commands on this VM. Mark it so we skip Strategy 2 (same agent) to avoid
+          // wasting another 8 minutes polling a non-responsive agent.
+          if (clearErr.message?.includes('timed out')) {
+            runCommandAgentUnresponsive = true;
+            this.logger.warn(`⚠️ Recovery Run Command timed out — OCI Cloud Agent is NOT processing commands on this VM. Strategy 2 will be SKIPPED to save ~8 min.`);
+          } else {
+            this.logger.warn(`⚠️ Could not clear must-change flag via Run Command: ${clearErr.message}`);
+          }
         }
       }
       // Note: WinRM ports (5985+5986) are intentionally kept open for future resets.
@@ -3320,13 +3331,18 @@ runcmd:
     // ── Strategy 2: OCI Run Command (timeout 8 min) ──
     // Increased from 2 min: the Cloud Agent on Windows can be slow to dispatch — 2 min wasn't
     // long enough on heavily-loaded VMs. 8 min gives the agent a real chance to pick the command up.
-    this.logger.log(`📡 Strategy 2: OCI Run Command (timeout 8 min)...`);
-    try {
-      await this.tryRunCommandPasswordReset(instanceId, compartmentId, newPassword, 480_000, setMustChange);
-      this.logger.log(`✅ Password changed via OCI Run Command`);
-      return;
-    } catch (runCmdErr: any) {
-      this.logger.warn(`⚠️ OCI Run Command failed: ${runCmdErr.message}`);
+    // Skip if the recovery step already proved the agent is unresponsive.
+    if (runCommandAgentUnresponsive) {
+      this.logger.log(`⏭️ Strategy 2 (OCI Run Command): SKIPPED — agent proved unresponsive during recovery step (saving ~8 min)`);
+    } else {
+      this.logger.log(`📡 Strategy 2: OCI Run Command (timeout 8 min)...`);
+      try {
+        await this.tryRunCommandPasswordReset(instanceId, compartmentId, newPassword, 480_000, setMustChange);
+        this.logger.log(`✅ Password changed via OCI Run Command`);
+        return;
+      } catch (runCmdErr: any) {
+        this.logger.warn(`⚠️ OCI Run Command failed: ${runCmdErr.message}`);
+      }
     }
 
     // ── Strategy 3: SSH with system admin key ──
