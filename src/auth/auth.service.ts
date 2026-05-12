@@ -486,33 +486,36 @@ export class AuthService {
     const user = await this.userRepository.findOne({ where: { email } });
     
     // Record failed login attempt if user not found
+    // Only record to admin login history when called from admin endpoint (adminOnly=true)
     if (!user) {
-      try {
-        const { browser, os, deviceType } = this.parseUserAgent(userAgent);
-        const geo = await resolveGeo();
-        
-        await this.adminLoginHistoryService.recordLogin({
-          adminId: null,
-          username: email,
-          role: 'unknown',
-          loginTime: new Date(),
-          loginStatus: 'failed',
-          ipV4,
-          ipV6,
-          country: geo.country,
-          city: geo.city,
-          isp: null,
-          browser,
-          os,
-          deviceType,
-          userAgent,
-          twoFaStatus: 'not_enabled',
-          sessionId: this.generateSessionId(),
-          isNewDevice: false,
-          failedAttemptsBeforeSuccess: 1,
-        });
-      } catch (error) {
-        this.logger.error('Failed to record login attempt for non-existent user', error);
+      if (adminOnly) {
+        try {
+          const { browser, os, deviceType } = this.parseUserAgent(userAgent);
+          const geo = await resolveGeo();
+          
+          await this.adminLoginHistoryService.recordLogin({
+            adminId: null,
+            username: email,
+            role: 'unknown',
+            loginTime: new Date(),
+            loginStatus: 'failed',
+            ipV4,
+            ipV6,
+            country: geo.country,
+            city: geo.city,
+            isp: null,
+            browser,
+            os,
+            deviceType,
+            userAgent,
+            twoFaStatus: 'not_enabled',
+            sessionId: this.generateSessionId(),
+            isNewDevice: false,
+            failedAttemptsBeforeSuccess: 1,
+          });
+        } catch (error) {
+          this.logger.error('Failed to record login attempt for non-existent user', error);
+        }
       }
 
       // Don't reveal that email doesn't exist (security)
@@ -530,33 +533,35 @@ export class AuthService {
     // This ensures we don't leak information about unverified accounts
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
-      // Record failed login
-      try {
-        const { browser, os, deviceType } = this.parseUserAgent(userAgent);
-        const geo = await resolveGeo();
-        
-        await this.adminLoginHistoryService.recordLogin({
-          adminId: user.role === 'admin' ? user.id : null,
-          username: user.email,
-          role: user.role || 'customer',
-          loginTime: new Date(),
-          loginStatus: 'failed',
-          ipV4,
-          ipV6,
-          country: geo.country,
-          city: geo.city,
-          isp: null,
-          browser,
-          os,
-          deviceType,
-          userAgent,
-          twoFaStatus: 'not_enabled',
-          sessionId: this.generateSessionId(),
-          isNewDevice: false,
-          failedAttemptsBeforeSuccess: 1,
-        });
-      } catch (error) {
-        this.logger.error('Failed to record failed login attempt', error);
+      // Record failed login only for admin endpoint or admin users
+      if (adminOnly || user.role === 'admin') {
+        try {
+          const { browser, os, deviceType } = this.parseUserAgent(userAgent);
+          const geo = await resolveGeo();
+          
+          await this.adminLoginHistoryService.recordLogin({
+            adminId: user.role === 'admin' ? user.id : null,
+            username: user.email,
+            role: user.role || 'customer',
+            loginTime: new Date(),
+            loginStatus: 'failed',
+            ipV4,
+            ipV6,
+            country: geo.country,
+            city: geo.city,
+            isp: null,
+            browser,
+            os,
+            deviceType,
+            userAgent,
+            twoFaStatus: 'not_enabled',
+            sessionId: this.generateSessionId(),
+            isNewDevice: false,
+            failedAttemptsBeforeSuccess: 1,
+          });
+        } catch (error) {
+          this.logger.error('Failed to record failed login attempt', error);
+        }
       }
 
       // Don't reveal that email exists (security)
