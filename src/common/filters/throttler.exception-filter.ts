@@ -48,11 +48,30 @@ export class ThrottlerExceptionFilter implements ExceptionFilter {
   };
 
   private extractLang(req: Request): Lang {
+    // Priority 1: Check custom header from frontend (when user changes i18n language)
+    const customLang = (req.headers['x-language'] || req.headers['x-lang']) as Lang;
+    if (customLang && this.messages[customLang]) {
+      return customLang;
+    }
+
+    // Priority 2: Check language from cookie
+    const cookies = req.cookies || {};
+    const cookieLang = cookies['lang'] || cookies['i18n'];
+    if (cookieLang && this.messages[cookieLang]) {
+      return cookieLang as Lang;
+    }
+
+    // Priority 3: Check Accept-Language header
     const acceptLanguage = req.headers['accept-language'] as string;
-    if (!acceptLanguage) return 'vi';
-    
-    const lang = acceptLanguage.split(',')[0].split('-')[0].toLowerCase() as Lang;
-    return this.messages[lang] ? lang : 'vi';
+    if (acceptLanguage) {
+      const lang = acceptLanguage.split(',')[0].split('-')[0].toLowerCase() as Lang;
+      if (this.messages[lang]) {
+        return lang;
+      }
+    }
+
+    // Default to Vietnamese
+    return 'vi';
   }
 
   catch(exception: ThrottlerException, host: ArgumentsHost) {
