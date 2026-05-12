@@ -34,7 +34,7 @@ fi
 # Install deps if lockfile found
 if [ -f pnpm-lock.yaml ] && command -v pnpm >/dev/null 2>&1; then
   echo "Detected pnpm-lock.yaml -> running pnpm install"
-  pnpm install --prefer-offline --no-audit --silent || pnpm install
+  pnpm install --prefer-offline --silent || pnpm install
 elif [ -f package-lock.json ] && command -v npm >/dev/null 2>&1; then
   echo "Detected package-lock.json -> running npm ci"
   npm ci --silent || npm install --silent
