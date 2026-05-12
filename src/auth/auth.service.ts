@@ -486,8 +486,8 @@ export class AuthService {
     const user = await this.userRepository.findOne({ where: { email } });
     
     // Record failed login attempt if user not found
-    // Only record to admin login history when called from admin endpoint (adminOnly=true)
     if (!user) {
+      // Only record to admin login history when the request comes from admin endpoint
       if (adminOnly) {
         try {
           const { browser, os, deviceType } = this.parseUserAgent(userAgent);
@@ -533,7 +533,7 @@ export class AuthService {
     // This ensures we don't leak information about unverified accounts
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
-      // Record failed login only for admin endpoint or admin users
+      // Only record to admin login history when admin endpoint or admin user
       if (adminOnly || user.role === 'admin') {
         try {
           const { browser, os, deviceType } = this.parseUserAgent(userAgent);
