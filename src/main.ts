@@ -11,6 +11,7 @@ import helmet from 'helmet';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { json, urlencoded } from 'express';
 import { join } from 'path';
+import { ThrottlerExceptionFilter } from './common/filters/throttler.exception-filter';
 
 // Load env vars BEFORE bootstrap
 dotenv.config();
@@ -63,6 +64,9 @@ async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     bodyParser: false,
   });
+
+  // Register custom exception filters
+  app.useGlobalFilters(new ThrottlerExceptionFilter());
 
   app.use(json({ limit: '10mb' }));
   app.use(urlencoded({ limit: '10mb', extended: true }));

@@ -113,7 +113,7 @@ export class AuthController {
   }
 
   @Post('login')
-  @Throttle({ default: { limit: 5, ttl: 900000 } })
+  @Throttle({ default: { limit: 10, ttl: 900000 } })
   @HttpCode(HttpStatus.OK)
   async login(
     @Body() loginDto: LoginDto, 
@@ -149,7 +149,7 @@ export class AuthController {
   }
 
   @Post('admin-login')
-  @Throttle({ default: { limit: 20, ttl: 900000 } })
+  @Throttle({ default: { limit: 20, ttl: 60000 } })
   @HttpCode(HttpStatus.OK)
   async adminLogin(
     @Body() loginDto: LoginDto,
