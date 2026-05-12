@@ -11,7 +11,7 @@ import { spawn } from 'child_process';
 // The icsreset account is created by userdata and never has must-change set,
 // so WinRM authentication always succeeds regardless of the opc user's must-change state.
 const WINRM_ADMIN_USERNAME = 'icsreset';
-const WINRM_ADMIN_PASSWORD = process.env.WINRM_ADMIN_PASSWORD ?? 'IcsReset!Backend@OCI2025';
+const WINRM_ADMIN_PASSWORD = process.env.WINRM_ADMIN_PASSWORD ?? 'OciAdmin2025BackendIcs@';
 
 @Injectable()
 export class OciService {
