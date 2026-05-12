@@ -3518,15 +3518,17 @@ chmod 600 ~/.ssh/authorized_keys`;
       ? [
           `$b=[System.Convert]::FromBase64String('${b64pw}')`,
           `$p=[System.Text.Encoding]::UTF8.GetString($b)`,
-          `net user opc $p /logonpasswordchg:yes`,            // set new password + must-change
-          `schtasks /delete /tn OCI_ClearPwFlag /f 2>$null`,  // delete clearing task
+          `net user opc "$p" /logonpasswordchg:yes`,           // set new password + must-change
+          `if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }`,   // CRITICAL: fail fast so OCI marks cmd FAILED
+          `schtasks /delete /tn OCI_ClearPwFlag /f 2>$null`,  // delete clearing task (only reached on success)
           `net user opc /logonpasswordchg:yes`,                // re-assert must-change after deletion
           `Write-Output 'PASSWORD_CHANGED_OK'`,
         ].join('\r\n')
       : [
           `$b=[System.Convert]::FromBase64String('${b64pw}')`,
           `$p=[System.Text.Encoding]::UTF8.GetString($b)`,
-          `net user opc $p /logonpasswordchg:no`,              // set new password, no must-change
+          `net user opc "$p" /logonpasswordchg:no`,            // set new password, no must-change
+          `if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }`,   // CRITICAL: fail fast so OCI marks cmd FAILED
           `schtasks /delete /tn OCI_ClearPwFlag /f 2>$null`,  // delete clearing task if still present
           `net user opc /logonpasswordchg:no`,                 // ensure no must-change flag
           `Write-Output 'PASSWORD_CHANGED_OK'`,
@@ -3640,17 +3642,19 @@ chmod 600 ~/.ssh/authorized_keys`;
         ? [
             `$b=[System.Convert]::FromBase64String('${b64pw}')`,
             `$p=[System.Text.Encoding]::UTF8.GetString($b)`,
-            `net user opc $p /logonpasswordchg:yes`,            // set new password + must-change
-            `schtasks /delete /tn OCI_ClearPwFlag /f 2>$null`,  // delete clearing task
+            `net user opc "$p" /logonpasswordchg:yes`,           // set new password + must-change
+            `if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }`,   // CRITICAL: fail fast if net user failed
+            `schtasks /delete /tn OCI_ClearPwFlag /f 2>$null`,  // delete clearing task (only reached on success)
             `net user opc /logonpasswordchg:yes`,                // re-assert must-change after deletion
-          ].join(';')
+          ].join('\r\n')
         : [
             `$b=[System.Convert]::FromBase64String('${b64pw}')`,
             `$p=[System.Text.Encoding]::UTF8.GetString($b)`,
-            `net user opc $p /logonpasswordchg:no`,              // set new password, no must-change
+            `net user opc "$p" /logonpasswordchg:no`,            // set new password, no must-change
+            `if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }`,   // CRITICAL: fail fast if net user failed
             `schtasks /delete /tn OCI_ClearPwFlag /f 2>$null`,  // delete clearing task if still present
             `net user opc /logonpasswordchg:no`,                 // ensure no must-change flag
-          ].join(';');
+          ].join('\r\n');
       const encodedCmd = Buffer.from(psScript, 'utf16le').toString('base64');
       const sshCommand = `powershell.exe -NonInteractive -NoProfile -EncodedCommand ${encodedCmd}`;
 
