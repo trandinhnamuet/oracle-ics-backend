@@ -38,7 +38,9 @@ export class AuthController {
       sameSite: 'lax' as const,
       // Use nullish coalescing so maxAge=0 is not treated as falsy
       maxAge: maxAge ?? 30 * 24 * 60 * 60 * 1000, // 30 days
-      path: '/',
+      // Scope the refresh token cookie to the refresh endpoint only so it is
+      // not sent to every request — limits exposure if the cookie leaks.
+      path: '/auth/refresh',
     };
 
     // Add domain so cookie works across subdomains (e.g. admin.oraclecloud.vn)
