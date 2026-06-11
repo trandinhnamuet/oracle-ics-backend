@@ -10,7 +10,7 @@ import * as path from 'path';
  */
 
 const logger = new Logger('SystemSshKeyUtil');
-const IV_LENGTH = 16;
+const GCM_IV_LENGTH = 12;
 
 /**
  * Get encryption key from environment variable
@@ -125,77 +125,61 @@ function calculateFingerprint(publicKey: string): string {
   return hash.match(/.{2}/g)?.join(':') || '';
 }
 
-/**
- * Encrypt private key for storage
- */
-export function encryptPrivateKey(privateKey: string): string {
-  const encryptionKey = getEncryptionKey();
-  
-  // Convert hex string to Buffer (assuming the key is provided as hex)
+function deriveKeyBuffer(encryptionKey: string): Buffer {
   let keyBuffer: Buffer;
   try {
     keyBuffer = Buffer.from(encryptionKey, 'hex');
-  } catch (error) {
-    // If not hex, use the raw string as UTF-8 and hash it to 32 bytes
+  } catch {
     keyBuffer = crypto.createHash('sha256').update(encryptionKey).digest();
   }
-
-  // Ensure key is exactly 32 bytes for aes-256-cbc
   if (keyBuffer.length !== 32) {
     keyBuffer = crypto.createHash('sha256').update(encryptionKey).digest();
   }
-
-  const iv = crypto.randomBytes(IV_LENGTH);
-  const cipher = crypto.createCipheriv(
-    'aes-256-cbc',
-    keyBuffer,
-    iv
-  );
-  
-  let encrypted = cipher.update(privateKey, 'utf8', 'hex');
-  encrypted += cipher.final('hex');
-  
-  return iv.toString('hex') + ':' + encrypted;
+  return keyBuffer;
 }
 
 /**
- * Decrypt private key from storage
+ * Encrypt private key for storage using AES-256-GCM (authenticated encryption).
+ * Output format: <12-byte-iv-hex>:<16-byte-authtag-hex>:<ciphertext-hex>
+ */
+export function encryptPrivateKey(privateKey: string): string {
+  const keyBuffer = deriveKeyBuffer(getEncryptionKey());
+  const iv = crypto.randomBytes(GCM_IV_LENGTH);
+  const cipher = crypto.createCipheriv('aes-256-gcm', keyBuffer, iv) as crypto.CipherGCM;
+  let encrypted = cipher.update(privateKey, 'utf8', 'hex');
+  encrypted += cipher.final('hex');
+  const authTag = cipher.getAuthTag();
+  return `${iv.toString('hex')}:${authTag.toString('hex')}:${encrypted}`;
+}
+
+/**
+ * Decrypt private key from storage.
+ * Supports both GCM (new, 3-part) and legacy CBC (2-part) formats.
  */
 export function decryptPrivateKey(encryptedKey: string): string {
-  const encryptionKey = getEncryptionKey();
-  
-  // Convert hex string to Buffer (assuming the key is provided as hex)
-  let keyBuffer: Buffer;
-  try {
-    keyBuffer = Buffer.from(encryptionKey, 'hex');
-  } catch (error) {
-    // If not hex, use the raw string as UTF-8 and hash it to 32 bytes
-    keyBuffer = crypto.createHash('sha256').update(encryptionKey).digest();
-  }
-
-  // Ensure key is exactly 32 bytes for aes-256-cbc
-  if (keyBuffer.length !== 32) {
-    keyBuffer = crypto.createHash('sha256').update(encryptionKey).digest();
-  }
-
+  const keyBuffer = deriveKeyBuffer(getEncryptionKey());
   const parts = encryptedKey.split(':');
-  if (parts.length !== 2) {
-    throw new Error('Invalid encrypted key format');
-  }
 
-  const iv = Buffer.from(parts[0], 'hex');
-  const encrypted = parts[1];
-  // Perform decryption and handle common failures (e.g. wrong secret -> bad decrypt)
   try {
-    const decipher = crypto.createDecipheriv(
-      'aes-256-cbc',
-      keyBuffer,
-      iv
-    );
-
-    let decrypted = decipher.update(encrypted, 'hex', 'utf8');
-    decrypted += decipher.final('utf8');
-    return decrypted;
+    if (parts.length === 3) {
+      // GCM format: iv:authTag:ciphertext
+      const iv = Buffer.from(parts[0], 'hex');
+      const authTag = Buffer.from(parts[1], 'hex');
+      const decipher = crypto.createDecipheriv('aes-256-gcm', keyBuffer, iv) as crypto.DecipherGCM;
+      decipher.setAuthTag(authTag);
+      let decrypted = decipher.update(parts[2], 'hex', 'utf8');
+      decrypted += decipher.final('utf8');
+      return decrypted;
+    } else if (parts.length === 2) {
+      // Legacy CBC format: iv:ciphertext — still supported for existing stored keys
+      const iv = Buffer.from(parts[0], 'hex');
+      const decipher = crypto.createDecipheriv('aes-256-cbc', keyBuffer, iv);
+      let decrypted = decipher.update(parts[1], 'hex', 'utf8');
+      decrypted += decipher.final('utf8');
+      return decrypted;
+    } else {
+      throw new Error('Invalid encrypted key format');
+    }
   } catch (err: any) {
     // Log internal error (do not include key material)
     logger.error('SSH private key decryption failed', err?.message || err);

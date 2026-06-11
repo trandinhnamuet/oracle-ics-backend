@@ -41,9 +41,12 @@ export class CreateUsersTable20260508100001 implements MigrationInterface {
       `CREATE UNIQUE INDEX idx_users_google_id ON oracle.users (google_id) WHERE google_id IS NOT NULL`
     );
 
+    const adminPasswordHash = process.env.ADMIN_INITIAL_PASSWORD_HASH;
+    if (!adminPasswordHash) throw new Error('ADMIN_INITIAL_PASSWORD_HASH env var required for migration');
     await queryRunner.query(
       `INSERT INTO oracle.users (email, password, first_name, last_name, is_active, role, auth_provider)
-       VALUES ('admin@ics.com', '$2b$10$5b54FbYXqf3n3XjL/ulI0OupVKUo58pqVvIPybzbrl/mOlgsoIuYi', 'ICS', 'Admin', true, 'admin', 'local')`
+       VALUES ('admin@ics.com', $1, 'ICS', 'Admin', true, 'admin', 'local')`,
+      [adminPasswordHash]
     );
   }
 
