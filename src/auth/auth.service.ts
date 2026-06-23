@@ -695,7 +695,7 @@ export class AuthService {
     }
 
     // Return user info without sensitive data
-    const { password: _pw, refreshToken: _rt, ...userWithoutSensitive } = user;
+    const userWithoutSensitive = this.sanitizeUser(user);
 
     // Notify user: login success
     const ip = ipV4 || ipV6;
@@ -716,12 +716,26 @@ export class AuthService {
     };
   }
 
+  private sanitizeUser(user: User) {
+    const {
+      password: _pw,
+      refreshToken: _rt,
+      refreshTokenExpiresAt: _rtea,
+      emailVerificationOtp: _evo,
+      otpExpiresAt: _oea,
+      passwordResetOtp: _pro,
+      passwordResetOtpExpiresAt: _proea,
+      ...sanitized
+    } = user as any;
+    return sanitized;
+  }
+
   async validateUser(userId: number) {
     const user = await this.userRepository.findOne({ where: { id: userId } });
     if (!user) {
       throw new UnauthorizedException(t('validateUser.userNotFound', DEFAULT_LANG));
     }
-    return user;
+    return this.sanitizeUser(user);
   }
 
   async refresh(
@@ -1038,7 +1052,7 @@ export class AuthService {
     }
 
     // Return user info without sensitive data
-    const { password: _pw, refreshToken: _rt, ...userWithoutSensitive } = user;
+    const userWithoutSensitive = this.sanitizeUser(user);
 
     // Notify user: Google login success
     const googleIp = ipV4 || ipV6;
