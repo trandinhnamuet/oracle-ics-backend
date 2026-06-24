@@ -38,9 +38,13 @@ export class AuthController {
       sameSite: 'lax' as const,
       // Use nullish coalescing so maxAge=0 is not treated as falsy
       maxAge: maxAge ?? 30 * 24 * 60 * 60 * 1000, // 30 days
-      // Scope the refresh token cookie to the refresh endpoint only so it is
-      // not sent to every request — limits exposure if the cookie leaks.
-      path: '/auth/refresh',
+      // IMPORTANT: must be '/' so the cookie is sent to ALL routes.
+      // The Next.js middleware guards protected pages (/profile, /dashboard, ...)
+      // by checking this cookie; scoping it to a sub-path (e.g. '/auth/refresh')
+      // makes the browser withhold it from those pages, causing an infinite
+      // login bounce. Behind nginx, /api is stripped before reaching the backend,
+      // so a sub-path would not even match the real refresh endpoint.
+      path: '/',
     };
 
     // Add domain so cookie works across subdomains (e.g. admin.oraclecloud.vn)
