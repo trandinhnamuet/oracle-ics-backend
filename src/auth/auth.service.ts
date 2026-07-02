@@ -22,6 +22,13 @@ interface JwtPayload {
   sub: string;
   email: string;
   role: string;
+  /**
+   * Session id — equals the `user_sessions.id` row created at login/refresh.
+   * The access token is validated against this session on every request, so
+   * deleting the session (logout / logout-all / refresh rotation) immediately
+   * invalidates the access token (WSTG-SESS-06 — Logout Functionality).
+   */
+  sid?: string;
 }
 
 @Injectable()
@@ -274,51 +281,21 @@ export class AuthService {
   private extractIpAddress(request: any): { ipV4: string | null; ipV6: string | null } {
     let ipV4: string | null = null;
     let ipV6: string | null = null;
-    let ip: string | null = null;
 
-    // 1. Try x-forwarded-for header (nginx, apache, common proxy, load balancer)
-    // This is the most important header when behind a proxy/load balancer
-    if (!ip) {
-      const xForwardedFor = request.headers?.['x-forwarded-for'];
-      if (typeof xForwardedFor === 'string') {
-        const ips = xForwardedFor.split(',').map((i: string) => i.trim());
-        // Take the first IP (client's real IP, not proxy IP)
-        ip = ips[0];
-        this.logger.debug(`Found IP from x-forwarded-for: ${ip}`);
-      }
-    }
-
-    // 2. Try x-real-ip header (nginx)
-    if (!ip) {
-      ip = request.headers?.['x-real-ip'];
-      if (ip) {
-        this.logger.debug(`Found IP from x-real-ip: ${ip}`);
-      }
-    }
-
-    // 3. Try cf-connecting-ip header (Cloudflare)
-    if (!ip) {
-      ip = request.headers?.['cf-connecting-ip'];
-      if (ip) {
-        this.logger.debug(`Found IP from cf-connecting-ip: ${ip}`);
-      }
-    }
-
-    // 4. Try x-client-ip header (some proxies)
-    if (!ip) {
-      ip = request.headers?.['x-client-ip'];
-      if (ip) {
-        this.logger.debug(`Found IP from x-client-ip: ${ip}`);
-      }
-    }
-
-    // 5. Fallback: use request.ip first (respects Express "trust proxy" + X-Forwarded-For),
-    //    then raw socket address as last resort.
-    if (!ip) {
-      ip = request.ip || request.connection?.remoteAddress || request.socket?.remoteAddress;
-      if (ip) {
-        this.logger.debug(`Found IP from request.ip / socket: ${ip}`);
-      }
+    // SECURITY (WSTG-BUSL-02 — IP Address Spoofing): never trust client-supplied
+    // headers (X-Forwarded-For, X-Real-IP, CF-Connecting-IP, X-Client-IP) as the
+    // source IP. Those are fully attacker-controllable and were previously read
+    // first, letting a client forge its logged login IP.
+    //
+    // `request.ip` is the single source of truth. Express derives it from the
+    // socket's remote address and, because `trust proxy` is pinned to
+    // 'loopback' in main.ts, only honours an X-Forwarded-For entry contributed
+    // by our own local reverse proxy (nginx) — a hop the client cannot bypass.
+    // The raw socket address is kept only as a last-resort fallback.
+    let ip: string | null =
+      request.ip || request.socket?.remoteAddress || request.connection?.remoteAddress || null;
+    if (ip) {
+      this.logger.debug(`Resolved client IP from request.ip / socket: ${ip}`);
     }
 
     // Parse IPv4 vs IPv6
@@ -376,6 +353,7 @@ export class AuthService {
     refreshToken: string,
     userAgent: string,
     ipAddress: string,
+    sessionId: string,
   ): Promise<UserSession> {
     const refreshTokenHash = await this.hashRefreshToken(refreshToken);
 
@@ -397,7 +375,10 @@ export class AuthService {
       await this.sessionRepository.remove(sessionsToDelete);
     }
 
+    // The row id is set explicitly so it matches the `sid` claim embedded in the
+    // issued tokens, letting us revoke the access token by deleting this row.
     const session = this.sessionRepository.create({
+      id: sessionId,
       userId,
       refreshTokenHash,
       userAgent,
@@ -406,6 +387,22 @@ export class AuthService {
     });
 
     return this.sessionRepository.save(session);
+  }
+
+  /**
+   * Returns true when a session with this id still exists and has not expired.
+   * Used by the JWT strategy to reject access tokens whose session was
+   * terminated (logout, logout-all, or refresh-token rotation).
+   */
+  async isSessionActive(sessionId: string): Promise<boolean> {
+    if (!sessionId) return false;
+    const session = await this.sessionRepository.findOne({ where: { id: sessionId } });
+    if (!session) return false;
+    if (session.expiresAt && new Date() > session.expiresAt) {
+      await this.deleteSession(session.id);
+      return false;
+    }
+    return true;
   }
 
   async findSessionByToken(
@@ -443,7 +440,7 @@ export class AuthService {
     });
   }
 
-  generateTokens(user: User): {
+  generateTokens(user: User, sessionId: string): {
     accessToken: string;
     refreshToken: string;
   } {
@@ -451,6 +448,7 @@ export class AuthService {
       sub: user.id.toString(),
       email: user.email,
       role: user.role || 'customer',
+      sid: sessionId,
     };
 
     const accessToken = this.jwtService.sign(payload, {
@@ -652,14 +650,16 @@ export class AuthService {
       };
     }
 
-    // Generate session ID
-    const sessionId = this.generateSessionId();
+    // Session id: shared by the issued tokens (`sid` claim), the user_sessions
+    // row, and the admin login-history record so all three correlate and the
+    // access token can be revoked on logout.
+    const sessionId = randomUUID();
 
     // Generate JWT tokens
-    const { accessToken, refreshToken } = this.generateTokens(user);
+    const { accessToken, refreshToken } = this.generateTokens(user, sessionId);
 
     // Create session
-    await this.createSession(user.id.toString(), refreshToken, userAgent, ipV4 || ipV6 || '');
+    await this.createSession(user.id.toString(), refreshToken, userAgent, ipV4 || ipV6 || '', sessionId);
 
     // Record successful login (only for admin users)
     if (user.role === 'admin') {
@@ -776,8 +776,11 @@ export class AuthService {
     // Token rotation: delete old session
     await this.deleteSession(session.id);
 
+    // Rotate the session id along with the tokens.
+    const newSessionId = randomUUID();
+
     // Generate new tokens
-    const tokens = this.generateTokens(user);
+    const tokens = this.generateTokens(user, newSessionId);
 
     // Create new session
     await this.createSession(
@@ -785,6 +788,7 @@ export class AuthService {
       tokens.refreshToken,
       userAgent,
       ipAddress,
+      newSessionId,
     );
 
     return tokens;
@@ -1010,14 +1014,16 @@ export class AuthService {
     // Extract IP address
     const { ipV4, ipV6 } = this.extractIpAddress(request);
 
-    // Generate session ID
-    const sessionId = this.generateSessionId();
+    // Session id: shared by the issued tokens (`sid` claim), the user_sessions
+    // row, and the admin login-history record so all three correlate and the
+    // access token can be revoked on logout.
+    const sessionId = randomUUID();
 
     // Generate JWT tokens
-    const { accessToken, refreshToken } = this.generateTokens(user);
+    const { accessToken, refreshToken } = this.generateTokens(user, sessionId);
 
     // Create session
-    await this.createSession(user.id.toString(), refreshToken, userAgent, ipV4 || ipV6 || '');
+    await this.createSession(user.id.toString(), refreshToken, userAgent, ipV4 || ipV6 || '', sessionId);
 
     // Record successful login (only for admin users)
     if (user.role === 'admin') {

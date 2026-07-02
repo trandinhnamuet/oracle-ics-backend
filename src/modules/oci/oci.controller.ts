@@ -13,6 +13,7 @@ import {
 } from '@nestjs/common';
 import { OciService } from './oci.service';
 import { JwtAuthGuard } from '../../auth/jwt-auth.guard';
+import { AdminGuard } from '../../auth/admin.guard';
 
 @Controller('oci')
 @UseGuards(JwtAuthGuard)
@@ -118,7 +119,11 @@ export class OciController {
    * GET /oci/compartments
    * Get list of compartments (excluding DELETED ones)
    */
+  // Admin only: enumerates the whole OCI tenancy's compartments — a back-office
+  // operation. Class-level JwtAuthGuard alone let any low-privileged user list
+  // them (WSTG-ATHN-04 — Bypassing Authentication Schema).
   @Get('compartments')
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async getCompartments() {
     try {
       const compartments = await this.ociService.listCompartments();
@@ -565,6 +570,7 @@ export class OciController {
    * ⚠️ WARNING: This will permanently delete all instances, VCNs, and other resources!
    */
   @Delete('compartment/:compartmentName')
+  @UseGuards(JwtAuthGuard, AdminGuard)
   @HttpCode(HttpStatus.ACCEPTED)
   async deleteCompartment(@Param('compartmentName') compartmentName: string) {
     try {

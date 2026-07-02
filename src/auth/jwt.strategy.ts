@@ -25,6 +25,17 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   }
 
   async validate(payload: any) {
+    // Reject access tokens whose backing session no longer exists. A session is
+    // removed on logout, logout-all, and refresh-token rotation, so this is what
+    // makes an access token stop working the moment the user logs out
+    // (WSTG-SESS-06 — Logout Functionality). Tokens minted before this claim
+    // existed (no `sid`) are also rejected; clients transparently recover by
+    // calling /auth/refresh, which issues a fresh session-bound token.
+    const sessionActive = await this.authService.isSessionActive(payload?.sid);
+    if (!sessionActive) {
+      throw new UnauthorizedException('Session has been terminated. Please log in again.');
+    }
+
     const user = await this.authService.validateUser(payload.sub);
     if (!user) {
       throw new UnauthorizedException();

@@ -1,4 +1,5 @@
 import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn } from 'typeorm';
+import { Exclude } from 'class-transformer';
 
 @Entity('users', { schema: 'oracle' })
 export class User {
@@ -8,6 +9,13 @@ export class User {
   @Column({ unique: true })
   email: string;
 
+  // @Exclude() strips this from every serialized response (the global
+  // ClassSerializerInterceptor honours it), including when a User is returned
+  // nested inside another entity's relation (payments, subscriptions, wallets,
+  // support tickets…). Previously the bcrypt password hash leaked through those
+  // endpoints (WSTG-CONF-09 — Exposure of Sensitive Data). The value is still
+  // available in-process for login/bcrypt comparison; only the HTTP output drops it.
+  @Exclude()
   @Column({ nullable: true })
   password: string;
 
@@ -47,21 +55,27 @@ export class User {
   @Column({ name: 'is_active', default: false })
   isActive: boolean;
 
+  @Exclude()
   @Column({ name: 'email_verification_otp', length: 6, nullable: true })
   emailVerificationOtp?: string;
 
+  @Exclude()
   @Column({ name: 'otp_expires_at', type: 'timestamp', nullable: true })
   otpExpiresAt?: Date;
 
+  @Exclude()
   @Column({ name: 'password_reset_otp', length: 6, nullable: true })
   passwordResetOtp?: string;
 
+  @Exclude()
   @Column({ name: 'password_reset_otp_expires_at', type: 'timestamp', nullable: true })
   passwordResetOtpExpiresAt?: Date;
 
+  @Exclude()
   @Column({ name: 'refresh_token', length: 500, nullable: true })
   refreshToken?: string;
 
+  @Exclude()
   @Column({ name: 'refresh_token_expires_at', type: 'timestamp', nullable: true })
   refreshTokenExpiresAt?: Date;
 

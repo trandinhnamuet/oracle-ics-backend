@@ -1,4 +1,4 @@
-import { IsNumber, IsNotEmpty, IsOptional, IsBoolean, IsString } from 'class-validator';
+import { IsNumber, IsNotEmpty, IsOptional, IsBoolean, IsString, Min } from 'class-validator';
 
 export class CreateSubscriptionDto {
   @IsNumber()
@@ -9,9 +9,12 @@ export class CreateSubscriptionDto {
   cloud_package_id: number;
 
   @IsNumber()
+  @Min(0)
   amount_paid: number;
 
+  // Billing cycle length in months — must be at least 1.
   @IsNumber()
+  @Min(1)
   @IsOptional()
   months_paid?: number;
 

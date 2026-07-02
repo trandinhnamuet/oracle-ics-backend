@@ -15,18 +15,24 @@ import { SubscriptionService } from './subscription.service';
 import { CreateSubscriptionDto } from './dto/create-subscription.dto';
 import { UpdateSubscriptionDto } from './dto/update-subscription.dto';
 import { JwtAuthGuard } from '../../auth/jwt-auth.guard';
+import { AdminGuard } from '../../auth/admin.guard';
 
 @Controller('subscriptions')
 export class SubscriptionController {
   constructor(private readonly subscriptionService: SubscriptionService) {}
 
+  // Admin only. This raw create persists an ACTIVE subscription directly without
+  // charging the wallet or creating a payment, so it must never be reachable by
+  // ordinary users (WSTG-BUSL-06 — Circumvention of Work Flows: a user could
+  // subscribe for free). Regular users must go through `subscribe-with-balance`
+  // or `subscribe-with-payment`, which enforce billing. Admins keep this route
+  // for granting complimentary/manual subscriptions.
   @Post()
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async create(
     @Body() createSubscriptionDto: CreateSubscriptionDto,
     @Request() req,
   ) {
-    createSubscriptionDto.user_id = req.user.id;
     return await this.subscriptionService.create(createSubscriptionDto);
   }
 
@@ -58,8 +64,12 @@ export class SubscriptionController {
     );
   }
 
+  // Admin only: returns EVERY user's subscriptions. Ordinary users must use
+  // `my-subscriptions`. Previously only JwtAuthGuard protected it, letting any
+  // authenticated (low-privileged) user list all subscriptions
+  // (WSTG-ATHN-04 — Bypassing Authentication Schema).
   @Get()
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async findAll(
     @Query('page') page?: string,
     @Query('limit') limit?: string,

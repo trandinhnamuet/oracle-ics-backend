@@ -1,4 +1,4 @@
-import { IsString, IsNotEmpty, IsOptional, IsNumber, IsUUID } from 'class-validator';
+import { IsString, IsNotEmpty, IsOptional, IsNumber, IsUUID, Min } from 'class-validator';
 
 export class CreatePaymentDto {
   @IsNumber()
@@ -21,7 +21,11 @@ export class CreatePaymentDto {
   @IsNotEmpty()
   payment_type: string;
 
+  // A payment/deposit amount must be positive. A negative amount on the
+  // "Add Funds" flow inflated the user's wallet balance instead of charging
+  // them (WSTG-BUSL-01 — Business Logic Data Validation).
   @IsNumber()
+  @Min(0)
   amount: number;
 
   @IsString()

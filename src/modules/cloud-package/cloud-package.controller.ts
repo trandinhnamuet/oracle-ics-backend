@@ -25,11 +25,17 @@ export class CloudPackageController {
     return await this.cloudPackageService.create(createCloudPackageDto);
   }
 
+  // Admin only: returns the full catalogue (including inactive packages) for the
+  // back-office "Package Management" screen. The public storefront uses the
+  // unauthenticated `active` route below. Previously this had no guard, so a
+  // low-privileged user could reach an admin API (WSTG-ATHN-04).
   @Get()
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async findAll() {
     return await this.cloudPackageService.findAll();
   }
 
+  // Public: storefront browses active packages here.
   @Get('active')
   async findActive() {
     return await this.cloudPackageService.findActive();
