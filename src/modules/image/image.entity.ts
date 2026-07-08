@@ -7,6 +7,7 @@ import {
   ManyToOne,
   JoinColumn,
 } from 'typeorm';
+import { Exclude } from 'class-transformer';
 import { User } from '../../entities/user.entity';
 
 @Entity('images', { schema: 'oracle' })
@@ -26,6 +27,12 @@ export class Image {
   @Column({ type: 'int' })
   size: number;
 
+  // @Exclude() keeps the absolute server filesystem path out of every serialized
+  // API response (upload, getImage, getUserImages). Returning it leaked the
+  // internal directory layout, e.g. /home/.../uploads/<file> (Exposure of
+  // Sensitive Data). Clients only need `url` (/images/serve/<filename>); the
+  // value stays available in-process for file serving/deletion.
+  @Exclude()
   @Column({ length: 500 })
   path: string;
 

@@ -480,9 +480,14 @@ export class AuthService {
       return GeolocationUtil.getLocationFromIP(ipV4 || ipV6);
     };
 
-    // Find user
-    const user = await this.userRepository.findOne({ where: { email } });
-    
+    // Find user. password is select:false on the entity, so opt it in explicitly
+    // here — it is required for the bcrypt comparison below.
+    const user = await this.userRepository
+      .createQueryBuilder('user')
+      .where('user.email = :email', { email })
+      .addSelect('user.password')
+      .getOne();
+
     // Record failed login attempt if user not found
     // Only record if request is from admin panel (adminOnly=true) — prevents regular user
     // failed attempts from polluting the admin login history

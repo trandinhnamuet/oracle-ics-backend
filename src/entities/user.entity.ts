@@ -13,10 +13,17 @@ export class User {
   // ClassSerializerInterceptor honours it), including when a User is returned
   // nested inside another entity's relation (payments, subscriptions, wallets,
   // support tickets…). Previously the bcrypt password hash leaked through those
-  // endpoints (WSTG-CONF-09 — Exposure of Sensitive Data). The value is still
-  // available in-process for login/bcrypt comparison; only the HTTP output drops it.
+  // endpoints (WSTG-CONF-09 — Exposure of Sensitive Data).
+  //
+  // select: false is defense-in-depth: the hash is no longer even loaded into
+  // memory for the many queries that join a User (they never need it), so a
+  // future raw query (getRawMany) or manual object spread cannot re-leak it.
+  // The two flows that genuinely need it — login and change-password — opt in
+  // explicitly via QueryBuilder.addSelect('user.password'). Writes are
+  // unaffected: repository.save() skips undefined columns, so loaded-then-saved
+  // users keep their existing hash.
   @Exclude()
-  @Column({ nullable: true })
+  @Column({ nullable: true, select: false })
   password: string;
 
   @Column({ name: 'first_name' })

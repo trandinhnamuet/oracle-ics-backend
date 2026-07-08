@@ -98,10 +98,23 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
       // Validate VM access
       const vm = await this.terminalService.validateVmAccess(userId, data.vmId);
 
-      // Get client info
-      const clientIp = (client.handshake.headers['x-forwarded-for'] as string) || 
-                       (client.handshake.headers['x-real-ip'] as string) ||
-                       client.handshake.address;
+      // Get client info. Only trust X-Forwarded-For / X-Real-IP when the socket
+      // actually terminates at the local reverse proxy (nginx on loopback);
+      // otherwise a client could forge its own source IP via these headers.
+      // Mirrors the `trust proxy: 'loopback'` policy used for the HTTP flow.
+      // When trusted, take the right-most XFF entry (the hop nginx appended) —
+      // any left-most values are attacker-supplied. Used for audit logging only.
+      const handshakeAddr = client.handshake.address || '';
+      const fromLocalProxy = /(?:^|:)(?:127\.0\.0\.1|::1)$/.test(handshakeAddr);
+      let clientIp = handshakeAddr;
+      if (fromLocalProxy) {
+        const xff = client.handshake.headers['x-forwarded-for'] as string | undefined;
+        const xRealIp = client.handshake.headers['x-real-ip'] as string | undefined;
+        clientIp =
+          (xff ? xff.split(',').pop()!.trim() : '') ||
+          xRealIp ||
+          handshakeAddr;
+      }
       const userAgent = client.handshake.headers['user-agent'] || 'Unknown';
 
       // Create SSH connection

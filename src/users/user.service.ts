@@ -128,7 +128,13 @@ export class UserService {
   }
 
   async changePassword(id: number, changePasswordDto: ChangePasswordDto): Promise<void> {
-    const user = await this.userRepository.findOne({ where: { id } });
+    // password is select:false on the entity; opt it in explicitly — it is
+    // required for the bcrypt comparison of the current password below.
+    const user = await this.userRepository
+      .createQueryBuilder('user')
+      .where('user.id = :id', { id })
+      .addSelect('user.password')
+      .getOne();
     if (!user) throw new BadRequestException('Người dùng không tồn tại.');
 
     if (!user.password) {
