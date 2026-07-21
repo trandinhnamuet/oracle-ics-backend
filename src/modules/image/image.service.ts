@@ -1,9 +1,29 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Image } from './image.entity';
 import * as fs from 'fs';
 import * as path from 'path';
+
+/**
+ * Canonical on-disk extension for every mime type the upload endpoints accept.
+ * Callers content-validate the mime (magic bytes) before reaching saveImage, so
+ * this maps a *verified* type to the extension we control.
+ *
+ * An unknown mime is rejected rather than defaulted: this is the fail-closed
+ * backstop that stops an unvetted type from ever reaching the filesystem.
+ */
+const MIME_EXTENSIONS: Record<string, string> = {
+  'image/jpeg': '.jpg',
+  'image/jpg': '.jpg',
+  'image/png': '.png',
+  'image/gif': '.gif',
+  'image/webp': '.webp',
+  'application/pdf': '.pdf',
+  'application/msword': '.doc',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+  'text/plain': '.txt',
+};
 
 @Injectable()
 export class ImageService {
@@ -26,9 +46,19 @@ export class ImageService {
       fs.mkdirSync(uploadsDir, { recursive: true });
     }
 
+    // SECURITY: the stored extension comes from the caller-validated mime type,
+    // never from originalName. A request with filename="test.exe" and
+    // Content-Type: text/plain previously wrote a real .exe into uploads/ and
+    // served it back under our own domain, turning the ticket attachment
+    // feature into malware hosting (WSTG-BUSL-09 — Upload of Malicious Files).
+    // originalName is still kept below for display only.
+    const extension = MIME_EXTENSIONS[file.mimetype];
+    if (!extension) {
+      throw new BadRequestException(`Unsupported file type '${file.mimetype}'`);
+    }
+
     // Generate unique filename
     const timestamp = Date.now();
-    const extension = path.extname(originalName);
     const filename = `${timestamp}-${Math.random().toString(36).substring(2)}${extension}`;
     const filePath = path.join(uploadsDir, filename);
 

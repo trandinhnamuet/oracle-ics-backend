@@ -37,11 +37,33 @@ function validateFileMagicBytes(buf: Buffer, mime: string): boolean {
     return buf[0] === 0xd0 && buf[1] === 0xcf && buf[2] === 0x11 && buf[3] === 0xe0; // Compound Document
   if (mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
     return buf[0] === 0x50 && buf[1] === 0x4b && buf[2] === 0x03 && buf[3] === 0x04; // ZIP/PK
-  if (mime === 'text/plain') {
-    const head = buf.slice(0, 16).toString('ascii').trim().toLowerCase();
-    return !head.startsWith('<') && !head.startsWith('<?');
-  }
+  if (mime === 'text/plain') return isPlainText(buf);
   return false;
+}
+
+/**
+ * text/plain is the only accepted type with no magic-byte signature, so it has
+ * to be validated by proving the content really is text.
+ *
+ * The previous check only rejected content starting with '<', which let ANY
+ * binary through: a client declaring Content-Type: text/plain could upload a
+ * Mach-O/PE executable, because its header bytes do not decode to '<'
+ * (WSTG-BUSL-09 — Upload of Malicious Files).
+ *
+ * Markup-looking text (e.g. an XML/HTML log excerpt) is intentionally allowed
+ * through: the serve layer (image.controller.ts) pins Content-Type to
+ * `text/plain` + `X-Content-Type-Options: nosniff` for every .txt regardless
+ * of content, so it can never be interpreted as HTML by the browser — a
+ * content-based blocklist here would only reject legitimate attachments.
+ */
+function isPlainText(buf: Buffer): boolean {
+  // Control bytes (NUL, escape codes, …) are ubiquitous in binaries and never
+  // occur in real text. Tab, LF, VT, FF and CR are the legitimate exceptions.
+  for (const byte of buf) {
+    if (byte < 0x09 || (byte > 0x0d && byte < 0x20)) return false;
+  }
+  // Invalid UTF-8 decodes to U+FFFD; genuine text round-trips cleanly.
+  return !buf.toString('utf8').includes('�');
 }
 
 @Controller('support-tickets')

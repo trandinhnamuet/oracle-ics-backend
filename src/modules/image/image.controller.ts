@@ -18,8 +18,35 @@ import { ImageService } from './image.service';
 import { JwtAuthGuard } from '../../auth/jwt-auth.guard';
 import { Image } from './image.entity';
 import { Response } from 'express';
-import { join } from 'path';
+import { extname, join } from 'path';
 import { existsSync } from 'fs';
+
+/**
+ * Content-Type served for each extension we produce. Pinning the type here —
+ * rather than letting res.sendFile() infer it — means an unrecognised file on
+ * disk (e.g. a .exe uploaded before extensions were normalised) can never be
+ * announced as an executable or an active document.
+ */
+const SERVE_CONTENT_TYPES: Record<string, string> = {
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg', // legacy: files stored before extensions were canonicalised
+  '.png': 'image/png',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.pdf': 'application/pdf',
+  '.doc': 'application/msword',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.txt': 'text/plain; charset=utf-8',
+};
+
+/** Passive types the browser may render in-tab (the "Eye" button). */
+const INLINE_CONTENT_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+  'application/pdf',
+]);
 
 @Controller('images')
 export class ImageController {
@@ -128,10 +155,22 @@ export class ImageController {
     // whose URL origin is oraclecloud.vn).  helmet() sets same-origin by
     // default which breaks <img> tags in cross-origin pages.
     res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
-    // inline so browsers render images/PDFs in-tab; attachment would force a
-    // download dialog when the Eye button opens the URL directly.
-    res.setHeader('Content-Disposition', `inline; filename="${safeFilename}"`);
+
+    // SECURITY: pin Content-Type from our own allowlist and only render passive
+    // types in-tab. Anything unrecognised is served as an opaque download, so a
+    // file that slipped in before validation was tightened cannot render or be
+    // presented as an executable. res.sendFile() leaves an already-set
+    // Content-Type alone, so this wins over its extension-based guess.
+    const contentType = SERVE_CONTENT_TYPES[extname(safeFilename).toLowerCase()];
+    const renderInline = contentType !== undefined && INLINE_CONTENT_TYPES.has(contentType);
+    res.setHeader('Content-Type', contentType ?? 'application/octet-stream');
     res.setHeader('X-Content-Type-Options', 'nosniff');
+    // inline so browsers render images/PDFs in-tab (the Eye button); everything
+    // else downloads instead of being interpreted by the browser.
+    res.setHeader(
+      'Content-Disposition',
+      `${renderInline ? 'inline' : 'attachment'}; filename="${safeFilename}"`,
+    );
     res.sendFile(filePath);
   }
 
