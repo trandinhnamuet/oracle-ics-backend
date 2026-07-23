@@ -4,7 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, LessThan } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
-import { randomInt, randomUUID } from 'crypto';
+import { randomInt, randomUUID, createHash, timingSafeEqual } from 'crypto';
 import { UAParser } from 'ua-parser-js';
 import { t, DEFAULT_LANG } from '../i18n/auth-messages';
 import { User } from '../entities/user.entity';
@@ -337,15 +337,70 @@ export class AuthService {
 
   // ==================== SESSION MANAGEMENT ====================
 
+  /**
+   * Refresh tokens are hashed with SHA-256, not bcrypt.
+   *
+   * bcrypt silently truncates its input at 72 bytes. Every refresh token we
+   * issue is a JWT whose first 72 bytes are the fixed header plus the opening
+   * of the payload (`sub`/`email`), so ALL of a given user's refresh tokens
+   * hashed to values that compared equal to one another. Session lookup by
+   * token therefore matched an arbitrary session of that user, and logging out
+   * of one device deleted a different device's session — leaving the caller's
+   * own JWT alive (WSTG-SESS-06 — Testing for Logout Functionality).
+   *
+   * A fast hash is the correct primitive here: a refresh token is a signed,
+   * high-entropy value, not a low-entropy password, so it needs no key
+   * stretching — only a collision-free, length-independent digest.
+   */
+  private sha256(token: string): string {
+    return createHash('sha256').update(token, 'utf8').digest('hex');
+  }
+
   async hashRefreshToken(refreshToken: string): Promise<string> {
-    return bcrypt.hash(refreshToken, 12);
+    return this.sha256(refreshToken);
   }
 
   async validateRefreshToken(
     plainToken: string,
     hashedToken: string,
   ): Promise<boolean> {
-    return bcrypt.compare(plainToken, hashedToken);
+    // Sessions created before the SHA-256 switch still carry a bcrypt hash;
+    // keep verifying those so existing logins are not forcibly terminated.
+    if (hashedToken.startsWith('$2')) {
+      return bcrypt.compare(plainToken, hashedToken);
+    }
+    const candidate = Buffer.from(this.sha256(plainToken), 'hex');
+    const stored = Buffer.from(hashedToken, 'hex');
+    return (
+      candidate.length === stored.length && timingSafeEqual(candidate, stored)
+    );
+  }
+
+  /**
+   * Verify a token's signature and return its payload, deliberately ignoring
+   * expiry.
+   *
+   * Logout must keep working with an expired access token — the token is still
+   * authentic proof that the caller owned that session. Verifying the
+   * signature (rather than merely base64-decoding the payload, as the logout
+   * routes used to do) is what prevents an attacker from forging a `sid`/`sub`
+   * to terminate another user's session.
+   */
+  private verifyTokenIgnoringExpiry(
+    token: string | undefined,
+    kind: 'access' | 'refresh',
+  ): JwtPayload | null {
+    if (!token) return null;
+    try {
+      return this.jwtService.verify<JwtPayload>(token, {
+        secret: this.configService.get<string>(
+          kind === 'refresh' ? 'JWT_REFRESH_SECRET' : 'JWT_SECRET',
+        ),
+        ignoreExpiration: true,
+      });
+    } catch {
+      return null;
+    }
   }
 
   async createSession(
@@ -405,25 +460,38 @@ export class AuthService {
     return true;
   }
 
+  /**
+   * Resolve the session a refresh token belongs to.
+   *
+   * The session is addressed by the token's own `sid` claim, so exactly one
+   * row can ever match. The previous implementation scanned every session of
+   * the user and returned the first whose hash "matched" — which, combined
+   * with the bcrypt truncation described on hashRefreshToken(), routinely
+   * returned the wrong session and broke logout.
+   *
+   * The signature is verified before the claim is trusted, and the row is then
+   * bound back to this exact token, so neither a forged `sid` nor a stale
+   * token can address a session it does not own.
+   */
   async findSessionByToken(
     userId: string,
     refreshToken: string,
   ): Promise<UserSession | null> {
-    const sessions = await this.sessionRepository.find({
-      where: { userId },
-    });
-
-    for (const session of sessions) {
-      const isValid = await this.validateRefreshToken(
-        refreshToken,
-        session.refreshTokenHash,
-      );
-      if (isValid) {
-        return session;
-      }
+    const payload = this.verifyTokenIgnoringExpiry(refreshToken, 'refresh');
+    if (!payload?.sid || String(payload.sub) !== String(userId)) {
+      return null;
     }
 
-    return null;
+    const session = await this.sessionRepository.findOne({
+      where: { id: payload.sid, userId: String(userId) },
+    });
+    if (!session) return null;
+
+    const matches = await this.validateRefreshToken(
+      refreshToken,
+      session.refreshTokenHash,
+    );
+    return matches ? session : null;
   }
 
   async deleteSession(sessionId: string): Promise<void> {
@@ -799,30 +867,80 @@ export class AuthService {
     return tokens;
   }
 
-  async logout(userId: string, refreshToken: string): Promise<void> {
-    const session = await this.findSessionByToken(userId, refreshToken);
-    if (session) {
-      await this.deleteSession(session.id);
+  /**
+   * Terminate the caller's current session.
+   *
+   * The access token is the primary source of truth: it is the credential the
+   * caller is actually authenticated with, and its `sid` claim names precisely
+   * the session to destroy. The refresh-token cookie is only a fallback for
+   * clients that no longer hold an access token.
+   *
+   * Previously this depended solely on the refresh cookie and resolved the
+   * session by scanning hashes, so a logout could silently delete the wrong
+   * session (or none at all) while still answering 200 — leaving the caller's
+   * JWT usable afterwards (WSTG-SESS-06).
+   *
+   * Returns true when a session was actually deleted.
+   */
+  async logout(accessToken?: string, refreshToken?: string): Promise<boolean> {
+    const payload =
+      this.verifyTokenIgnoringExpiry(accessToken, 'access') ??
+      this.verifyTokenIgnoringExpiry(refreshToken, 'refresh');
 
-      // Record logout in login history (for admin users)
-      try {
-        const user = await this.userRepository.findOne({ where: { id: parseInt(userId) } });
-        if (user && user.role === 'admin') {
-          // Find the most recent login session
-          const recentLogin = await this.adminLoginHistoryService.getRecentLogins(parseInt(userId), 1);
-          if (recentLogin && recentLogin.length > 0 && recentLogin[0].sessionId) {
-            await this.adminLoginHistoryService.recordLogout(recentLogin[0].sessionId, new Date());
-          }
-        }
-      } catch (error) {
-        this.logger.error('Failed to record logout', error);
-        // Don't throw error - logout should succeed even if history recording fails
-      }
+    if (!payload?.sid || !payload?.sub) {
+      this.logger.warn('Logout called without a verifiable session-bound token');
+      return false;
     }
+
+    const session = await this.sessionRepository.findOne({
+      where: { id: payload.sid, userId: String(payload.sub) },
+    });
+    if (!session) return false;
+
+    await this.deleteSession(session.id);
+
+    // Record logout in login history (for admin users). The admin history row
+    // stores the same id as `sid`, so the correct row is addressed directly
+    // instead of guessing at the user's most recent login.
+    try {
+      const user = await this.userRepository.findOne({
+        where: { id: parseInt(String(payload.sub)) },
+      });
+      if (user && user.role === 'admin') {
+        await this.adminLoginHistoryService.recordLogout(payload.sid, new Date());
+      }
+    } catch (error) {
+      this.logger.error('Failed to record logout', error);
+      // Don't throw error - logout should succeed even if history recording fails
+    }
+
+    return true;
   }
 
   async logoutAll(userId: string): Promise<void> {
     await this.deleteAllUserSessions(userId);
+  }
+
+  /**
+   * Terminate every session belonging to the caller.
+   *
+   * The owning user is taken from a signature-verified token. Previously the
+   * `sub` claim was read by base64-decoding the cookie with no verification at
+   * all, so anyone could craft an unsigned token carrying another user's id
+   * and forcibly log that user out of every device.
+   */
+  async logoutAllByToken(
+    accessToken?: string,
+    refreshToken?: string,
+  ): Promise<boolean> {
+    const payload =
+      this.verifyTokenIgnoringExpiry(accessToken, 'access') ??
+      this.verifyTokenIgnoringExpiry(refreshToken, 'refresh');
+
+    if (!payload?.sub) return false;
+
+    await this.logoutAll(String(payload.sub));
+    return true;
   }
 
   /**

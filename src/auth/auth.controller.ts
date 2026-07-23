@@ -31,6 +31,18 @@ export class AuthController {
     return 'refreshToken';
   }
 
+  /**
+   * Locate the caller's access token, mirroring how JwtStrategy extracts it
+   * (Authorization: Bearer first, then the access_token cookie).
+   */
+  private getAccessToken(req: Request): string | undefined {
+    const authHeader = (req.headers['authorization'] as string) || '';
+    if (authHeader.toLowerCase().startsWith('bearer ')) {
+      return authHeader.slice(7).trim() || undefined;
+    }
+    return (req.cookies?.access_token as string) || undefined;
+  }
+
   private getCookieOptions(maxAge?: number) {
     const options: any = {
       httpOnly: true,
@@ -224,19 +236,11 @@ export class AuthController {
     const refreshCookieName = this.getRefreshTokenCookieName(req);
     const refreshToken = req.cookies?.[refreshCookieName] as string | undefined;
 
-    // Decode userId from the refreshToken cookie (no verification needed — we just need the sub claim
-    // to invalidate the token in DB). This works even when the accessToken is expired.
-    let userId: string | undefined;
-    if (refreshToken) {
-      try {
-        const payload = JSON.parse(Buffer.from(refreshToken.split('.')[1], 'base64url').toString('utf-8'));
-        userId = String(payload.sub);
-      } catch (_) { /* invalid token format — still clear the cookie below */ }
-    }
-
-    if (refreshToken && userId && userId !== 'undefined') {
-      await this.authService.logout(userId, refreshToken);
-    }
+    // The access token names the exact session to terminate via its `sid`
+    // claim; the refresh cookie is only a fallback for clients that no longer
+    // hold one. Both are signature-verified inside the service, so neither can
+    // be forged to destroy another user's session.
+    await this.authService.logout(this.getAccessToken(req), refreshToken);
 
     // Always clear the cookie regardless of token validity
     const clearOptions = this.getCookieOptions(0);
@@ -256,17 +260,10 @@ export class AuthController {
     const refreshCookieName = this.getRefreshTokenCookieName(req);
     const refreshToken = req.cookies?.[refreshCookieName] as string | undefined;
 
-    let userId: string | undefined;
-    if (refreshToken) {
-      try {
-        const payload = JSON.parse(Buffer.from(refreshToken.split('.')[1], 'base64url').toString('utf-8'));
-        userId = String(payload.sub);
-      } catch (_) { /* invalid token format */ }
-    }
-
-    if (userId && userId !== 'undefined') {
-      await this.authService.logoutAll(userId);
-    }
+    // The owning user is read from a signature-verified token. Base64-decoding
+    // the cookie without verification (as this used to do) let anyone forge a
+    // `sub` and log an arbitrary user out of every device.
+    await this.authService.logoutAllByToken(this.getAccessToken(req), refreshToken);
 
     // Always clear the cookie regardless of token validity
     const clearOptions = this.getCookieOptions(0);
