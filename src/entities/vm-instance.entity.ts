@@ -75,10 +75,21 @@ export class VmInstance {
   @Column({ type: 'text', nullable: true })
   ssh_private_key_encrypted: string;
 
+  /**
+   * Initial Windows password, encrypted at rest (see utils/vm-secret.util.ts).
+   * Cleared once the owner has revealed it, so it cannot be retrieved again.
+   */
   @Column({ type: 'text', nullable: true })
   windows_initial_password: string;
 
-  /** Last successfully-set password (updated after each successful reset). */
+  /** When the owner performed the one-time reveal of the initial password. */
+  @Column({ type: 'timestamptz', nullable: true })
+  windows_initial_password_revealed_at: Date | null;
+
+  /**
+   * Last successfully-set password, encrypted at rest. Retained (not hashed)
+   * because WinRM authentication needs the real value to perform the next reset.
+   */
   @Column({ type: 'text', nullable: true })
   windows_current_password: string;
 

@@ -3,6 +3,7 @@ import {
   Logger,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
   InternalServerErrorException,
   HttpException,
   OnModuleInit,
@@ -15,6 +16,7 @@ import { SystemSshKeyService } from '../system-ssh-key/system-ssh-key.service';
 import { OciService } from '../oci/oci.service';
 import { BandwidthService } from '../bandwidth/bandwidth.service';
 import { encryptPrivateKey, decryptPrivateKey } from '../../utils/system-ssh-key.util';
+import { encryptVmSecret, decryptVmSecret } from '../../utils/vm-secret.util';
 import { Subscription } from '../../entities/subscription.entity';
 import { VmInstance } from '../../entities/vm-instance.entity';
 import { User } from '../../entities/user.entity';
@@ -540,6 +542,60 @@ export class VmSubscriptionService implements OnModuleInit, OnModuleDestroy {
   /**
    * Get VM details for a subscription
    */
+  /**
+   * One-time retrieval of a Windows VM's initial password by its owner.
+   *
+   * The password is returned exactly once and then erased from the database, so
+   * it cannot be read again from the subscription detail page (which is why it
+   * is no longer part of the detail payload at all). Administrators are refused
+   * outright: an admin never needs a customer's VM password, and letting the
+   * back-office read it breaks least privilege and makes an admin account
+   * compromise equivalent to a compromise of every customer VM.
+   */
+  async revealInitialWindowsPassword(
+    subscriptionId: string,
+    userId: number,
+    role?: string,
+  ): Promise<{ password: string }> {
+    if (role === 'admin') {
+      throw new ForbiddenException(
+        'Administrators cannot view VM passwords. Use the password reset action instead.',
+      );
+    }
+
+    const subscription = await this.subscriptionRepo.findOne({
+      where: { id: subscriptionId, user_id: userId },
+    });
+    if (!subscription?.vm_instance_id) {
+      throw new NotFoundException('Subscription not found');
+    }
+
+    const vm = await this.vmInstanceRepo.findOne({
+      where: { id: subscription.vm_instance_id },
+    });
+    if (!vm) {
+      throw new NotFoundException('VM not found');
+    }
+
+    const password = decryptVmSecret(vm.windows_initial_password);
+    if (!password) {
+      throw new BadRequestException(
+        vm.windows_initial_password_revealed_at
+          ? 'This password has already been retrieved and can no longer be displayed. Reset the password if you no longer have it.'
+          : 'The initial password is not available yet.',
+      );
+    }
+
+    // Burn it: null the stored value in the same write that records the reveal.
+    await this.vmInstanceRepo.update(vm.id, {
+      windows_initial_password: null as any,
+      windows_initial_password_revealed_at: new Date(),
+    });
+    this.logger.log(`Initial Windows password revealed once for VM ${vm.id} (user ${userId})`);
+
+    return { password };
+  }
+
   async getSubscriptionVm(subscriptionId: string, userId: number, role?: string) {
     this.logger.debug(
       `getSubscriptionVm: subscriptionId=${subscriptionId}, userId=${userId}, role=${role}`,
@@ -609,7 +665,7 @@ export class VmSubscriptionService implements OnModuleInit, OnModuleDestroy {
     // 30 min is safely past the maximum background job runtime (~23 min), so there is no race
     // condition with a still-running background job.
     const isWindowsVm = vmDetail.operatingSystem?.toLowerCase().includes('windows');
-    if (isWindowsVm && !vmDetail.windowsInitialPassword && !vm.windows_password_initialized) {
+    if (isWindowsVm && !vmDetail.windowsPasswordReady && !vm.windows_password_initialized) {
       const startedAt = vm.vm_started_at ?? vm.created_at;
       const minutesSinceStart = startedAt ? (Date.now() - new Date(startedAt).getTime()) / 60_000 : 0;
       if (minutesSinceStart > 30) {
@@ -618,10 +674,12 @@ export class VmSubscriptionService implements OnModuleInit, OnModuleDestroy {
           const credentials = await this.ociService.getWindowsInitialCredentials(vmDetail.instanceId);
           if (credentials?.password) {
             await this.vmInstanceRepo.update(vm.id, {
-              windows_initial_password: credentials.password,
+              windows_initial_password: encryptVmSecret(credentials.password)!,
               windows_password_initialized: true,
             });
-            vmDetail.windowsInitialPassword = credentials.password;
+            // The password itself is not attached to the detail payload — the
+            // owner retrieves it through the one-time reveal endpoint.
+            vmDetail.windowsPasswordReady = true;
             this.logger.log(`✅ [Recovery] Saved OCI initial password for VM ${vm.id}`);
           }
         } catch (recoveryErr: any) {
@@ -1137,7 +1195,11 @@ export class VmSubscriptionService implements OnModuleInit, OnModuleDestroy {
     // OCI Windows images have WinRM HTTPS enabled by default on port 5986.
     const passwordInitialized = vm.windows_password_initialized ?? false;
     // Use last successfully-set password if available, else fall back to initial password
-    const currentPassword = vm.windows_current_password ?? vm.windows_initial_password ?? undefined;
+    // Stored encrypted at rest — decrypt just for the WinRM handshake.
+    const currentPassword =
+      decryptVmSecret(vm.windows_current_password) ??
+      decryptVmSecret(vm.windows_initial_password) ??
+      undefined;
     this.logger.log(`🚀 Sending password reset to instance ${vm.instance_id} (initialized: ${passwordInitialized})...`);
     try {
       await this.ociService.runWindowsPasswordReset(
@@ -1163,7 +1225,10 @@ export class VmSubscriptionService implements OnModuleInit, OnModuleDestroy {
     this.logger.log(`💾 Marking VM as password-initialized in database...`);
     await this.vmInstanceRepo.update(vm.id, {
       windows_password_initialized: true,
-      windows_current_password: newPassword,
+      windows_current_password: encryptVmSecret(newPassword)!,
+      // The freshly reset password supersedes the provisioning password, which
+      // is no longer valid and must not remain retrievable.
+      windows_initial_password: null as any,
     });
     this.logger.log(`✅ Database updated, windows_password_initialized = true, current password saved`);
 

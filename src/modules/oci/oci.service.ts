@@ -6,12 +6,14 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { spawn } from 'child_process';
+import { redactWinRmOutput } from '../../utils/winrm-log.util';
 
 // Backend admin account credentials injected into Windows VM userdata and used for WinRM auth.
 // The icsreset account is created by userdata and never has must-change set,
 // so WinRM authentication always succeeds regardless of the opc user's must-change state.
 const WINRM_ADMIN_USERNAME = 'icsreset';
 const WINRM_ADMIN_PASSWORD = process.env.WINRM_ADMIN_PASSWORD ?? 'OciAdmin2025BackendIcs@';
+
 
 @Injectable()
 export class OciService {
@@ -3697,10 +3699,12 @@ chmod 600 ~/.ssh/authorized_keys`;
                     clearTimeout(execTimer);
                     conn.end();
                     this.logger.log(`📊 SSH command exit code: ${code}`);
-                    if (stdout.trim()) this.logger.log(`📋 stdout: ${stdout.trim()}`);
-                    if (stderr.trim()) this.logger.warn(`⚠️ stderr: ${stderr.trim()}`);
+                    // Same redaction as the WinRM path: this command carries the
+                    // new password base64-encoded and Windows echoes it on failure.
+                    if (stdout.trim()) this.logger.log(`📋 stdout: ${redactWinRmOutput(stdout, [newPassword])}`);
+                    if (stderr.trim()) this.logger.warn(`⚠️ stderr: ${redactWinRmOutput(stderr, [newPassword])}`);
                     if (code !== 0) {
-                      reject(new Error(`PowerShell net user failed (exit ${code}): ${stderr.trim() || stdout.trim()}`));
+                      reject(new Error(`PowerShell net user failed (exit ${code}): ${redactWinRmOutput(stderr || stdout, [newPassword])}`));
                     } else {
                       resolve();
                     }
@@ -3961,9 +3965,13 @@ chmod 600 ~/.ssh/authorized_keys`;
       });
     });
 
+    // SECURITY: the helper's output can echo the PowerShell it ran, which embeds
+    // the base64-encoded password. Logging it verbatim would persist customer VM
+    // credentials into the server log, undoing the reason the password is passed
+    // over STDIN in the first place. Scrub before logging.
     this.logger.log(`📊 WinRM exit code: ${exitCode}`);
-    if (stdout) this.logger.log(`📋 WinRM output: ${stdout.trim()}`);
-    if (stderr) this.logger.warn(`⚠️ WinRM stderr: ${stderr.trim()}`);
+    if (stdout) this.logger.log(`📋 WinRM output: ${redactWinRmOutput(stdout, [newPassword, currentPassword])}`);
+    if (stderr) this.logger.warn(`⚠️ WinRM stderr: ${redactWinRmOutput(stderr, [newPassword, currentPassword])}`);
 
     if (exitCode !== 0) {
       let errorMsg = 'WinRM password change failed';

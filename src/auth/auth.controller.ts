@@ -43,6 +43,25 @@ export class AuthController {
     return (req.cookies?.access_token as string) || undefined;
   }
 
+  /**
+   * Cookie scope for the refresh token.
+   *
+   * The refresh token is only ever presented to the auth endpoints (refresh,
+   * logout, logout-all), so the cookie is scoped to just those. Path is matched
+   * by the browser against the OUTWARD-FACING URL, so it is '/api/auth' even
+   * though nginx strips '/api' before the request reaches this service; set
+   * REFRESH_COOKIE_PATH='/auth' when talking to the backend port directly in
+   * local development.
+   *
+   * It used to be '/', which sent the token to every path on the domain — any
+   * other app or vulnerable route sharing the domain would receive it. Page
+   * routes no longer need it: the Next.js middleware reads the separate,
+   * non-secret session-hint cookie below.
+   */
+  private getRefreshCookiePath(): string {
+    return this.configService.get<string>('REFRESH_COOKIE_PATH') || '/api/auth';
+  }
+
   private getCookieOptions(maxAge?: number) {
     const options: any = {
       httpOnly: true,
@@ -50,13 +69,7 @@ export class AuthController {
       sameSite: 'lax' as const,
       // Use nullish coalescing so maxAge=0 is not treated as falsy
       maxAge: maxAge ?? 30 * 24 * 60 * 60 * 1000, // 30 days
-      // IMPORTANT: must be '/' so the cookie is sent to ALL routes.
-      // The Next.js middleware guards protected pages (/profile, /dashboard, ...)
-      // by checking this cookie; scoping it to a sub-path (e.g. '/auth/refresh')
-      // makes the browser withhold it from those pages, causing an infinite
-      // login bounce. Behind nginx, /api is stripped before reaching the backend,
-      // so a sub-path would not even match the real refresh endpoint.
-      path: '/',
+      path: this.getRefreshCookiePath(),
     };
 
     // Add domain so cookie works across subdomains (e.g. admin.oraclecloud.vn)
@@ -66,6 +79,62 @@ export class AuthController {
     }
 
     return options;
+  }
+
+  /**
+   * Options for the session-hint cookie: a site-wide marker the Next.js
+   * middleware uses to decide whether to render a protected page or bounce to
+   * /login. It deliberately carries NO token — only the role string — so that
+   * widening its scope to '/' exposes nothing usable. Authorization is still
+   * enforced server-side on every API call.
+   */
+  private getSessionHintCookieOptions(maxAge?: number) {
+    const options: any = {
+      httpOnly: true,
+      secure: this.configService.get('NODE_ENV') === 'production',
+      sameSite: 'lax' as const,
+      maxAge: maxAge ?? 30 * 24 * 60 * 60 * 1000,
+      path: '/',
+    };
+    const cookieDomain = this.configService.get('COOKIE_DOMAIN');
+    if (cookieDomain) {
+      options.domain = cookieDomain;
+    }
+    return options;
+  }
+
+  private getSessionHintCookieName(req: Request): string {
+    return this.getRefreshTokenCookieName(req) === 'adminRefreshToken'
+      ? 'adminSessionHint'
+      : 'sessionHint';
+  }
+
+  /** Issue the refresh-token cookie together with its companion session hint. */
+  private setAuthCookies(
+    req: Request,
+    response: Response,
+    cookieName: string,
+    refreshToken: string | undefined,
+    role?: string,
+  ) {
+    if (!refreshToken) return; // e.g. a login that stopped at "verification required"
+    response.cookie(cookieName, refreshToken, this.getCookieOptions());
+    response.cookie(
+      this.getSessionHintCookieName(req),
+      role || 'customer',
+      this.getSessionHintCookieOptions(),
+    );
+  }
+
+  /** Clear both cookies. Each must be cleared with the same path it was set on. */
+  private clearAuthCookies(req: Request, response: Response, cookieName: string) {
+    const clearOptions = this.getCookieOptions(0);
+    delete clearOptions.maxAge;
+    response.clearCookie(cookieName, clearOptions);
+
+    const hintClearOptions = this.getSessionHintCookieOptions(0);
+    delete hintClearOptions.maxAge;
+    response.clearCookie(this.getSessionHintCookieName(req), hintClearOptions);
   }
 
   @Post('register')
@@ -158,7 +227,7 @@ export class AuthController {
     // Normal login flow - set refresh token as httpOnly cookie
     // Use different cookie name for admin vs user to isolate sessions between subdomains
     const loginCookieName = this.getRefreshTokenCookieName(req);
-    response.cookie(loginCookieName, result.refreshToken, this.getCookieOptions());
+    this.setAuthCookies(req, response, loginCookieName, result.refreshToken, result.user?.role);
 
     return {
       accessToken: result.accessToken,
@@ -189,7 +258,7 @@ export class AuthController {
     }
 
     const loginCookieName = this.getRefreshTokenCookieName(req);
-    response.cookie(loginCookieName, result.refreshToken, this.getCookieOptions());
+    this.setAuthCookies(req, response, loginCookieName, result.refreshToken, result.user?.role);
 
     return {
       accessToken: result.accessToken,
@@ -220,7 +289,7 @@ export class AuthController {
     );
 
     // Set new refresh token as httpOnly cookie (token rotation)
-    response.cookie(refreshCookieName, tokens.refreshToken, this.getCookieOptions());
+    this.setAuthCookies(req, response, refreshCookieName, tokens.refreshToken, (req as any).user?.role);
 
     return {
       success: true,
@@ -242,10 +311,8 @@ export class AuthController {
     // be forged to destroy another user's session.
     await this.authService.logout(this.getAccessToken(req), refreshToken);
 
-    // Always clear the cookie regardless of token validity
-    const clearOptions = this.getCookieOptions(0);
-    delete clearOptions.maxAge;
-    response.clearCookie(refreshCookieName, clearOptions);
+    // Always clear both cookies regardless of token validity
+    this.clearAuthCookies(req, response, refreshCookieName);
 
     return { message: t('common.logoutSuccess', lang) };
   }
@@ -265,10 +332,8 @@ export class AuthController {
     // `sub` and log an arbitrary user out of every device.
     await this.authService.logoutAllByToken(this.getAccessToken(req), refreshToken);
 
-    // Always clear the cookie regardless of token validity
-    const clearOptions = this.getCookieOptions(0);
-    delete clearOptions.maxAge;
-    response.clearCookie(refreshCookieName, clearOptions);
+    // Always clear both cookies regardless of token validity
+    this.clearAuthCookies(req, response, refreshCookieName);
 
     return { message: t('common.logoutAllSuccess', lang) };
   }
@@ -311,7 +376,7 @@ export class AuthController {
 
       // Set refresh token cookie — admin users get adminRefreshToken
       const googleCookieName = user.role === 'admin' ? 'adminRefreshToken' : 'refreshToken';
-      response.cookie(googleCookieName, result.refreshToken, this.getCookieOptions());
+      this.setAuthCookies(req, response, googleCookieName, result.refreshToken, user.role);
 
       // Get frontend URL from env - for admin users, use FRONTEND_URL_ADMIN if available
       let frontendUrl = 'http://localhost:3000';

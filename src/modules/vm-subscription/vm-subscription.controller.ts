@@ -38,6 +38,27 @@ export class VmSubscriptionController {
   }
 
   /**
+   * Reveal the initial Windows password to the VM owner — once.
+   * POST /vm-subscription/:subscriptionId/reveal-initial-password
+   *
+   * POST (not GET) because it mutates: the stored password is erased as it is
+   * returned, so it can never be read a second time. Admins are rejected by the
+   * service; they may reset a password but never read one.
+   */
+  @Post(':subscriptionId/reveal-initial-password')
+  @HttpCode(HttpStatus.OK)
+  async revealInitialWindowsPassword(
+    @Request() req,
+    @Param('subscriptionId') subscriptionId: string,
+  ) {
+    return this.vmSubscriptionService.revealInitialWindowsPassword(
+      subscriptionId,
+      req.user.id,
+      req.user.role,
+    );
+  }
+
+  /**
    * Configure VM for a subscription (create new or reconfigure)
    * POST /vm-subscription/:subscriptionId/configure
    */
@@ -175,6 +196,13 @@ export class VmSubscriptionController {
     const job = this.vmSubscriptionService.getResetPasswordJobStatus(subscriptionId, jobId);
     if (!job) {
       return { status: 'not_found' };
+    }
+    // SECURITY: the completed job carries the new plaintext password. It is meant
+    // for the VM owner only — an administrator may trigger a reset but must never
+    // receive the resulting credential, so strip it for admin callers.
+    if (req.user?.role === 'admin') {
+      const { newPassword: _withheld, ...safeJob } = job as any;
+      return safeJob;
     }
     return job;
   }

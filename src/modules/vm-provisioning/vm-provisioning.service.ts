@@ -11,6 +11,7 @@ import { Repository } from 'typeorm';
 import { OciService } from '../oci/oci.service';
 import { SystemSshKeyService } from '../system-ssh-key/system-ssh-key.service';
 import { encryptPrivateKey, decryptPrivateKey } from '../../utils/system-ssh-key.util';
+import { encryptVmSecret } from '../../utils/vm-secret.util';
 import { User } from '../../entities/user.entity';
 import { UserCompartment } from '../../entities/user-compartment.entity';
 import { VcnResource } from '../../entities/vcn-resource.entity';
@@ -1336,7 +1337,14 @@ export class VmProvisioningService {
       vcnId: vm.vcn_id,
       subnetId: vm.subnet_id,
       sshPublicKey: vm.ssh_public_key,
-      windowsInitialPassword: vm.windows_initial_password,
+      // SECURITY: the Windows password is deliberately NOT returned here. Detail
+      // responses are re-readable at any time (and are also rendered in the admin
+      // back-office), so returning it made a customer VM credential permanently
+      // retrievable by anyone who can load the page. Callers only learn *whether*
+      // provisioning has produced a password yet; the value itself is handed to
+      // the VM owner exactly once via the one-time reveal endpoint.
+      windowsPasswordReady: !!vm.windows_initial_password,
+      windowsInitialPasswordRevealed: !!vm.windows_initial_password_revealed_at,
       createdAt: vm.created_at,
       startedAt: vm.vm_started_at,
       updatedAt: vm.updated_at,
@@ -1445,7 +1453,7 @@ export class VmProvisioningService {
 
               // Save new password to DB only after successful reset — prevents frontend from
               // showing the intermediate OCI password before the reset completes.
-              freshVm.windows_initial_password = newPassword;
+              freshVm.windows_initial_password = encryptVmSecret(newPassword)!;
               freshVm.windows_password_initialized = true;
               await this.vmInstanceRepo.save(freshVm);
               emailPassword = newPassword;
@@ -1455,7 +1463,7 @@ export class VmProvisioningService {
               // Reset failed — save OCI initial password to DB as fallback so user can still connect.
               // Also mark as initialized so the recovery path in getSubscriptionVm knows the background
               // job finished and the stored password (OCI initial) is the current valid password.
-              freshVm.windows_initial_password = credentials.password;
+              freshVm.windows_initial_password = encryptVmSecret(credentials.password)!;
               freshVm.windows_password_initialized = true;
               await this.vmInstanceRepo.save(freshVm);
             }
