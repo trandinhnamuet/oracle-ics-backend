@@ -72,7 +72,12 @@ export class AuthController {
       path: this.getRefreshCookiePath(),
     };
 
-    // Add domain so cookie works across subdomains (e.g. admin.oraclecloud.vn)
+    // Domain is intentionally unset by default, which makes the cookie host-only
+    // (bound to the exact issuing host). A dot-prefixed COOKIE_DOMAIN such as
+    // '.oraclecloud.vn' would broadcast the refresh token to every subdomain, so
+    // any other app or vulnerable host sharing the domain would receive it. Admin
+    // and customer sessions already use separate cookie names on separate
+    // subdomains, so no cross-subdomain sharing is required.
     const cookieDomain = this.configService.get('COOKIE_DOMAIN');
     if (cookieDomain) {
       options.domain = cookieDomain;

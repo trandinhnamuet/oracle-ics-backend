@@ -11,14 +11,13 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       throw new Error('JWT_SECRET environment variable is not set');
     }
     super({
-      jwtFromRequest: ExtractJwt.fromExtractors([
-        ExtractJwt.fromAuthHeaderAsBearerToken(),
-        (request) => {
-          // Fallback: try to get from cookies
-          const token = request?.cookies?.access_token;
-          return token;
-        },
-      ]),
+      // Bearer header only. There used to be a fallback that accepted an
+      // `access_token` cookie, but nothing on the server ever set that cookie —
+      // only client-side JavaScript did, so it could not be HttpOnly and served
+      // as a script-writable authentication channel. Clients hold the access
+      // token in memory and send it as a Bearer header; the refresh token stays
+      // in its HttpOnly cookie and is used only by /auth/refresh.
+      jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
       secretOrKey: jwtSecret,
     });

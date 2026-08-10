@@ -89,6 +89,22 @@ export class VmInstance {
   /**
    * Last successfully-set password, encrypted at rest. Retained (not hashed)
    * because WinRM authentication needs the real value to perform the next reset.
+   *
+   * DOCUMENTED RISK ACCEPTANCE (security review 2026/08, item 1).
+   * The reviewer asked that no VM password be stored in a directly decryptable
+   * form. That is achievable for `windows_initial_password` — it is erased after
+   * the owner's one-time reveal — but NOT for this column: resetting a Windows
+   * guest requires presenting the current credential to WinRM, so a one-way hash
+   * would make the reset feature impossible. Retention is therefore accepted,
+   * with these compensating controls:
+   *   - AES-256-GCM encryption at rest (utils/vm-secret.util.ts); a database
+   *     dump alone does not disclose it.
+   *   - The key lives in SSH_KEY_ENCRYPTION_SECRET, held in the environment and
+   *     outside the database.
+   *   - The value is never returned by any API, never rendered in the
+   *     back-office, and is scrubbed from WinRM/SSH logs (utils/winrm-log.util.ts).
+   *   - It is read only by the server-side password-reset path.
+   * Revisit if OCI exposes a credential-free password-reset primitive.
    */
   @Column({ type: 'text', nullable: true })
   windows_current_password: string;

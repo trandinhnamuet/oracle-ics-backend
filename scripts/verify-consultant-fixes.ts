@@ -123,6 +123,39 @@ $b=[Convert]::FromBase64String('${b64}');`,
     );
   }
 
+  // ──────────────────────────────────────────────────────────────────
+  console.log('\n[Tin review] measures with no Fortify line of their own');
+
+  const env = fs.readFileSync(path.join(__dirname, '../.env.example'), 'utf8');
+  check('COOKIE_DOMAIN no longer set to a wildcard domain',
+    /^COOKIE_DOMAIN=\s*$/m.test(env) && !/COOKIE_DOMAIN=\.[\w.]+/.test(env));
+  check('auth.controller documents the host-only default',
+    /host-only[\s\S]{0,240}COOKIE_DOMAIN/.test(authCtl));
+
+  for (const app of ['oracle-ics-frontend', 'oracle-ics-admin']) {
+    const store = fs.readFileSync(path.join(__dirname, `../../${app}/hooks/use-auth-store.ts`), 'utf8');
+    const partialize = store.match(/partialize:[\s\S]*?\}\),/)?.[0] ?? '';
+    check(`${app}: auth-storage no longer persists tokens`,
+      !/token:\s*state\.token/.test(partialize) && !/refreshToken:\s*state\.refreshToken/.test(partialize));
+
+    const svc = fs.readFileSync(path.join(__dirname, `../../${app}/services/auth.service.ts`), 'utf8');
+    check(`${app}: access token never written to localStorage`,
+      !/localStorage\.(set|get|remove)Item\(\s*ACCESS_TOKEN_KEY/.test(svc) && !/oracle_access_token/.test(svc));
+    check(`${app}: refresh() is single-flight`,
+      /refreshInFlight/.test(svc) && /private async performRefresh/.test(svc));
+    check(`${app}: legacy JS-readable cookie migration removed`,
+      !fs.existsSync(path.join(__dirname, `../../${app}/lib/cookie-migration.ts`)));
+  }
+
+  const strat = fs.readFileSync(path.join(__dirname, '../src/auth/jwt.strategy.ts'), 'utf8');
+  check('backend accepts Bearer only (no script-writable cookie auth)',
+    /jwtFromRequest:\s*ExtractJwt\.fromAuthHeaderAsBearerToken\(\)/.test(strat) && !/cookies\?\.access_token/.test(strat));
+
+  const vmEnt = fs.readFileSync(path.join(__dirname, '../src/entities/vm-instance.entity.ts'), 'utf8');
+  check('windows_current_password retention documented as accepted risk',
+    /DOCUMENTED RISK ACCEPTANCE/.test(vmEnt) && /compensating controls/.test(vmEnt));
+
+
   console.log(`\n──────── RESULT: ${pass} passed, ${fail} failed ────────\n`);
   process.exit(fail === 0 ? 0 : 1);
 }
