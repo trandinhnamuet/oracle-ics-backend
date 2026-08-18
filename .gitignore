@@ -99,7 +99,7 @@ test_reset.py
 # Dev-only verification/demo scripts.
 # These are internal tooling, not part of the product. They were previously
 # committed and the SAST scan treated them as production code, reporting their
-# test fixtures (fake passwords, debug console output) as Critical/High findings.
+# dummy test values and debug console output as Critical/High findings.
 # Keep such scripts out of the repository.
 scripts/verify-*.ts
 scripts/demo-*.ts
