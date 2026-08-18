@@ -11,6 +11,8 @@ import * as path from 'path';
 
 const logger = new Logger('SystemSshKeyUtil');
 const GCM_IV_LENGTH = 12;
+// Pin the GCM authentication tag length so a truncated tag is never accepted.
+const GCM_TAG_LENGTH = 16;
 
 /**
  * Get encryption key from environment variable
@@ -145,7 +147,9 @@ function deriveKeyBuffer(encryptionKey: string): Buffer {
 export function encryptPrivateKey(privateKey: string): string {
   const keyBuffer = deriveKeyBuffer(getEncryptionKey());
   const iv = crypto.randomBytes(GCM_IV_LENGTH);
-  const cipher = crypto.createCipheriv('aes-256-gcm', keyBuffer, iv) as crypto.CipherGCM;
+  const cipher = crypto.createCipheriv('aes-256-gcm', keyBuffer, iv, {
+    authTagLength: GCM_TAG_LENGTH,
+  }) as crypto.CipherGCM;
   let encrypted = cipher.update(privateKey, 'utf8', 'hex');
   encrypted += cipher.final('hex');
   const authTag = cipher.getAuthTag();
@@ -165,7 +169,9 @@ export function decryptPrivateKey(encryptedKey: string): string {
       // GCM format: iv:authTag:ciphertext
       const iv = Buffer.from(parts[0], 'hex');
       const authTag = Buffer.from(parts[1], 'hex');
-      const decipher = crypto.createDecipheriv('aes-256-gcm', keyBuffer, iv) as crypto.DecipherGCM;
+      const decipher = crypto.createDecipheriv('aes-256-gcm', keyBuffer, iv, {
+        authTagLength: GCM_TAG_LENGTH,
+      }) as crypto.DecipherGCM;
       decipher.setAuthTag(authTag);
       let decrypted = decipher.update(parts[2], 'hex', 'utf8');
       decrypted += decipher.final('utf8');

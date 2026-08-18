@@ -14,6 +14,9 @@ import * as crypto from 'crypto';
  */
 
 const GCM_IV_LENGTH = 12;
+// Pin the GCM authentication tag length. Without it the runtime will accept a
+// truncated tag, which weakens the integrity guarantee the mode is chosen for.
+const GCM_TAG_LENGTH = 16;
 const PREFIX = 'encv1';
 
 function deriveKeyBuffer(): Buffer {
@@ -46,7 +49,9 @@ export function encryptVmSecret(plain: string | null | undefined): string | null
   if (plain === null || plain === undefined || plain === '') return (plain ?? null) as null;
   if (isEncryptedVmSecret(plain)) return plain; // already encrypted — don't double-wrap
   const iv = crypto.randomBytes(GCM_IV_LENGTH);
-  const cipher = crypto.createCipheriv('aes-256-gcm', deriveKeyBuffer(), iv) as crypto.CipherGCM;
+  const cipher = crypto.createCipheriv('aes-256-gcm', deriveKeyBuffer(), iv, {
+    authTagLength: GCM_TAG_LENGTH,
+  }) as crypto.CipherGCM;
   let encrypted = cipher.update(plain, 'utf8', 'hex');
   encrypted += cipher.final('hex');
   const authTag = cipher.getAuthTag();
@@ -67,6 +72,7 @@ export function decryptVmSecret(stored: string | null | undefined): string | nul
     'aes-256-gcm',
     deriveKeyBuffer(),
     Buffer.from(ivHex, 'hex'),
+    { authTagLength: GCM_TAG_LENGTH },
   ) as crypto.DecipherGCM;
   decipher.setAuthTag(Buffer.from(tagHex, 'hex'));
   let decrypted = decipher.update(ciphertext, 'hex', 'utf8');

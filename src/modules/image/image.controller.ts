@@ -18,7 +18,7 @@ import { ImageService } from './image.service';
 import { JwtAuthGuard } from '../../auth/jwt-auth.guard';
 import { Image } from './image.entity';
 import { Response } from 'express';
-import { extname, join } from 'path';
+import { extname, join, resolve, sep } from 'path';
 import { existsSync } from 'fs';
 
 /**
@@ -144,9 +144,17 @@ export class ImageController {
     @Param('filename') filename: string,
     @Res() res: Response,
   ): void {
-    // Sanitize filename to prevent path traversal
+    // Sanitize filename to prevent path traversal. The allow-list already strips
+    // every path separator, so '..' cannot be used to climb out of the directory.
     const safeFilename = filename.replace(/[^a-zA-Z0-9._-]/g, '');
-    const filePath = join(process.cwd(), 'uploads', safeFilename);
+    const uploadsDir = resolve(process.cwd(), 'uploads');
+    const filePath = resolve(uploadsDir, safeFilename);
+    // Defence in depth: resolve the final path and refuse anything that lands
+    // outside the uploads directory, whatever the input was.
+    if (filePath !== uploadsDir && !filePath.startsWith(uploadsDir + sep)) {
+      res.status(400).json({ message: 'Invalid file name' });
+      return;
+    }
     if (!existsSync(filePath)) {
       res.status(404).json({ message: 'File not found' });
       return;
