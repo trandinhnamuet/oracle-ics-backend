@@ -55,8 +55,8 @@ export class AuthController {
    *
    * It used to be '/', which sent the token to every path on the domain — any
    * other app or vulnerable route sharing the domain would receive it. Page
-   * routes no longer need it: the Next.js middleware reads the separate,
-   * non-secret session-hint cookie below.
+   * routes no longer need it: the front-ends establish the session client-side
+   * by refreshing against this cookie and redirect to /login when that fails.
    */
   private getRefreshCookiePath(): string {
     return this.configService.get<string>('REFRESH_COOKIE_PATH') || '/api/auth';
@@ -86,35 +86,16 @@ export class AuthController {
     return options;
   }
 
+
   /**
-   * Options for the session-hint cookie: a site-wide marker the Next.js
-   * middleware uses to decide whether to render a protected page or bounce to
-   * /login. It deliberately carries NO token — only the role string — so that
-   * widening its scope to '/' exposes nothing usable. Authorization is still
-   * enforced server-side on every API call.
+   * Issue the refresh-token cookie.
+   *
+   * There used to be a companion "session hint" cookie at Path=/ so the Next.js
+   * middleware could tell whether a session existed. Scoping any cookie to the
+   * whole site is exactly what we narrowed the refresh cookie to avoid, so the
+   * hint is gone: the front-ends now decide client-side, by attempting a token
+   * refresh against the HttpOnly cookie, and redirect to /login if it fails.
    */
-  private getSessionHintCookieOptions(maxAge?: number) {
-    const options: any = {
-      httpOnly: true,
-      secure: this.configService.get('NODE_ENV') === 'production',
-      sameSite: 'lax' as const,
-      maxAge: maxAge ?? 30 * 24 * 60 * 60 * 1000,
-      path: '/',
-    };
-    const cookieDomain = this.configService.get('COOKIE_DOMAIN');
-    if (cookieDomain) {
-      options.domain = cookieDomain;
-    }
-    return options;
-  }
-
-  private getSessionHintCookieName(req: Request): string {
-    return this.getRefreshTokenCookieName(req) === 'adminRefreshToken'
-      ? 'adminSessionHint'
-      : 'sessionHint';
-  }
-
-  /** Issue the refresh-token cookie together with its companion session hint. */
   private setAuthCookies(
     req: Request,
     response: Response,
@@ -124,22 +105,13 @@ export class AuthController {
   ) {
     if (!refreshToken) return; // e.g. a login that stopped at "verification required"
     response.cookie(cookieName, refreshToken, this.getCookieOptions());
-    response.cookie(
-      this.getSessionHintCookieName(req),
-      role || 'customer',
-      this.getSessionHintCookieOptions(),
-    );
   }
 
-  /** Clear both cookies. Each must be cleared with the same path it was set on. */
+  /** Clear the refresh cookie, using the same path it was set on. */
   private clearAuthCookies(req: Request, response: Response, cookieName: string) {
     const clearOptions = this.getCookieOptions(0);
     delete clearOptions.maxAge;
     response.clearCookie(cookieName, clearOptions);
-
-    const hintClearOptions = this.getSessionHintCookieOptions(0);
-    delete hintClearOptions.maxAge;
-    response.clearCookie(this.getSessionHintCookieName(req), hintClearOptions);
   }
 
   @Post('register')
