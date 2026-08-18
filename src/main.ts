@@ -4,7 +4,7 @@ import { types as pgTypes } from 'pg';
 import { AppModule } from './app.module';
 import { AppDataSource } from './data-source';
 import { CorsOptions } from '@nestjs/common/interfaces/external/cors-options.interface';
-import { ValidationPipe, ClassSerializerInterceptor } from '@nestjs/common';
+import { ValidationPipe, ClassSerializerInterceptor, Logger } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
@@ -148,6 +148,9 @@ async function bootstrap() {
 
   const port = process.env.PORT ?? 3003;
   await app.listen(port);
-  console.log(`🚀 Server đang chạy tại http://localhost:${port}`);
+  // Use the framework logger and avoid interpolating runtime values into a raw
+  // console.log: static analysis treats that pattern as a potential data leak,
+  // and Logger output is what the rest of the application already uses.
+  new Logger('Bootstrap').log('Server started');
 }
 bootstrap();
