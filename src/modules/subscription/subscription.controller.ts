@@ -110,17 +110,21 @@ export class SubscriptionController {
     return subscription;
   }
 
+  // Admin only. The update DTO derives from the create DTO, so it exposes
+  // status, cloud_package_id, amount_paid, months_paid and end_date, and the
+  // service applies it with Object.assign. Owning a subscription was therefore
+  // enough to mark it active and point it at a more expensive package — service
+  // without payment, plus real cloud spend once provisioning followed.
+  // Customers change their subscription through the dedicated, side-effect-aware
+  // routes below (cancel / renew / renew-payment) and through the paid
+  // subscribe-with-balance and subscribe-with-payment flows.
   @Patch(':id')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async update(
     @Param('id') id: string,
     @Body() updateSubscriptionDto: UpdateSubscriptionDto,
     @Request() req,
   ) {
-    const subscription = await this.subscriptionService.findOne(id);
-    if (subscription.user_id !== req.user.id && req.user.role !== 'admin') {
-      throw new ForbiddenException('You do not have access to this subscription');
-    }
     return await this.subscriptionService.update(id, updateSubscriptionDto);
   }
 

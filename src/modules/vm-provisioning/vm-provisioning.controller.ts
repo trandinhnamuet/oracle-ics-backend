@@ -8,8 +8,28 @@ import {
   Request,
   HttpStatus,
   HttpCode,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../../auth/jwt-auth.guard';
+
+/**
+ * Resolve the caller's user id, failing closed.
+ *
+ * The authenticated principal exposes `id` (it is the sanitised User entity).
+ * This controller previously read `req.user.userId`, which is always undefined —
+ * and TypeORM 0.3.x silently DROPS an undefined value from a `where` object, so
+ * `where: { id: vmId, user_id: undefined }` degraded to `where: { id: vmId }`.
+ * Every ownership check in this controller was therefore inert: any
+ * authenticated customer could read or operate another customer's VM.
+ * Throwing when the id is missing keeps that failure mode impossible.
+ */
+function requireUserId(req: any): number {
+  const id = req?.user?.id;
+  if (id === undefined || id === null) {
+    throw new UnauthorizedException('Authenticated user id is missing');
+  }
+  return Number(id);
+}
 import { VmProvisioningService } from './vm-provisioning.service';
 import { CreateVmDto, VmActionDto } from './dto';
 
@@ -24,7 +44,7 @@ export class VmProvisioningController {
   @Post()
   @HttpCode(HttpStatus.CREATED)
   async provisionVm(@Request() req, @Body() createVmDto: CreateVmDto) {
-    const userId = req.user.userId;
+    const userId = requireUserId(req);
     return this.vmProvisioningService.provisionVm(userId, createVmDto);
   }
 
@@ -33,7 +53,7 @@ export class VmProvisioningController {
    */
   @Get()
   async getUserVms(@Request() req) {
-    const userId = req.user.userId;
+    const userId = requireUserId(req);
     return this.vmProvisioningService.getUserVms(userId);
   }
 
@@ -42,7 +62,7 @@ export class VmProvisioningController {
    */
   @Get(':id')
   async getVmById(@Request() req, @Param('id') vmId: number) {
-    const userId = req.user.userId;
+    const userId = requireUserId(req);
     return this.vmProvisioningService.getVmById(userId, vmId);
   }
 
@@ -56,7 +76,7 @@ export class VmProvisioningController {
     @Param('id') vmId: number,
     @Body() vmActionDto: VmActionDto,
   ) {
-    const userId = req.user.userId;
+    const userId = requireUserId(req);
     return this.vmProvisioningService.performVmAction(
       userId,
       vmId,
@@ -72,7 +92,7 @@ export class VmProvisioningController {
     @Request() req,
     @Param('id') vmId: number,
   ) {
-    const userId = req.user.userId;
+    const userId = requireUserId(req);
     return this.vmProvisioningService.getVmActionLogs(userId, vmId);
   }
 }

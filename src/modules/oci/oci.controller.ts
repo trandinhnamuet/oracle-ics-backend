@@ -10,8 +10,13 @@ import {
   Logger,
   HttpCode,
   HttpStatus,
+  ForbiddenException,
+  Request,
 } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
 import { OciService } from './oci.service';
+import { VmInstance } from '../../entities/vm-instance.entity';
 import { JwtAuthGuard } from '../../auth/jwt-auth.guard';
 import { AdminGuard } from '../../auth/admin.guard';
 
@@ -20,7 +25,31 @@ import { AdminGuard } from '../../auth/admin.guard';
 export class OciController {
   private readonly logger = new Logger(OciController.name);
 
-  constructor(private readonly ociService: OciService) {}
+  constructor(
+    private readonly ociService: OciService,
+    @InjectRepository(VmInstance)
+    private readonly vmInstanceRepo: Repository<VmInstance>,
+  ) {}
+
+  /**
+   * Confirm the caller owns the VM backing this OCI instance, unless they are an
+   * administrator. Customer-facing OCI reads must be scoped this way: an OCID is
+   * guessable/enumerable, and without this check any authenticated customer
+   * could read another customer's instance.
+   */
+  private async assertInstanceOwnership(req: any, instanceId: string): Promise<void> {
+    if (req?.user?.role === 'admin') return;
+    const userId = req?.user?.id;
+    if (userId === undefined || userId === null) {
+      throw new ForbiddenException('Authenticated user id is missing');
+    }
+    const owned = await this.vmInstanceRepo.findOne({
+      where: { instance_id: instanceId, user_id: Number(userId) },
+    });
+    if (!owned) {
+      throw new ForbiddenException('You do not have access to this instance');
+    }
+  }
 
   /**
    * GET /oci/images
@@ -152,6 +181,9 @@ export class OciController {
    * GET /oci/availability-domains
    * Get list of availability domains
    */
+  // Admin only: raw OCI tenancy operation. With only the class-level
+  // JwtAuthGuard, any authenticated customer could reach it.
+  @UseGuards(JwtAuthGuard, AdminGuard)
   @Get('availability-domains')
   async getAvailabilityDomains(@Query('compartmentId') compartmentId?: string) {
     try {
@@ -180,6 +212,9 @@ export class OciController {
    * POST /oci/vcn
    * Create a VCN (Virtual Cloud Network)
    */
+  // Admin only: raw OCI tenancy operation. With only the class-level
+  // JwtAuthGuard, any authenticated customer could reach it.
+  @UseGuards(JwtAuthGuard, AdminGuard)
   @Post('vcn')
   @HttpCode(HttpStatus.CREATED)
   async createVcn(
@@ -215,6 +250,9 @@ export class OciController {
    * GET /oci/vcn/:vcnId
    * Get VCN details
    */
+  // Admin only: raw OCI tenancy operation. With only the class-level
+  // JwtAuthGuard, any authenticated customer could reach it.
+  @UseGuards(JwtAuthGuard, AdminGuard)
   @Get('vcn/:vcnId')
   async getVcn(@Param('vcnId') vcnId: string) {
     try {
@@ -237,6 +275,9 @@ export class OciController {
    * POST /oci/internet-gateway
    * Create an Internet Gateway
    */
+  // Admin only: raw OCI tenancy operation. With only the class-level
+  // JwtAuthGuard, any authenticated customer could reach it.
+  @UseGuards(JwtAuthGuard, AdminGuard)
   @Post('internet-gateway')
   @HttpCode(HttpStatus.CREATED)
   async createInternetGateway(
@@ -270,6 +311,9 @@ export class OciController {
    * POST /oci/route-table
    * Update route table
    */
+  // Admin only: raw OCI tenancy operation. With only the class-level
+  // JwtAuthGuard, any authenticated customer could reach it.
+  @UseGuards(JwtAuthGuard, AdminGuard)
   @Post('route-table')
   @HttpCode(HttpStatus.OK)
   async updateRouteTable(
@@ -301,6 +345,9 @@ export class OciController {
    * POST /oci/subnet
    * Create a subnet
    */
+  // Admin only: raw OCI tenancy operation. With only the class-level
+  // JwtAuthGuard, any authenticated customer could reach it.
+  @UseGuards(JwtAuthGuard, AdminGuard)
   @Post('subnet')
   @HttpCode(HttpStatus.CREATED)
   async createSubnet(
@@ -340,6 +387,9 @@ export class OciController {
    * POST /oci/instance
    * Launch a compute instance
    */
+  // Admin only: raw OCI tenancy operation. With only the class-level
+  // JwtAuthGuard, any authenticated customer could reach it.
+  @UseGuards(JwtAuthGuard, AdminGuard)
   @Post('instance')
   @HttpCode(HttpStatus.CREATED)
   async launchInstance(
@@ -387,6 +437,9 @@ export class OciController {
    * GET /oci/instances
    * List instances in a compartment
    */
+  // Admin only: raw OCI tenancy operation. With only the class-level
+  // JwtAuthGuard, any authenticated customer could reach it.
+  @UseGuards(JwtAuthGuard, AdminGuard)
   @Get('instances')
   async getInstances(@Query('compartmentId') compartmentId?: string) {
     try {
@@ -415,6 +468,9 @@ export class OciController {
    * GET /oci/instance/:instanceId
    * Get instance details
    */
+  // Admin only: raw OCI tenancy operation. With only the class-level
+  // JwtAuthGuard, any authenticated customer could reach it.
+  @UseGuards(JwtAuthGuard, AdminGuard)
   @Get('instance/:instanceId')
   async getInstance(@Param('instanceId') instanceId: string) {
     try {
@@ -437,6 +493,9 @@ export class OciController {
    * GET /oci/instance/:instanceId/public-ip
    * Get instance public IP
    */
+  // Admin only: raw OCI tenancy operation. With only the class-level
+  // JwtAuthGuard, any authenticated customer could reach it.
+  @UseGuards(JwtAuthGuard, AdminGuard)
   @Get('instance/:instanceId/public-ip')
   async getInstancePublicIp(
     @Param('instanceId') instanceId: string,
@@ -472,6 +531,9 @@ export class OciController {
    * POST /oci/instance/:instanceId/start
    * Start an instance
    */
+  // Admin only: raw OCI tenancy operation. With only the class-level
+  // JwtAuthGuard, any authenticated customer could reach it.
+  @UseGuards(JwtAuthGuard, AdminGuard)
   @Post('instance/:instanceId/start')
   @HttpCode(HttpStatus.OK)
   async startInstance(@Param('instanceId') instanceId: string) {
@@ -495,6 +557,9 @@ export class OciController {
    * POST /oci/instance/:instanceId/stop
    * Stop an instance
    */
+  // Admin only: raw OCI tenancy operation. With only the class-level
+  // JwtAuthGuard, any authenticated customer could reach it.
+  @UseGuards(JwtAuthGuard, AdminGuard)
   @Post('instance/:instanceId/stop')
   @HttpCode(HttpStatus.OK)
   async stopInstance(@Param('instanceId') instanceId: string) {
@@ -518,6 +583,9 @@ export class OciController {
    * POST /oci/instance/:instanceId/restart
    * Restart an instance
    */
+  // Admin only: raw OCI tenancy operation. With only the class-level
+  // JwtAuthGuard, any authenticated customer could reach it.
+  @UseGuards(JwtAuthGuard, AdminGuard)
   @Post('instance/:instanceId/restart')
   @HttpCode(HttpStatus.OK)
   async restartInstance(@Param('instanceId') instanceId: string) {
@@ -541,6 +609,9 @@ export class OciController {
    * DELETE /oci/instance/:instanceId
    * Terminate an instance
    */
+  // Admin only: raw OCI tenancy operation. With only the class-level
+  // JwtAuthGuard, any authenticated customer could reach it.
+  @UseGuards(JwtAuthGuard, AdminGuard)
   @Delete('instance/:instanceId')
   @HttpCode(HttpStatus.OK)
   async terminateInstance(
@@ -603,12 +674,17 @@ export class OciController {
    * GET /oci/instance/:instanceId/metrics
    * Get monitoring metrics for an instance
    */
+  // Customer-reachable, but scoped: the caller must own the VM backing this
+  // instance. An OCID is enumerable, so without the check any authenticated
+  // customer could read another customer's metrics.
   @Get('instance/:instanceId/metrics')
   async getInstanceMetrics(
+    @Request() req,
     @Param('instanceId') instanceId: string,
     @Query('timeRange') timeRange: string = '1h',
     @Query('startDate') startDate?: string,
   ) {
+    await this.assertInstanceOwnership(req, instanceId);
     try {
       const endTime = new Date();
       let startTime = new Date();

@@ -268,10 +268,13 @@ export class AuthController {
     // Set new refresh token as httpOnly cookie (token rotation)
     this.setAuthCookies(req, response, refreshCookieName, tokens.refreshToken, (req as any).user?.role);
 
+    // The refresh token is delivered ONLY as an HttpOnly cookie (set above).
+    // It used to be echoed in this JSON body as well, which handed a 30-day
+    // credential to any script running on the page and defeated the point of
+    // making the cookie HttpOnly. No client reads it from here.
     return {
       success: true,
       accessToken: tokens.accessToken,
-      refreshToken: tokens.refreshToken,
     };
   }
 

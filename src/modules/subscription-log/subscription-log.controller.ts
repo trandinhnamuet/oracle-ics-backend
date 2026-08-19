@@ -13,6 +13,7 @@ import { SubscriptionLogService } from './subscription-log.service';
 import { CreateSubscriptionLogDto } from './dto/create-subscription-log.dto';
 import { UpdateSubscriptionLogDto } from './dto/update-subscription-log.dto';
 import { JwtAuthGuard } from '../../auth/jwt-auth.guard';
+import { AdminGuard } from '../../auth/admin.guard';
 
 @Controller('subscription-logs')
 export class SubscriptionLogController {
@@ -108,8 +109,11 @@ export class SubscriptionLogController {
     );
   }
 
+  // Admin only: this reaches every customer's audit records. Customers read
+  // their own history through `my-logs`, which is scoped to req.user.id.
+  // Mutation is restricted because these rows are the audit trail.
   @Get()
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async findAll() {
     return await this.subscriptionLogService.findAll();
   }
@@ -120,26 +124,38 @@ export class SubscriptionLogController {
     return await this.subscriptionLogService.findByUser(req.user.id);
   }
 
+  // Admin only: this reaches every customer's audit records. Customers read
+  // their own history through `my-logs`, which is scoped to req.user.id.
+  // Mutation is restricted because these rows are the audit trail.
   @Get('subscription/:subscriptionId')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async findBySubscription(@Param('subscriptionId') subscriptionId: string) {
     return await this.subscriptionLogService.findBySubscription(subscriptionId);
   }
 
+  // Admin only: this reaches every customer's audit records. Customers read
+  // their own history through `my-logs`, which is scoped to req.user.id.
+  // Mutation is restricted because these rows are the audit trail.
   @Get('action/:action')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async findByAction(@Param('action') action: string) {
     return await this.subscriptionLogService.findByAction(action);
   }
 
+  // Admin only: this reaches every customer's audit records. Customers read
+  // their own history through `my-logs`, which is scoped to req.user.id.
+  // Mutation is restricted because these rows are the audit trail.
   @Get(':id')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async findOne(@Param('id') id: string) {
     return await this.subscriptionLogService.findOne(id);
   }
 
+  // Admin only: this reaches every customer's audit records. Customers read
+  // their own history through `my-logs`, which is scoped to req.user.id.
+  // Mutation is restricted because these rows are the audit trail.
   @Patch(':id')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async update(
     @Param('id') id: string,
     @Body() updateSubscriptionLogDto: UpdateSubscriptionLogDto,
@@ -147,8 +163,11 @@ export class SubscriptionLogController {
     return await this.subscriptionLogService.update(id, updateSubscriptionLogDto);
   }
 
+  // Admin only: this reaches every customer's audit records. Customers read
+  // their own history through `my-logs`, which is scoped to req.user.id.
+  // Mutation is restricted because these rows are the audit trail.
   @Delete(':id')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminGuard)
   async remove(@Param('id') id: string) {
     return await this.subscriptionLogService.remove(id);
   }
