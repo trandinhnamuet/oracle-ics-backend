@@ -183,10 +183,15 @@ export class ImageController {
   }
 
   @Get(':id')
-  async getImage(@Param('id') id: string): Promise<Image> {
+  @UseGuards(JwtAuthGuard)
+  async getImage(@Param('id') id: string, @Req() req: any): Promise<Image> {
     const image = await this.imageService.findById(id);
     if (!image) {
       throw new NotFoundException('Image not found');
+    }
+    // Only the uploader (or an admin) may read an image's metadata.
+    if (req.user?.role !== 'admin' && image.uploadedBy !== req.user?.id) {
+      throw new ForbiddenException('Access denied');
     }
     return image;
   }

@@ -4,11 +4,12 @@ import { SepayController } from './sepay.controller';
 import { SepayService } from './sepay.service';
 import { Payment } from '../../entities/payment.entity';
 import { Subscription } from '../../entities/subscription.entity';
+import { ProcessedSepayTransaction } from '../../entities/processed-sepay-transaction.entity';
 import { UserWalletModule } from '../user-wallet/user-wallet.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Payment, Subscription]),
+    TypeOrmModule.forFeature([Payment, Subscription, ProcessedSepayTransaction]),
     UserWalletModule,
   ],
   controllers: [SepayController],

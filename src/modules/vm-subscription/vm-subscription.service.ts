@@ -35,6 +35,7 @@ import * as os from 'os';
 export interface ResetPasswordJob {
   status: 'pending' | 'success' | 'failed';
   subscriptionId: string;
+  userId: number;
   newPassword?: string;
   username?: string;
   message?: string;
@@ -950,9 +951,6 @@ export class VmSubscriptionService implements OnModuleInit, OnModuleDestroy {
       }),
     );
 
-    const key = `${userId}:${subscriptionId}:${action}`;
-    this.logger.log(`DEBUG_OTP: otp=${otp} key=${key}`);
-
     // Opportunistic cleanup of stale rows to avoid unbounded growth.
     await this.actionOtpRepo
       .createQueryBuilder()
@@ -1062,6 +1060,7 @@ export class VmSubscriptionService implements OnModuleInit, OnModuleDestroy {
     const job: ResetPasswordJob = {
       status: 'pending',
       subscriptionId,
+      userId,
       startedAt: new Date(),
     };
     this.resetPasswordJobs.set(jobId, job);
@@ -1093,10 +1092,21 @@ export class VmSubscriptionService implements OnModuleInit, OnModuleDestroy {
     return jobId;
   }
 
-  /** Return the current status of an async password reset job. */
-  getResetPasswordJobStatus(subscriptionId: string, jobId: string): ResetPasswordJob | null {
+  /**
+   * Return the current status of an async password reset job.
+   * Enforces ownership: the completed job carries the new plaintext Windows
+   * password, so a non-admin caller may only read a job they started. Admins
+   * (isAdmin) may read any job; the controller strips the password for them.
+   */
+  getResetPasswordJobStatus(
+    subscriptionId: string,
+    jobId: string,
+    requesterId: number,
+    isAdmin = false,
+  ): ResetPasswordJob | null {
     const job = this.resetPasswordJobs.get(jobId);
     if (!job || job.subscriptionId !== subscriptionId) return null;
+    if (!isAdmin && job.userId !== requesterId) return null;
     return job;
   }
 

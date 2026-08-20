@@ -1,4 +1,5 @@
 import { EmailVerificationData } from '../interfaces/email-options.interface';
+import { escapeHtml } from '../../../utils/html.util';
 
 export class EmailVerificationTemplate {
   static generate(data: EmailVerificationData): { subject: string; html: string } {
@@ -117,7 +118,7 @@ export class EmailVerificationTemplate {
         </div>
         
         <div class="content">
-            <h2>${greeting} ${data.userName}!</h2>
+            <h2>${greeting} ${escapeHtml(data.userName)}!</h2>
             
             <p>${intro}</p>
             

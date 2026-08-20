@@ -193,7 +193,13 @@ export class VmSubscriptionController {
     @Param('subscriptionId') subscriptionId: string,
     @Param('jobId') jobId: string,
   ) {
-    const job = this.vmSubscriptionService.getResetPasswordJobStatus(subscriptionId, jobId);
+    const isAdmin = req.user?.role === 'admin';
+    const job = this.vmSubscriptionService.getResetPasswordJobStatus(
+      subscriptionId,
+      jobId,
+      req.user?.id,
+      isAdmin,
+    );
     if (!job) {
       return { status: 'not_found' };
     }

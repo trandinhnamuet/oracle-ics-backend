@@ -27,7 +27,13 @@ export class UserService {
     if (!createUserDto.role) {
       createUserDto.role = 'customer';
     }
-    const user = this.userRepository.create(createUserDto);
+    // Never persist a plaintext password: the entity has no @BeforeInsert hook,
+    // and login compares via bcrypt, so an unhashed value would also lock the user out.
+    const toCreate: CreateUserDto = { ...createUserDto };
+    if (toCreate.password) {
+      toCreate.password = await bcrypt.hash(toCreate.password, 10);
+    }
+    const user = this.userRepository.create(toCreate);
     const savedUser = await this.userRepository.save(user);
 
     // Tạo user_wallet cho user mới
@@ -106,7 +112,14 @@ export class UserService {
   }
 
   async update(id: number, updateUserDto: UpdateUserDto): Promise<User> {
-  await this.userRepository.update(id, updateUserDto);
+  // Hash any password coming through the admin update path (UpdateUserDto still
+  // carries an optional password); otherwise it would overwrite the bcrypt hash
+  // with plaintext and lock the user out.
+  const toUpdate: UpdateUserDto = { ...updateUserDto };
+  if (toUpdate.password) {
+    toUpdate.password = await bcrypt.hash(toUpdate.password, 10);
+  }
+  await this.userRepository.update(id, toUpdate);
   const user = await this.userRepository.findOne({ where: { id } });
   if (!user) throw new Error('User not found');
   return user;

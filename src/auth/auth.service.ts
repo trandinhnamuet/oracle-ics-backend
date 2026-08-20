@@ -35,6 +35,9 @@ interface JwtPayload {
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
 
+  /** Max wrong guesses allowed against a user-entity OTP before it is burned. */
+  private static readonly MAX_OTP_ATTEMPTS = 5;
+
   constructor(
     @InjectRepository(User)
     private userRepository: Repository<User>,
@@ -128,22 +131,43 @@ export class AuthService {
       throw new BadRequestException(t('verifyOtp.alreadyVerified', lang));
     }
 
-    // Check OTP
-    if (!user.emailVerificationOtp || user.emailVerificationOtp !== otp) {
+    // Check OTP presence
+    if (!user.emailVerificationOtp || !user.otpExpiresAt) {
       this.logger.warn(`OTP verification failed: Invalid OTP for ${email}`);
       throw new BadRequestException(t('verifyOtp.invalidOtp', lang));
     }
 
     // Check OTP expiration
-    if (!user.otpExpiresAt || new Date() > user.otpExpiresAt) {
+    if (new Date() > user.otpExpiresAt) {
       this.logger.warn(`OTP verification failed: OTP expired for ${email}. Expiry: ${user.otpExpiresAt}, Current: ${new Date()}`);
       throw new BadRequestException(t('verifyOtp.otpExpired', lang));
+    }
+
+    // Per-account attempt limiting: burn the code after too many wrong guesses
+    // so the 6-digit space cannot be brute-forced across many IPs.
+    if ((user.emailVerificationOtpAttempts ?? 0) >= AuthService.MAX_OTP_ATTEMPTS) {
+      user.emailVerificationOtp = undefined;
+      user.otpExpiresAt = undefined;
+      await this.userRepository.save(user);
+      throw new BadRequestException(t('verifyOtp.invalidOtp', lang));
+    }
+
+    if (user.emailVerificationOtp !== otp) {
+      this.logger.warn(`OTP verification failed: Invalid OTP for ${email}`);
+      user.emailVerificationOtpAttempts = (user.emailVerificationOtpAttempts ?? 0) + 1;
+      if (user.emailVerificationOtpAttempts >= AuthService.MAX_OTP_ATTEMPTS) {
+        user.emailVerificationOtp = undefined;
+        user.otpExpiresAt = undefined;
+      }
+      await this.userRepository.save(user);
+      throw new BadRequestException(t('verifyOtp.invalidOtp', lang));
     }
 
     // Activate user
     user.isActive = true;
     user.emailVerificationOtp = undefined;
     user.otpExpiresAt = undefined;
+    user.emailVerificationOtpAttempts = 0;
     await this.userRepository.save(user);
     this.logger.log(`User activated successfully: ${email}`);
 
@@ -221,6 +245,7 @@ export class AuthService {
 
     user.emailVerificationOtp = otp;
     user.otpExpiresAt = otpExpiresAt;
+    user.emailVerificationOtpAttempts = 0;
     await this.userRepository.save(user);
 
     // Send OTP email
@@ -246,6 +271,44 @@ export class AuthService {
 
   private generateOtp(): string {
     return randomInt(100000, 999999).toString();
+  }
+
+  /**
+   * Verify a password-reset OTP against the user row, enforcing a per-account
+   * attempt limit. On a wrong guess the attempt counter is incremented and the
+   * OTP is burned once MAX_OTP_ATTEMPTS is reached, so the 6-digit space cannot
+   * be brute-forced across many IPs (the controller throttle is per-IP only).
+   * Throws a generic BadRequestException on any failure to avoid leaking whether
+   * the email exists or the code was merely wrong.
+   */
+  private async assertValidPasswordResetOtp(user: User, otp: string, lang: string): Promise<void> {
+    const invalid = () => new BadRequestException(t('resetPassword.invalidOtp', lang));
+
+    if (!user.passwordResetOtp || !user.passwordResetOtpExpiresAt) {
+      throw invalid();
+    }
+
+    if (new Date() > user.passwordResetOtpExpiresAt) {
+      throw new BadRequestException(t('resetPassword.otpExpired', lang));
+    }
+
+    if ((user.passwordResetOtpAttempts ?? 0) >= AuthService.MAX_OTP_ATTEMPTS) {
+      // Too many wrong guesses: burn the code so it can't be used further.
+      user.passwordResetOtp = undefined;
+      user.passwordResetOtpExpiresAt = undefined;
+      await this.userRepository.save(user);
+      throw invalid();
+    }
+
+    if (user.passwordResetOtp !== otp) {
+      user.passwordResetOtpAttempts = (user.passwordResetOtpAttempts ?? 0) + 1;
+      if (user.passwordResetOtpAttempts >= AuthService.MAX_OTP_ATTEMPTS) {
+        user.passwordResetOtp = undefined;
+        user.passwordResetOtpExpiresAt = undefined;
+      }
+      await this.userRepository.save(user);
+      throw invalid();
+    }
   }
 
   // ==================== CLIENT INFO EXTRACTION ====================
@@ -951,8 +1014,15 @@ export class AuthService {
 
     const user = await this.userRepository.findOne({ where: { email } });
     if (!user) {
+      // Do NOT reveal whether the email is registered: return the same generic
+      // success response as the happy path so this endpoint can't be used as an
+      // account-existence oracle.
       this.logger.log(`forgotPassword requested for non-existent email: ${email}`);
-      throw new BadRequestException(t('forgotPassword.notFound', lang));
+      return {
+        message: t('forgotPassword.success', lang),
+        email,
+        success: true,
+      };
     }
 
     // Enforce shared hourly OTP limit before generating/sending
@@ -963,9 +1033,10 @@ export class AuthService {
     const otpExpiresAt = new Date();
     otpExpiresAt.setMinutes(otpExpiresAt.getMinutes() + 10); // OTP valid for 10 minutes
 
-    // Save OTP to user
+    // Save OTP to user; reset the per-account attempt counter for the new code.
     user.passwordResetOtp = otp;
     user.passwordResetOtpExpiresAt = otpExpiresAt;
+    user.passwordResetOtpAttempts = 0;
     await this.userRepository.save(user);
 
     // Send OTP email
@@ -990,21 +1061,15 @@ export class AuthService {
   async verifyResetOtp(verifyResetOtpDto: VerifyResetOtpDto, lang: string = DEFAULT_LANG) {
     const { email, otp } = verifyResetOtpDto;
 
-    // Find user
+    // Find user. Use the same generic invalid-OTP error for a missing user so
+    // this endpoint cannot be used to enumerate registered emails.
     const user = await this.userRepository.findOne({ where: { email } });
     if (!user) {
-      throw new BadRequestException(t('verifyResetOtp.userNotFound', lang));
-    }
-
-    // Check OTP
-    if (!user.passwordResetOtp || user.passwordResetOtp !== otp) {
       throw new BadRequestException(t('verifyResetOtp.invalidOtp', lang));
     }
 
-    // Check OTP expiration
-    if (!user.passwordResetOtpExpiresAt || new Date() > user.passwordResetOtpExpiresAt) {
-      throw new BadRequestException(t('verifyResetOtp.otpExpired', lang));
-    }
+    // Verify OTP with per-account attempt limiting.
+    await this.assertValidPasswordResetOtp(user, otp, lang);
 
     return {
       message: t('verifyResetOtp.success', lang),
@@ -1018,21 +1083,15 @@ export class AuthService {
   async resetPassword(resetPasswordDto: ResetPasswordDto, lang: string = DEFAULT_LANG) {
     const { email, otp, newPassword } = resetPasswordDto;
 
-    // Find user
+    // Find user. Use the same generic invalid-OTP error for a missing user so
+    // this endpoint cannot be used to enumerate registered emails.
     const user = await this.userRepository.findOne({ where: { email } });
     if (!user) {
-      throw new BadRequestException(t('resetPassword.userNotFound', lang));
-    }
-
-    // Check OTP
-    if (!user.passwordResetOtp || user.passwordResetOtp !== otp) {
       throw new BadRequestException(t('resetPassword.invalidOtp', lang));
     }
 
-    // Check OTP expiration
-    if (!user.passwordResetOtpExpiresAt || new Date() > user.passwordResetOtpExpiresAt) {
-      throw new BadRequestException(t('resetPassword.otpExpired', lang));
-    }
+    // Verify OTP with per-account attempt limiting.
+    await this.assertValidPasswordResetOtp(user, otp, lang);
 
     // Hash new password
     const hashedPassword = await bcrypt.hash(newPassword, 10);
@@ -1041,6 +1100,7 @@ export class AuthService {
     user.password = hashedPassword;
     user.passwordResetOtp = undefined;
     user.passwordResetOtpExpiresAt = undefined;
+    user.passwordResetOtpAttempts = 0;
     await this.userRepository.save(user);
 
     // SECURITY: Invalidate all existing sessions/refresh tokens after password

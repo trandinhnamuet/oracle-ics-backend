@@ -80,9 +80,10 @@ export class ImageService {
   }
 
   async findById(id: string): Promise<Image | null> {
+    // Do NOT eager-load the `user` relation: this record is returned to API
+    // callers and the joined User entity leaks uploader PII (email, phone, idCard…).
     return await this.imageRepository.findOne({
       where: { id },
-      relations: ['user'],
     });
   }
 

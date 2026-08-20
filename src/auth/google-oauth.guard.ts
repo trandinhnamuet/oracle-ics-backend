@@ -1,5 +1,6 @@
 import { ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
+import { ConfigService } from '@nestjs/config';
 import { randomBytes, timingSafeEqual } from 'crypto';
 
 const STATE_COOKIE = 'oauth_state';
@@ -22,17 +23,44 @@ const STATE_TTL_MS = 10 * 60 * 1000; // the round trip to Google takes seconds
  */
 @Injectable()
 export class GoogleOAuthGuard extends AuthGuard('google') {
-  /** Outbound leg: mint the state, remember it in a cookie, hand it to passport. */
+  constructor(private readonly configService: ConfigService) {
+    super();
+  }
+
+  private isCallbackLeg(req: any): boolean {
+    return String(req?.path || req?.url || '').includes('callback');
+  }
+
+  /**
+   * Cookie scope for the state cookie. Kept in lockstep with the refresh cookie
+   * (auth.controller getRefreshCookiePath/getCookieOptions): both must use the
+   * same path/secure/domain, otherwise setting REFRESH_COOKIE_PATH='/auth' for
+   * local backend-port testing would leave oauth_state at '/api/auth' and every
+   * Google login would fail with "Invalid OAuth state".
+   */
+  private stateCookieOptions(includeMaxAge: boolean) {
+    const options: any = {
+      httpOnly: true,
+      secure: this.configService.get('NODE_ENV') === 'production',
+      sameSite: 'lax' as const,
+      path: this.configService.get<string>('REFRESH_COOKIE_PATH') || '/api/auth',
+    };
+    if (includeMaxAge) options.maxAge = STATE_TTL_MS;
+    const cookieDomain = this.configService.get('COOKIE_DOMAIN');
+    if (cookieDomain) options.domain = cookieDomain;
+    return options;
+  }
+
+  /** Outbound leg only: mint the state, remember it in a cookie, hand it to passport. */
   getAuthenticateOptions(context: ExecutionContext) {
+    const req = context.switchToHttp().getRequest();
+    // The callback leg validates state in canActivate; re-minting here would set a
+    // fresh cookie right after canActivate cleared it (wasted work + stray cookie).
+    if (this.isCallbackLeg(req)) return {};
+
     const res = context.switchToHttp().getResponse();
     const state = randomBytes(32).toString('hex');
-    res.cookie(STATE_COOKIE, state, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax' as const,
-      maxAge: STATE_TTL_MS,
-      path: '/api/auth',
-    });
+    res.cookie(STATE_COOKIE, state, this.stateCookieOptions(true));
     return { state };
   }
 
@@ -40,21 +68,15 @@ export class GoogleOAuthGuard extends AuthGuard('google') {
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const req = context.switchToHttp().getRequest();
     const res = context.switchToHttp().getResponse();
-    const isCallback = String(req.path || req.url || '').includes('callback');
 
-    if (isCallback) {
+    if (this.isCallbackLeg(req)) {
       const returned = String(req.query?.state || '');
       const expected = String(req.cookies?.[STATE_COOKIE] || '');
       if (!returned || !expected || !safeEqual(returned, expected)) {
         throw new UnauthorizedException('Invalid OAuth state');
       }
       // One-time use: clear it so a captured callback URL cannot be replayed.
-      res.clearCookie(STATE_COOKIE, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'lax' as const,
-        path: '/api/auth',
-      });
+      res.clearCookie(STATE_COOKIE, this.stateCookieOptions(false));
     }
 
     return (await super.canActivate(context)) as boolean;

@@ -1,9 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { QueryFailedError, Repository } from 'typeorm';
 import { SepayWebhookDto, CreatePaymentDto } from './dto/sepay.dto';
 import { Payment } from '../../entities/payment.entity';
 import { Subscription } from '../../entities/subscription.entity';
+import { ProcessedSepayTransaction } from '../../entities/processed-sepay-transaction.entity';
 import { UserWalletService } from '../user-wallet/user-wallet.service';
 import { NotificationService } from '../notification/notification.service';
 import { NotificationType } from '../../entities/notification.entity';
@@ -18,9 +19,24 @@ export class SepayService {
     private paymentRepository: Repository<Payment>,
     @InjectRepository(Subscription)
     private subscriptionRepository: Repository<Subscription>,
+    @InjectRepository(ProcessedSepayTransaction)
+    private processedTxRepository: Repository<ProcessedSepayTransaction>,
     private userWalletService: UserWalletService,
     private notificationService: NotificationService,
   ) {}
+
+  /**
+   * PostgreSQL unique-violation SQLSTATE. Used to detect a duplicate/concurrent
+   * webhook delivery when claiming the idempotency row.
+   */
+  private static readonly PG_UNIQUE_VIOLATION = '23505';
+
+  private isUniqueViolation(err: unknown): boolean {
+    return (
+      err instanceof QueryFailedError &&
+      (err as QueryFailedError & { code?: string }).code === SepayService.PG_UNIQUE_VIOLATION
+    );
+  }
 
   async handleWebhook(webhookData: SepayWebhookDto): Promise<{ success: boolean; message: string }> {
     try {
@@ -74,24 +90,54 @@ export class SepayService {
         return { success: false, message: 'Payment expired (over 15 minutes)' };
       }
 
+      // IDEMPOTENCY: claim this bank transaction before applying any money side
+      // effect. A retried/duplicate delivery (esp. of an underpayment, which keeps
+      // the payment 'pending' and would otherwise re-match) hits the unique index
+      // and is skipped; two concurrent deliveries race on the same insert and only
+      // one wins. The claim is rolled back below if processing then throws, so a
+      // genuine operator replay is still possible.
+      const bankTxId = String(webhookData.id);
+      try {
+        await this.processedTxRepository.insert({ bankTxId, paymentId: payment.id });
+      } catch (claimErr) {
+        if (this.isUniqueViolation(claimErr)) {
+          this.logger.warn(`[SEPAY] Duplicate webhook for bank tx ${bankTxId} ignored (already processed).`);
+          return { success: true, message: 'Duplicate webhook ignored (already processed)' };
+        }
+        throw claimErr;
+      }
+
       const received = webhookData.transferAmount;
       const expected = Number(payment.amount);
 
       this.logger.log(`[SEPAY] Payment ${payment.id}: received=${received}, expected=${expected}`);
 
-      if (received < expected) {
-        // Thiếu tiền: cộng số tiền nhận được vào ví, giữ payment pending
-        await this.handleUnderpayment(payment, received, expected);
-        return {
-          success: true,
-          message: `Underpayment: received ${received}, expected ${expected}. Amount credited to wallet; payment still pending.`,
-        };
-      }
+      try {
+        if (received < expected) {
+          // Thiếu tiền: cộng số tiền nhận được vào ví, giữ payment pending
+          await this.handleUnderpayment(payment, received, expected);
+          return {
+            success: true,
+            message: `Underpayment: received ${received}, expected ${expected}. Amount credited to wallet; payment still pending.`,
+          };
+        }
 
-      // Đủ hoặc dư tiền: kích hoạt subscription / deposit, hoàn tiền dư vào ví
-      const excess = received - expected;
-      await this.handleFullPayment(payment, received, expected, excess);
-      return { success: true, message: 'Payment processed successfully' };
+        // Đủ hoặc dư tiền: kích hoạt subscription / deposit, hoàn tiền dư vào ví
+        const excess = received - expected;
+        await this.handleFullPayment(payment, received, expected, excess);
+        return { success: true, message: 'Payment processed successfully' };
+      } catch (processErr) {
+        // Release the idempotency claim so the operator/Sepay can replay this
+        // transfer after the underlying failure is resolved.
+        try {
+          await this.processedTxRepository.delete({ bankTxId });
+        } catch (releaseErr) {
+          this.logger.error(
+            `CRITICAL: failed to release idempotency claim for bank tx ${bankTxId}; a replay will be blocked. Error: ${(releaseErr as Error)?.message}`,
+          );
+        }
+        throw processErr;
+      }
 
     } catch (error) {
       this.logger.error(`Error processing Sepay webhook: ${error.message}`, error.stack);
@@ -149,8 +195,16 @@ export class SepayService {
     expected: number,
     excess: number,
   ): Promise<void> {
-    // Đánh dấu payment thành công
-    await this.paymentRepository.update(payment.id, { status: 'success' });
+    // Đánh dấu payment thành công bằng compare-and-set atomic: chỉ chuyển khi
+    // vẫn còn 'pending'. Nếu affected=0 thì một lần xử lý khác đã hoàn tất → dừng.
+    const claim = await this.paymentRepository.update(
+      { id: payment.id, status: 'pending' },
+      { status: 'success' },
+    );
+    if (!claim.affected) {
+      this.logger.warn(`[SEPAY] Payment ${payment.id} no longer pending; skipping duplicate full-payment processing.`);
+      return;
+    }
 
     try {
       if (payment.payment_type === 'deposit') {

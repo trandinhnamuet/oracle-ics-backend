@@ -11,10 +11,13 @@ export class EmailService {
     private transporter: nodemailer.Transporter;
 
     constructor() {
+        const smtpPort = parseInt(process.env.SMTP_PORT || '587', 10);
         this.transporter = nodemailer.createTransport({
             host: process.env.SMTP_HOST || 'smtp.gmail.com',
-            port: parseInt(process.env.SMTP_PORT || '587'),
-            secure: false,
+            port: smtpPort,
+            // Derive implicit-TLS from the port (465) like the other mailers,
+            // otherwise SMTP_PORT=465 would silently fail on this transport only.
+            secure: smtpPort === 465,
             auth: {
                 user: process.env.SMTP_USER,
                 pass: process.env.SMTP_PASS,

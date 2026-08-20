@@ -1,4 +1,5 @@
 import { PasswordResetData } from '../interfaces/email-options.interface';
+import { escapeHtml } from '../../../utils/html.util';
 
 export class PasswordResetTemplate {
   static generate(data: PasswordResetData): { subject: string; html: string } {
@@ -152,7 +153,7 @@ export class PasswordResetTemplate {
         </div>
         
         <div class="content">
-            <h2>${greeting} ${data.userName}!</h2>
+            <h2>${greeting} ${escapeHtml(data.userName)}!</h2>
             
             <p>${intro1}</p>
             <p>${intro2}</p>

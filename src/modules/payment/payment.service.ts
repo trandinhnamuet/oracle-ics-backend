@@ -127,9 +127,24 @@ export class PaymentService {
       }
     }
 
-    // Update payment status
-    payment.status = 'success';
-    await this.paymentRepository.save(payment);
+    // Atomically claim the payment: only one concurrent completion may flip
+    // pending → success. Without this, two concurrent completions of the same
+    // pending deposit both proceed and credit the wallet twice.
+    if (payment.status === 'pending') {
+      const claim = await this.paymentRepository.update(
+        { id: payment.id, status: 'pending' },
+        { status: 'success' },
+      );
+      if (!claim.affected) {
+        this.logger.warn(`[completePayment] Payment ${payment.id} already completed concurrently; skipping.`);
+        const fresh = await this.paymentRepository.findOne({ where: { id: payment.id } });
+        return fresh ?? payment;
+      }
+      payment.status = 'success';
+    } else {
+      payment.status = 'success';
+      await this.paymentRepository.save(payment);
+    }
 
     // update user wallet balance if type is deposit
     if (payment.payment_type === 'deposit') {
@@ -265,14 +280,22 @@ export class PaymentService {
 
     const balanceBefore = Number(userWallet.balance);
     const paymentAmountNum = Number(payment.amount);
-    this.logger.debug(`[updateUserWallet] calculating: balanceBefore(${typeof balanceBefore})=${balanceBefore} + paymentAmount(${typeof paymentAmountNum})=${paymentAmountNum}`);
-    const balanceAfter = balanceBefore + paymentAmountNum;
-    this.logger.debug(`[updateUserWallet] balanceAfter=${balanceAfter}`);
 
-    // Update wallet balance
-    userWallet.balance = balanceAfter;
-    const savedWallet = await this.userWalletRepository.save(userWallet);
-    this.logger.log(`[updateUserWallet] userWallet saved id=${savedWallet.id} balanceBefore=${balanceBefore} paymentAmount=${paymentAmountNum} balanceAfter=${balanceAfter} savedBalance=${savedWallet.balance}`);
+    // Atomic balance increment done entirely in the database (balance = balance + amount)
+    // instead of a read-modify-write on the in-memory entity. This avoids the
+    // lost-update race where a concurrent deduction (subscribe-with-balance) and
+    // this deposit both read the old balance and one overwrites the other.
+    const updateResult = await this.userWalletRepository
+      .createQueryBuilder()
+      .update(UserWallet)
+      .set({ balance: () => 'balance + :amt' })
+      .where('id = :id', { id: userWallet.id })
+      .setParameter('amt', paymentAmountNum)
+      .returning('balance')
+      .execute();
+
+    const balanceAfter = Number(updateResult.raw?.[0]?.balance ?? balanceBefore + paymentAmountNum);
+    this.logger.log(`[updateUserWallet] userWallet id=${userWallet.id} balanceBefore=${balanceBefore} paymentAmount=${paymentAmountNum} balanceAfter=${balanceAfter}`);
 
     // Create wallet transaction record
     const walletTransaction = this.walletTransactionRepository.create({

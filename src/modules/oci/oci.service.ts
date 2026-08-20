@@ -12,7 +12,19 @@ import { redactWinRmOutput } from '../../utils/winrm-log.util';
 // The icsreset account is created by userdata and never has must-change set,
 // so WinRM authentication always succeeds regardless of the opc user's must-change state.
 const WINRM_ADMIN_USERNAME = 'icsreset';
-const WINRM_ADMIN_PASSWORD = process.env.WINRM_ADMIN_PASSWORD ?? 'OciAdmin2025BackendIcs@';
+// No default: a hardcoded fallback would become a shared, source-code-known
+// Administrator backdoor baked into every provisioned Windows VM. Fail closed
+// at the point of use instead so provisioning/reset refuses to run misconfigured.
+const WINRM_ADMIN_PASSWORD = process.env.WINRM_ADMIN_PASSWORD;
+
+function getWinrmAdminPassword(): string {
+  if (!WINRM_ADMIN_PASSWORD) {
+    throw new Error(
+      'WINRM_ADMIN_PASSWORD is not configured; refusing to provision or reset a Windows VM with a default credential.',
+    );
+  }
+  return WINRM_ADMIN_PASSWORD;
+}
 
 
 @Injectable()
@@ -1241,7 +1253,7 @@ runcmd:
           '# opc has must-change-password active. icsreset never has must-change set.',
           'try {',
           '  $adminUser = "icsreset"',
-          `  $adminPwd = '${WINRM_ADMIN_PASSWORD}'`,
+          `  $adminPwd = '${getWinrmAdminPassword()}'`,
           '  $existing = Get-LocalUser $adminUser -ErrorAction SilentlyContinue',
           '  if (-not $existing) {',
           '    net user $adminUser $adminPwd /add /y /comment:"ICS Backend admin - do not delete" 2>$null',
@@ -3933,7 +3945,7 @@ chmod 600 ~/.ssh/authorized_keys`;
       newPassword,
       setMustChange,
       adminUsername: WINRM_ADMIN_USERNAME,
-      adminPassword: WINRM_ADMIN_PASSWORD,
+      adminPassword: getWinrmAdminPassword(),
     });
 
     const TIMEOUT_MS = 90_000;

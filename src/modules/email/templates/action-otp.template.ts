@@ -1,3 +1,5 @@
+import { escapeHtml } from '../../../utils/html.util';
+
 export type ActionOtpType = 'request-key' | 'reset-password';
 
 export interface ActionOtpData {
@@ -34,9 +36,10 @@ export class ActionOtpTemplate {
 
     const actionIcon = isReset ? '🔑' : '🗝️';
 
+    const safeUserName = escapeHtml(data.userName);
     const greeting = isVi
-      ? `Xin chào <strong>${data.userName}</strong>,`
-      : `Hello <strong>${data.userName}</strong>,`;
+      ? `Xin chào <strong>${safeUserName}</strong>,`
+      : `Hello <strong>${safeUserName}</strong>,`;
 
     const intro = isVi
       ? (isReset

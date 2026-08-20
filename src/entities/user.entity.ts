@@ -71,12 +71,20 @@ export class User {
   otpExpiresAt?: Date;
 
   @Exclude()
+  @Column({ name: 'email_verification_otp_attempts', type: 'integer', default: 0 })
+  emailVerificationOtpAttempts: number;
+
+  @Exclude()
   @Column({ name: 'password_reset_otp', length: 6, nullable: true })
   passwordResetOtp?: string;
 
   @Exclude()
   @Column({ name: 'password_reset_otp_expires_at', type: 'timestamp', nullable: true })
   passwordResetOtpExpiresAt?: Date;
+
+  @Exclude()
+  @Column({ name: 'password_reset_otp_attempts', type: 'integer', default: 0 })
+  passwordResetOtpAttempts: number;
 
   @Exclude()
   @Column({ name: 'refresh_token', length: 500, nullable: true })
