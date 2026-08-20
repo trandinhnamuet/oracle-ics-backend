@@ -1,6 +1,7 @@
 import { Controller, Get, Post, Patch, Delete, Body, Param, UseGuards } from '@nestjs/common';
 import { RegistrationRequestsService } from './registration-requests.service';
 import { RegistrationRequests } from './registration-requests.entity';
+import { CreateRegistrationRequestDto } from './dto/create-registration-request.dto';
 import { JwtAuthGuard } from '../../../auth/jwt-auth.guard';
 import { AdminGuard } from '../../../auth/admin.guard';
 
@@ -10,7 +11,7 @@ export class RegistrationRequestsController {
 
 	// Public: the sign-up form on the marketing site posts here.
 	@Post()
-	async create(@Body() data: Partial<RegistrationRequests>) {
+	async create(@Body() data: CreateRegistrationRequestDto) {
 		return this.service.create(data);
 	}
 
