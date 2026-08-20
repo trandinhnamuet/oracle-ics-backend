@@ -6,6 +6,7 @@ import { AuthService } from './auth.service';
 import { ConfigService } from '@nestjs/config';
 import { LoginDto, RegisterDto, VerifyOtpDto, ResendOtpDto, ForgotPasswordDto, VerifyResetOtpDto, ResetPasswordDto } from './dto/auth.dto';
 import { JwtAuthGuard } from './jwt-auth.guard';
+import { GoogleOAuthGuard } from './google-oauth.guard';
 import { extractLang, t } from '../i18n/auth-messages';
 
 @Controller('auth')
@@ -158,7 +159,12 @@ export class AuthController {
     return await this.authService.forgotPassword(forgotPasswordDto, lang);
   }
 
+  // Reset-OTP verification is a guessing target: a 6-digit code is only 10^6
+  // values, so without an endpoint-specific limit a distributed attacker can
+  // brute-force it. 5 attempts per minute per IP, on top of the per-account
+  // hourly send limit enforced in the service.
   @Post('verify-reset-otp')
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   async verifyResetOtp(
     @Body() verifyResetOtpDto: VerifyResetOtpDto,
     @Headers('accept-language') acceptLang?: string,
@@ -167,7 +173,10 @@ export class AuthController {
     return await this.authService.verifyResetOtp(verifyResetOtpDto, lang);
   }
 
+  // Same reasoning: the reset itself carries the OTP, so it is equally a
+  // guessing surface and needs its own limit.
   @Post('reset-password')
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   async resetPassword(
     @Body() resetPasswordDto: ResetPasswordDto,
     @Headers('accept-language') acceptLang?: string,
@@ -332,13 +341,13 @@ export class AuthController {
   }
 
   @Get('google')
-  @UseGuards(AuthGuard('google'))
+  @UseGuards(GoogleOAuthGuard)
   async googleAuth() {
     // Guard redirects to Google OAuth
   }
 
   @Get('google/callback')
-  @UseGuards(AuthGuard('google'))
+  @UseGuards(GoogleOAuthGuard)
   async googleAuthCallback(
     @Req() req: Request,
     @Res() response: Response,
@@ -375,8 +384,12 @@ export class AuthController {
         frontendUrl = this.configService.get<string>('FRONTEND_URL') || 'http://localhost:3000';
       }
 
-      // Redirect to frontend with access token
-      response.redirect(`${frontendUrl}/auth/callback?token=${result.accessToken}`);
+      // Redirect WITHOUT the token. It used to be appended as ?token=<jwt>, which
+      // leaves a live credential in browser history, server and proxy logs, the
+      // Referer header of anything the landing page loads, and any screenshot of
+      // the address bar. The refresh cookie was already set above, so the callback
+      // page obtains an access token by calling /auth/refresh instead.
+      response.redirect(`${frontendUrl}/auth/callback`);
     } catch (error) {
       this.logger.error('Google OAuth callback error:', error);
       const frontendUrl = this.configService.get<string>('FRONTEND_URL') || 'http://localhost:3000';
