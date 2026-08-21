@@ -1,4 +1,10 @@
-import { IsString, IsNotEmpty, IsOptional, IsNumber, Min, Max } from 'class-validator';
+import { IsString, IsNotEmpty, IsOptional, IsNumber, Min, Max, Matches } from 'class-validator';
+
+// A single-line OpenSSH public key: "<type> <base64>[ comment]". The single-line
+// anchored pattern rejects embedded newlines, preventing injection of extra
+// directives into the cloud-init YAML / authorized_keys the key is written into.
+const SSH_PUBLIC_KEY_REGEX =
+  /^(ssh-(rsa|ed25519|dss)|ecdsa-sha2-nistp(256|384|521)) [A-Za-z0-9+/]+={0,3}( [^\n\r]*)?$/;
 
 export class CreateVmDto {
   @IsString()
@@ -33,6 +39,7 @@ export class CreateVmDto {
 
   @IsString()
   @IsNotEmpty()
+  @Matches(SSH_PUBLIC_KEY_REGEX, { message: 'userSshPublicKey must be a valid single-line OpenSSH public key' })
   userSshPublicKey: string;
 
   @IsString()

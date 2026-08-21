@@ -117,6 +117,20 @@ export class VmInstance {
   @Column({ type: 'boolean', default: false, nullable: true })
   windows_password_initialized: boolean;
 
+  /**
+   * Per-VM password for the backend's hidden WinRM admin account (icsreset),
+   * encrypted at rest (utils/vm-secret.util.ts). Replaces the previous single
+   * fleet-wide WINRM_ADMIN_PASSWORD, which — being identical on every VM and
+   * readable from each VM's own instance metadata — allowed a customer to log in
+   * (RDP/WinRM) as icsreset on ANY other customer's Windows VM.
+   *
+   * NULL for VMs provisioned before this change: those were baked with the shared
+   * env password, so the reset path falls back to WINRM_ADMIN_PASSWORD when this
+   * is null (backward compatible; no reset breakage).
+   */
+  @Column({ type: 'text', nullable: true })
+  winrm_admin_password: string | null;
+
   @Column({ type: 'int', nullable: true })
   system_ssh_key_id: number | null;
 

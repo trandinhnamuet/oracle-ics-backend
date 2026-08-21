@@ -17,6 +17,7 @@ import { OciService } from '../oci/oci.service';
 import { BandwidthService } from '../bandwidth/bandwidth.service';
 import { encryptPrivateKey, decryptPrivateKey } from '../../utils/system-ssh-key.util';
 import { encryptVmSecret, decryptVmSecret } from '../../utils/vm-secret.util';
+import { escapeHtml } from '../../utils/html.util';
 import { Subscription } from '../../entities/subscription.entity';
 import { VmInstance } from '../../entities/vm-instance.entity';
 import { User } from '../../entities/user.entity';
@@ -240,6 +241,23 @@ export class VmSubscriptionService implements OnModuleInit, OnModuleDestroy {
     configureVmDto.ocpus = packageOcpus;
     configureVmDto.memoryInGBs = packageMemoryInGBs;
     configureVmDto.bootVolumeSizeInGBs = packageBootVolumeSizeInGBs < 50 ? 50 : packageBootVolumeSizeInGBs;
+
+    // ENTITLEMENT: the ocpus/memory/disk above are enforced from the paid package,
+    // but for a FIXED (non-Flex) shape those overrides are ignored and the shape's
+    // own (possibly much larger) vCPU/RAM apply. Optionally constrain the shape to a
+    // configured allowlist so a small-package user cannot request a large fixed shape.
+    // ALLOWED_VM_SHAPES = comma-separated list; unset = permit (with a warning).
+    const allowedShapesEnv = process.env.ALLOWED_VM_SHAPES;
+    if (allowedShapesEnv) {
+      const allowed = allowedShapesEnv.split(',').map((s) => s.trim()).filter(Boolean);
+      if (configureVmDto.shape && !allowed.includes(configureVmDto.shape)) {
+        throw new BadRequestException(`Shape "${configureVmDto.shape}" is not permitted.`);
+      }
+    } else {
+      this.logger.warn(
+        `⚠️ ALLOWED_VM_SHAPES is not set — VM shape "${configureVmDto.shape}" is accepted without an entitlement allowlist.`,
+      );
+    }
 
     // Update configuration status to 'configuring'
     subscription.configuration_status = 'configuring';
@@ -1221,6 +1239,8 @@ export class VmSubscriptionService implements OnModuleInit, OnModuleDestroy {
         currentPassword,
         adminPrivateKey,
         passwordInitialized,
+        // Per-VM icsreset password (null for legacy VMs -> WinRM falls back to shared env)
+        decryptVmSecret(vm.winrm_admin_password) ?? undefined,
       );
       this.logger.log(`✅ Password changed successfully`);
     } catch (runCmdError) {
@@ -1476,7 +1496,7 @@ export class VmSubscriptionService implements OnModuleInit, OnModuleDestroy {
               
               <div class="info-box">
                 <h3>${isVietnamese ? '📋 Thông Tin VM' : '📋 VM Information'}</h3>
-                <p><strong>${isVietnamese ? 'Tên VM:' : 'VM Name:'}</strong> ${vmInfo.displayName}</p>
+                <p><strong>${isVietnamese ? 'Tên VM:' : 'VM Name:'}</strong> ${escapeHtml(vmInfo.displayName)}</p>
                 <p><strong>${isVietnamese ? 'IP Public:' : 'Public IP:'}</strong> ${vmInfo.publicIp || (isVietnamese ? 'Đang chờ...' : 'Pending...')}</p>
                 <p><strong>Instance ID:</strong> ${vmInfo.instanceOcid}</p>
                 <p><strong>Subscription ID:</strong> ${subscription.id}</p>
@@ -1743,7 +1763,7 @@ apt update && apt upgrade -y
             <div class="content">
               <h2>${isVi ? 'Thông tin VM' : 'VM Information'}</h2>
               <div class="vm-details">
-                <p><strong>${isVi ? 'Tên VM' : 'VM Name'}:</strong> ${vmInfo.name || 'N/A'}</p>
+                <p><strong>${isVi ? 'Tên VM' : 'VM Name'}:</strong> ${escapeHtml(vmInfo.name || 'N/A')}</p>
                 <p><strong>${isVi ? 'IP Công khai' : 'Public IP'}:</strong> <code>${vmInfo.publicIp || (isVi ? 'Đang lấy...' : 'Retrieving...')}</code></p>
                 <p><strong>${isVi ? 'Hệ điều hành' : 'Operating System'}:</strong> ${vmInfo.operatingSystem || 'Windows Server'}</p>
                 <p><strong>${isVi ? 'Trạng thái' : 'Status'}:</strong> ${vmInfo.status || 'PROVISIONING'}</p>

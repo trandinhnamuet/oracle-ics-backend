@@ -11,31 +11,15 @@ import { SystemSshKeyService } from './system-ssh-key.service';
 export class SystemSshKeyController {
   constructor(private readonly systemSshKeyService: SystemSshKeyService) {}
 
-  /**
-   * Get admin decrypted private SSH key
-   * ⚠️ WARNING: This endpoint returns sensitive data. Use with extreme caution.
-   * Should only be called by authorized administrators.
-   * 
-   * @returns {Promise<{privateKey: string}>} Decrypted private SSH key of admin
-   */
-  @Get('admin-private-key')
-  async getAdminPrivateKey(): Promise<{
-    privateKey: string;
-    publicKey: string;
-    fingerprint: string;
-  }> {
-    const adminKey = await this.systemSshKeyService.getAdminKey();
-    
-    return {
-      privateKey: adminKey.privateKey,
-      publicKey: adminKey.publicKey,
-      fingerprint: adminKey.fingerprint,
-    };
-  }
+  // SECURITY: the endpoint that returned the fleet master PRIVATE key over HTTP
+  // has been removed. It had no client caller, and exposing the key that grants
+  // root to every Linux VM through any read endpoint is an unacceptable blast
+  // radius (one stolen admin token / XSS / guard regression = whole-fleet root).
+  // Internal callers use SystemSshKeyService.getAdminKey() directly.
 
   /**
    * Get admin public SSH key only
-   * 
+   *
    * @returns {Promise<{publicKey: string}>} Public SSH key of admin
    */
   @Get('admin-public-key')

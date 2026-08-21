@@ -3,6 +3,7 @@ import {
   Logger,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
   InternalServerErrorException,
   HttpException,
 } from '@nestjs/common';
@@ -11,7 +12,7 @@ import { Repository } from 'typeorm';
 import { OciService } from '../oci/oci.service';
 import { SystemSshKeyService } from '../system-ssh-key/system-ssh-key.service';
 import { encryptPrivateKey, decryptPrivateKey } from '../../utils/system-ssh-key.util';
-import { encryptVmSecret } from '../../utils/vm-secret.util';
+import { encryptVmSecret, decryptVmSecret } from '../../utils/vm-secret.util';
 import { User } from '../../entities/user.entity';
 import { UserCompartment } from '../../entities/user-compartment.entity';
 import { VcnResource } from '../../entities/vcn-resource.entity';
@@ -86,6 +87,21 @@ export class VmProvisioningService {
   async provisionVm(userId: number, createVmDto: CreateVmDto, language?: string): Promise<any> {
     this.logger.log(`Starting VM provisioning for user ${userId}`);
 
+    // ENTITLEMENT: never launch a real (billable) VM without a subscription the
+    // caller actually owns. Previously subscriptionId was optional and unchecked,
+    // so any authenticated user could POST /vm-provisioning and spin up unlimited
+    // free VMs. The legitimate flow (vm-subscription "configure") always passes a
+    // valid, owned subscriptionId, so this does not affect it.
+    if (!createVmDto.subscriptionId) {
+      throw new BadRequestException('A subscriptionId is required to provision a VM.');
+    }
+    const owningSubscription = await this.subscriptionRepo.findOne({
+      where: { id: createVmDto.subscriptionId, user_id: userId },
+    });
+    if (!owningSubscription) {
+      throw new ForbiddenException('Subscription not found or does not belong to you.');
+    }
+
     try {
       // Step 1: Ensure user has a compartment
       let userCompartment = await this.ensureUserCompartment(userId);
@@ -152,6 +168,12 @@ export class VmProvisioningService {
         .replace('@', '-')
         .replace(/\./g, '-');
 
+      // Per-VM password for the backend's icsreset WinRM/admin account. Each VM
+      // gets its own random password (stored encrypted) instead of one shared
+      // fleet-wide secret, so a customer who reads their own VM's userdata cannot
+      // use it to log into another customer's Windows VM.
+      const winrmAdminPassword = this.generateWindowsPassword();
+
       // Step 5.6: Create a temporary VM record in database to get auto-increment ID
       // We'll update it with OCI details after successful launch
       const tempVmInstance = this.vmInstanceRepo.create({
@@ -168,6 +190,7 @@ export class VmProvisioningService {
         subnet_id: vcnResource.subnet_ocid,
         availability_domain: availabilityDomain,
         subscription_id: createVmDto.subscriptionId,
+        winrm_admin_password: encryptVmSecret(winrmAdminPassword),
         vm_started_at: null as any,
       }) as VmInstance;
 
@@ -244,6 +267,7 @@ export class VmProvisioningService {
             ocpus,
             memoryInGBs,
             createVmDto.bootVolumeSizeInGBs,
+            winrmAdminPassword,
           );
 
           usedShape = shapeAttempt;
@@ -1449,6 +1473,8 @@ export class VmProvisioningService {
                 credentials.password, // OCI initial password as currentPassword
                 adminPrivateKey,
                 false, // passwordInitialized = false (fresh VM, flag not cleared yet)
+                // Per-VM icsreset password (null for legacy VMs -> WinRM falls back to shared env)
+                decryptVmSecret(freshVm.winrm_admin_password) ?? undefined,
               );
 
               // Save new password to DB only after successful reset — prevents frontend from

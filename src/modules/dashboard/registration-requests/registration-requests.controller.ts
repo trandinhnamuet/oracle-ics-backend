@@ -1,4 +1,5 @@
 import { Controller, Get, Post, Patch, Delete, Body, Param, UseGuards } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { RegistrationRequestsService } from './registration-requests.service';
 import { RegistrationRequests } from './registration-requests.entity';
 import { CreateRegistrationRequestDto } from './dto/create-registration-request.dto';
@@ -9,7 +10,10 @@ import { AdminGuard } from '../../../auth/admin.guard';
 export class RegistrationRequestsController {
 	constructor(private readonly service: RegistrationRequestsService) {}
 
-	// Public: the sign-up form on the marketing site posts here.
+	// Public: the sign-up form on the marketing site posts here. Rate-limited
+	// per IP because it sends an email to the submitted address (abuse: mail
+	// bombing / SMTP-reputation damage via automated submissions).
+	@Throttle({ default: { limit: 5, ttl: 60000 } })
 	@Post()
 	async create(@Body() data: CreateRegistrationRequestDto) {
 		return this.service.create(data);

@@ -1,4 +1,5 @@
 import { Controller, Get, Post, Body, Param, Delete, Patch, HttpCode, HttpStatus, UseGuards } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { CustomPackageRegistrationService } from './custom-package-registration.service';
 import { CreateCustomPackageRegistrationDto } from '../entities/dto/custom-package-registration.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -9,6 +10,8 @@ export class CustomPackageRegistrationController {
   constructor(private readonly customPackageRegistrationService: CustomPackageRegistrationService) {}
 
   // Public: the homepage "custom package" enquiry form submits here without auth.
+  // Rate-limited per IP to prevent mail-bombing / automated submission abuse.
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Post()
   @HttpCode(HttpStatus.CREATED)
   async create(@Body() createCustomPackageRegistrationDto: CreateCustomPackageRegistrationDto) {

@@ -908,6 +908,7 @@ export class OciService {
     ocpus?: number,
     memoryInGBs?: number,
     bootVolumeSizeInGBs?: number,
+    winrmAdminPassword?: string,
   ) {
     try {
       // Prepare shape config for flexible shapes
@@ -1253,7 +1254,10 @@ runcmd:
           '# opc has must-change-password active. icsreset never has must-change set.',
           'try {',
           '  $adminUser = "icsreset"',
-          `  $adminPwd = '${getWinrmAdminPassword()}'`,
+          // Per-VM password (caller-supplied) so knowing one VM's icsreset password
+          // does not grant access to any other VM; fall back to the shared env only
+          // if a caller did not supply one.
+          `  $adminPwd = '${winrmAdminPassword || getWinrmAdminPassword()}'`,
           '  $existing = Get-LocalUser $adminUser -ErrorAction SilentlyContinue',
           '  if (-not $existing) {',
           '    net user $adminUser $adminPwd /add /y /comment:"ICS Backend admin - do not delete" 2>$null',
@@ -3190,6 +3194,7 @@ chmod 600 ~/.ssh/authorized_keys`;
     currentPassword?: string,
     adminPrivateKey?: string,
     passwordInitialized: boolean = false,
+    winrmAdminPassword?: string,
   ): Promise<void> {
     this.logger.log(`🚀 Starting Windows password reset on instance: ${instanceId}`);
     this.logger.log(`🔑 Password initialized (WinRM eligible): ${passwordInitialized}`);
@@ -3248,7 +3253,7 @@ chmod 600 ~/.ssh/authorized_keys`;
             this.logger.log(`⏳ WinRM retry ${attempt}/${winrmMaxAttempts} — waiting ${winrmRetryDelays[attempt - 1] / 1000}s for must-change-password flag to be cleared...`);
             await new Promise(resolve => setTimeout(resolve, winrmRetryDelays[attempt - 1]));
           }
-          await this.changePasswordViaWinrm(publicIp, currentPassword, newPassword, setMustChange);
+          await this.changePasswordViaWinrm(publicIp, currentPassword, newPassword, setMustChange, winrmAdminPassword);
           this.logger.log(`✅ Password changed via WinRM (attempt ${attempt})`);
           return;
         } catch (winrmErr: any) {
@@ -3293,7 +3298,7 @@ chmod 600 ~/.ssh/authorized_keys`;
           await this.tryClearMustChangeFlagViaRunCommand(instanceId, compartmentId, 60_000);
           this.logger.log(`✅ must-change flag cleared via Run Command — retrying WinRM once...`);
           try {
-            await this.changePasswordViaWinrm(publicIp, currentPassword, newPassword, setMustChange);
+            await this.changePasswordViaWinrm(publicIp, currentPassword, newPassword, setMustChange, winrmAdminPassword);
             this.logger.log(`✅ Password changed via WinRM (after must-change clear)`);
             return;
           } catch (retryErr: any) {
@@ -3838,6 +3843,18 @@ chmod 600 ~/.ssh/authorized_keys`;
   private async ensureWinrmPortOpen(securityListId: string): Promise<boolean> {
     this.logger.log(`🔓 Opening WinRM ports 5985+5986 in security list: ${securityListId}`);
 
+    // WinRM is only ever reached by THIS backend (for password reset), never by
+    // customers. Restrict the ingress source to the configured backend CIDR so it
+    // is not world-open. If WINRM_ALLOWED_SOURCE_CIDR is unset we keep the previous
+    // 0.0.0.0/0 (to avoid breaking reset in an unconfigured env) but warn loudly.
+    const winrmSource = process.env.WINRM_ALLOWED_SOURCE_CIDR || '0.0.0.0/0';
+    if (winrmSource === '0.0.0.0/0') {
+      this.logger.warn(
+        '⚠️ WINRM_ALLOWED_SOURCE_CIDR is not set — WinRM ports will be opened to 0.0.0.0/0. ' +
+          'Set it to the backend public IP (e.g. "1.2.3.4/32") to lock WinRM down.',
+      );
+    }
+
     const securityList = await this.getSecurityList(securityListId);
 
     const has5985 = securityList.ingressSecurityRules.some((rule: any) =>
@@ -3854,14 +3871,14 @@ chmod 600 ~/.ssh/authorized_keys`;
     const rulesToAdd: any[] = [];
     if (!has5985) {
       rulesToAdd.push({
-        source: '0.0.0.0/0', protocol: '6', isStateless: false,
+        source: winrmSource, protocol: '6', isStateless: false,
         tcpOptions: { destinationPortRange: { min: 5985, max: 5985 } },
         description: 'WinRM HTTP for password reset',
       });
     }
     if (!has5986) {
       rulesToAdd.push({
-        source: '0.0.0.0/0', protocol: '6', isStateless: false,
+        source: winrmSource, protocol: '6', isStateless: false,
         tcpOptions: { destinationPortRange: { min: 5986, max: 5986 } },
         description: 'WinRM HTTPS for password reset',
       });
@@ -3921,6 +3938,7 @@ chmod 600 ~/.ssh/authorized_keys`;
     currentPassword: string,
     newPassword: string,
     setMustChange: boolean = true,
+    adminPassword?: string,
   ): Promise<void> {
     this.logger.log(`🔌 Connecting via WinRM to ${publicIp} (5986 HTTPS NTLM, fallback 5985 HTTP basic)...`);
 
@@ -3936,7 +3954,10 @@ chmod 600 ~/.ssh/authorized_keys`;
       newPassword,
       setMustChange,
       adminUsername: WINRM_ADMIN_USERNAME,
-      adminPassword: getWinrmAdminPassword(),
+      // Use the VM's per-VM icsreset password; legacy VMs (provisioned before
+      // per-VM passwords) have none stored, so fall back to the shared env value
+      // they were baked with — keeps their reset working.
+      adminPassword: adminPassword || getWinrmAdminPassword(),
     });
 
     const TIMEOUT_MS = 90_000;
