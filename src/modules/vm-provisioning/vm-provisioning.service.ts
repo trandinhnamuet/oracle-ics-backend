@@ -37,11 +37,11 @@ export class VmProvisioningService {
     'VM.Standard.A1.Flex',        // ARM Always Free flex
   ];
 
+  // x86 shapes are standardized on E5.Flex only (system moved fully to E5). No
+  // silent fallback to other shapes, so a capacity shortage fails visibly rather
+  // than provisioning a shape outside the E5 entitlement.
   private readonly fallbackShapesX86 = [
-    'VM.Standard.E2.1.Micro',    // x86 Always Free micro
-    'VM.Standard.E3.Flex',        // AMD EPYC 3rd Gen flexible
-    'VM.Standard3.Flex',          // AMD EPYC 4th Gen flexible
-    'VM.Standard2.1',             // Intel Xeon standard
+    'VM.Standard.E5.Flex',        // AMD EPYC 5th Gen flexible
   ];
 
   private isArmShape(shape: string): boolean {
