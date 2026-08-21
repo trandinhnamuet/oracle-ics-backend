@@ -20,6 +20,10 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
       secretOrKey: jwtSecret,
+      // Pin the signing algorithm. Defence-in-depth: tokens are HS256 today, and
+      // pinning prevents an "alg" confusion attack if the verifier ever gains an
+      // asymmetric key.
+      algorithms: ['HS256'],
     });
   }
 

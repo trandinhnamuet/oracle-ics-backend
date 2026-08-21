@@ -5,7 +5,7 @@ export class CreateUserDto {
   email: string;
 
   @IsString({ message: 'Mật khẩu phải là chuỗi ký tự' })
-  @MinLength(6, { message: 'Mật khẩu phải có ít nhất 6 ký tự' })
+  @MinLength(8, { message: 'Mật khẩu phải có ít nhất 8 ký tự' })
   password: string;
 
   @IsString({ message: 'Tên phải là chuỗi ký tự' })

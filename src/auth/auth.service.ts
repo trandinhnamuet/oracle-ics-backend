@@ -120,7 +120,10 @@ export class AuthService {
     const user = await this.userRepository.findOne({ where: { email } });
     if (!user) {
       this.logger.warn(`OTP verification failed: User not found - ${email}`);
-      throw new BadRequestException(t('verifyOtp.userNotFound', lang));
+      // Generic error (same as a wrong OTP) so this endpoint can't be used to
+      // enumerate which emails have an account. Legitimate users always have an
+      // account at verify time, so this does not affect normal flow.
+      throw new BadRequestException(t('verifyOtp.invalidOtp', lang));
     }
 
     this.logger.log(`User found: ${email}, isActive: ${user.isActive}`);
@@ -460,6 +463,7 @@ export class AuthService {
           kind === 'refresh' ? 'JWT_REFRESH_SECRET' : 'JWT_SECRET',
         ),
         ignoreExpiration: true,
+        algorithms: ['HS256'],
       });
     } catch {
       return null;
@@ -887,6 +891,7 @@ export class AuthService {
     try {
       payload = this.jwtService.verify<JwtPayload>(refreshToken, {
         secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
+        algorithms: ['HS256'],
       });
     } catch {
       throw new UnauthorizedException(t('refresh.jwtExpired', lang));

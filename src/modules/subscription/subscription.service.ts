@@ -611,7 +611,10 @@ export class SubscriptionService {
 
     const userWallet = await this.userWalletService.findByUserId(userId);
     const currentBalance = parseFloat(userWallet.balance.toString());
-    const packageCost = parseFloat(subscription.cloudPackage.cost_vnd.toString());
+    // Charge must match what the subscription was purchased at: for Windows the
+    // per-OCPU license uplift is added on top of the Linux base. Using raw
+    // cost_vnd here dropped that uplift on every renewal (silent underbilling).
+    const packageCost = this.monthlyPriceVnd(subscription.cloudPackage, subscription.os_type);
 
     if (currentBalance < packageCost) {
       throw new BadRequestException(
@@ -846,7 +849,10 @@ export class SubscriptionService {
     try {
       const userWallet = await this.userWalletService.findByUserId(subscription.user_id);
       const currentBalance = parseFloat(userWallet.balance.toString());
-      const packageCost = parseFloat(subscription.cloudPackage.cost_vnd.toString());
+      // Charge must match what the subscription was purchased at: for Windows the
+    // per-OCPU license uplift is added on top of the Linux base. Using raw
+    // cost_vnd here dropped that uplift on every renewal (silent underbilling).
+    const packageCost = this.monthlyPriceVnd(subscription.cloudPackage, subscription.os_type);
 
       this.appendRenewalLog(
         `    [AutoRenew] wallet_id=${userWallet.id} | balance=${currentBalance} | cost=${packageCost} | sufficient=${currentBalance >= packageCost}`,
