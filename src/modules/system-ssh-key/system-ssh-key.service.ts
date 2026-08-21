@@ -58,7 +58,7 @@ export class SystemSshKeyService implements OnModuleInit {
       if (keyPair) {
         this.logger.log('✅ Loaded key from file system');
         this.logger.log(`   Public key format: ${keyPair.publicKey.substring(0, 50)}...`);
-        this.logger.log(`   Private key format: ${keyPair.privateKey.substring(0, 50)}...`);
+        this.logger.log(`   Private key: [redacted, length=${keyPair.privateKey.length}]`);
         this.logger.log(`   Fingerprint: ${keyPair.fingerprint}`);
       }
 
@@ -69,7 +69,7 @@ export class SystemSshKeyService implements OnModuleInit {
         
         this.logger.log('✅ Generated new key pair');
         this.logger.log(`   Public key format: ${keyPair.publicKey.substring(0, 50)}...`);
-        this.logger.log(`   Private key format: ${keyPair.privateKey.substring(0, 50)}...`);
+        this.logger.log(`   Private key: [redacted, length=${keyPair.privateKey.length}]`);
         this.logger.log(`   Fingerprint: ${keyPair.fingerprint}`);
         
         // Save to file system as backup
@@ -110,7 +110,7 @@ export class SystemSshKeyService implements OnModuleInit {
       if (keyPair) {
         this.logger.log('✅ Loaded key from file system');
         this.logger.log(`   Public key format: ${keyPair.publicKey.substring(0, 50)}...`);
-        this.logger.log(`   Private key format: ${keyPair.privateKey.substring(0, 50)}...`);
+        this.logger.log(`   Private key: [redacted, length=${keyPair.privateKey.length}]`);
         this.logger.log(`   Fingerprint: ${keyPair.fingerprint}`);
       }
       
@@ -121,7 +121,7 @@ export class SystemSshKeyService implements OnModuleInit {
         
         this.logger.log('✅ Generated new key pair');
         this.logger.log(`   Public key format: ${keyPair.publicKey.substring(0, 50)}...`);
-        this.logger.log(`   Private key format: ${keyPair.privateKey.substring(0, 50)}...`);
+        this.logger.log(`   Private key: [redacted, length=${keyPair.privateKey.length}]`);
         this.logger.log(`   Fingerprint: ${keyPair.fingerprint}`);
         
         saveKeyPairToFile(keyPair, 'admin');

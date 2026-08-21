@@ -5,10 +5,11 @@ import { TerminalGateway } from './terminal.gateway';
 import { TerminalService } from './terminal.service';
 import { VmInstance } from '../../entities/vm-instance.entity';
 import { SystemSshKey } from '../../entities/system-ssh-key.entity';
+import { UserSession } from '../../auth/user-session.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([VmInstance, SystemSshKey]),
+    TypeOrmModule.forFeature([VmInstance, SystemSshKey, UserSession]),
     JwtModule.registerAsync({
       useFactory: () => {
         const secret = process.env.JWT_SECRET;

@@ -62,10 +62,10 @@ export class OciController {
     @Query('shape') shape?: string,
   ) {
     try {
-      if (!compartmentId) {
-        // If no compartment ID provided, use tenancy ID
-        compartmentId = await this.ociService.getTenancyId();
-      }
+      // A8: the image catalog is tenancy-scoped. Ignore any client-supplied
+      // compartmentId so an authenticated customer cannot pass another user's
+      // compartment OCID to enumerate it.
+      compartmentId = await this.ociService.getTenancyId();
 
       const images = await this.ociService.listComputeImages(
         compartmentId,
@@ -95,9 +95,9 @@ export class OciController {
   @Get('marketplace-images')
   async getMarketplaceImages(@Query('compartmentId') compartmentId?: string) {
     try {
-      if (!compartmentId) {
-        compartmentId = await this.ociService.getTenancyId();
-      }
+      // A8: tenancy-scoped catalog listing; ignore client-supplied compartmentId
+      // to prevent cross-compartment enumeration.
+      compartmentId = await this.ociService.getTenancyId();
 
       const marketplaceImages = await this.ociService.listMarketplaceImages(compartmentId);
 
@@ -123,9 +123,9 @@ export class OciController {
   @Get('shapes')
   async getShapes(@Query('compartmentId') compartmentId?: string) {
     try {
-      if (!compartmentId) {
-        compartmentId = await this.ociService.getTenancyId();
-      }
+      // A8: tenancy-scoped catalog listing; ignore client-supplied compartmentId
+      // to prevent cross-compartment enumeration.
+      compartmentId = await this.ociService.getTenancyId();
 
       const shapes = await this.ociService.listShapes(compartmentId);
 
@@ -187,9 +187,9 @@ export class OciController {
   @Get('availability-domains')
   async getAvailabilityDomains(@Query('compartmentId') compartmentId?: string) {
     try {
-      if (!compartmentId) {
-        compartmentId = await this.ociService.getTenancyId();
-      }
+      // A8: tenancy-scoped catalog listing; ignore client-supplied compartmentId
+      // to prevent cross-compartment enumeration.
+      compartmentId = await this.ociService.getTenancyId();
 
       const availabilityDomains = await this.ociService.listAvailabilityDomains(compartmentId);
 
@@ -443,9 +443,9 @@ export class OciController {
   @Get('instances')
   async getInstances(@Query('compartmentId') compartmentId?: string) {
     try {
-      if (!compartmentId) {
-        compartmentId = await this.ociService.getTenancyId();
-      }
+      // A8: tenancy-scoped catalog listing; ignore client-supplied compartmentId
+      // to prevent cross-compartment enumeration.
+      compartmentId = await this.ociService.getTenancyId();
 
       const instances = await this.ociService.listInstances(compartmentId);
 

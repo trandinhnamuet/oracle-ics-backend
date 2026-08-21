@@ -10,7 +10,10 @@ import {
 import { Server, Socket } from 'socket.io';
 import { Logger, UseGuards } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
 import { TerminalService } from './terminal.service';
+import { UserSession } from '../../auth/user-session.entity';
 import { TerminalConnectDto, TerminalResizeDto } from './dto';
 
 @WebSocketGateway({
@@ -30,6 +33,8 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
   constructor(
     private readonly terminalService: TerminalService,
     private readonly jwtService: JwtService,
+    @InjectRepository(UserSession)
+    private readonly sessionRepository: Repository<UserSession>,
   ) {}
 
   /**
@@ -49,10 +54,28 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
 
       // Verify JWT token
       try {
-        const payload = this.jwtService.verify(token);
+        const payload = this.jwtService.verify(token, { algorithms: ['HS256'] });
+
+        // A1: honor session revocation. Unlike the HTTP JwtStrategy, this gateway
+        // used to trust any signed, unexpired token — so a logged-out / rotated /
+        // password-changed token could still open a root shell until natural expiry.
+        // Reject when the token's session no longer exists (or has expired).
+        const sid = payload.sid;
+        const session = sid
+          ? await this.sessionRepository.findOne({ where: { id: sid } })
+          : null;
+        const sessionActive =
+          !!session && (!session.expiresAt || new Date() <= session.expiresAt);
+        if (!sessionActive) {
+          this.logger.warn(`Connection rejected: session inactive/revoked from ${client.id}`);
+          client.emit('error', { message: 'Session has been terminated. Please log in again.' });
+          client.disconnect();
+          return;
+        }
+
         (client as any).userId = payload.id || payload.sub;
         (client as any).userEmail = payload.email;
-        
+
         this.logger.log(`Client connected: ${client.id} (User: ${payload.email})`);
       } catch (error) {
         this.logger.warn(`Connection rejected: Invalid token from ${client.id}`);

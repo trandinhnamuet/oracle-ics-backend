@@ -416,7 +416,11 @@ export class VmSubscriptionService implements OnModuleInit, OnModuleDestroy {
       }
 
       // Step 4: Send credentials to user via email (SSH key for Linux or password for Windows)
-      const userEmail = configureVmDto.notificationEmail || subscription['user']?.email;
+      // A9: send VM credentials/notice ONLY to the subscription owner's registered
+      // email. The client-supplied notificationEmail was an abuse vector (send
+      // platform-branded email to an arbitrary address), so it is ignored.
+      const owner = await this.userRepo.findOne({ where: { id: userId } });
+      const userEmail = owner?.email || subscription['user']?.email;
       this.logger.log(`📧 ========== EMAIL SENDING CHECK ==========`);
       this.logger.log(`📧 User Email: ${userEmail || 'NOT FOUND'}`);
       this.logger.log(`📧 VM OS: ${vmResult.operatingSystem || 'Unknown'}`);
