@@ -4,6 +4,7 @@ import { Repository } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
 import { User } from '../entities/user.entity';
 import { UserWallet } from '../entities/user-wallet.entity';
+import { UserSession } from '../auth/user-session.entity';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
@@ -19,6 +20,8 @@ export class UserService {
     private readonly userRepository: Repository<User>,
     @InjectRepository(UserWallet)
     private readonly userWalletRepository: Repository<UserWallet>,
+    @InjectRepository(UserSession)
+    private readonly sessionRepository: Repository<UserSession>,
     private readonly notificationService: NotificationService,
   ) {}
 
@@ -161,6 +164,10 @@ export class UserService {
 
     const hashed = await bcrypt.hash(changePasswordDto.newPassword, 10);
     await this.userRepository.update(id, { password: hashed });
+
+    // Revoke every session after a password change so a stolen refresh token (or a
+    // session on another device) cannot outlive the change. Mirrors resetPassword.
+    await this.sessionRepository.delete({ userId: String(id) });
 
     await this.notificationService.notify(
       id,

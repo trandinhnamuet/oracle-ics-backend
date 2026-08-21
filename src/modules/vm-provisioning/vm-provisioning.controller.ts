@@ -11,6 +11,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../../auth/jwt-auth.guard';
+import { AdminGuard } from '../../auth/admin.guard';
 
 /**
  * Resolve the caller's user id, failing closed.
@@ -33,8 +34,18 @@ function requireUserId(req: any): number {
 import { VmProvisioningService } from './vm-provisioning.service';
 import { CreateVmDto, VmActionDto } from './dto';
 
+/**
+ * Admin-only. Customer VM provisioning goes through POST /vm-subscription/:id/configure,
+ * which enforces entitlement (paid status, OS family, package-derived CPU/RAM/disk,
+ * shape allowlist, one-VM-per-subscription) and then calls VmProvisioningService as an
+ * internal service method. Exposing these routes to customers let an authenticated user
+ * call provisionVm directly with arbitrary shape/image/size, bypassing every check
+ * (arbitrary Windows/over-spec VMs, unpaid subscriptions, unlimited VMs). No client
+ * calls these routes; gating the whole controller with AdminGuard closes that bypass
+ * without affecting the internal configure flow.
+ */
 @Controller('vm-provisioning')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, AdminGuard)
 export class VmProvisioningController {
   constructor(private readonly vmProvisioningService: VmProvisioningService) {}
 

@@ -225,15 +225,15 @@ export class AuthService {
     this.logger.log(`Resend OTP request for email: ${email}`);
     // Find user
     const user = await this.userRepository.findOne({ where: { email } });
-    if (!user) {
-      this.logger.warn(`Resend OTP failed: User not found - ${email}`);
-      throw new BadRequestException(t('resendOtp.userNotFound', lang));
-    }
-
-    // Check if already active
-    if (user.isActive) {
-      this.logger.warn(`Resend OTP failed: Email already verified - ${email}`);
-      throw new BadRequestException(t('resendOtp.alreadyVerified', lang));
+    // Do not reveal whether the email has an account or is already verified —
+    // return the same generic success either way (mirrors forgotPassword). Only a
+    // real, still-unverified account actually gets a new OTP sent.
+    if (!user || user.isActive) {
+      this.logger.warn(`Resend OTP no-op (unknown or already-verified): ${email}`);
+      return {
+        message: t('resendOtp.success', lang),
+        success: true,
+      };
     }
 
     // Enforce shared hourly OTP limit before generating/sending

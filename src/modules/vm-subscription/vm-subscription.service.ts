@@ -241,14 +241,20 @@ export class VmSubscriptionService implements OnModuleInit, OnModuleDestroy {
       } catch (e) {
         this.logger.warn(`Could not fetch image OS for ${configureVmDto.imageId}: ${(e as Error)?.message}`);
       }
-      if (imageOs) {
-        const imageIsWindows = imageOs.includes('windows');
-        if (subOsType === 'windows' && !imageIsWindows) {
-          throw new BadRequestException('This subscription is Windows-only; please choose a Windows image.');
-        }
-        if (subOsType !== 'windows' && imageIsWindows) {
-          throw new BadRequestException('This subscription is Linux-only; a Windows image is not allowed.');
-        }
+      // FAIL CLOSED: if we cannot positively determine the image OS, refuse — a
+      // transient getImage error must not let a Linux-priced subscription boot a
+      // Windows image (or vice-versa) and skip the OS license the customer paid for.
+      if (!imageOs) {
+        throw new BadRequestException(
+          'Unable to verify the operating system of the selected image. Please try again or choose a different image.',
+        );
+      }
+      const imageIsWindows = imageOs.includes('windows');
+      if (subOsType === 'windows' && !imageIsWindows) {
+        throw new BadRequestException('This subscription is Windows-only; please choose a Windows image.');
+      }
+      if (subOsType !== 'windows' && imageIsWindows) {
+        throw new BadRequestException('This subscription is Linux-only; a Windows image is not allowed.');
       }
     }
 

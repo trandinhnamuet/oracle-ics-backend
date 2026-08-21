@@ -28,7 +28,12 @@ export class SubscriptionService {
   // Windows pricing mirrors OCI: a per-OCPU/hour OS license added on top of the
   // (Linux) compute price. 1 OCPU = 2 vCPU; monthly = OCPU × rate × 744h.
   private static readonly HOURS_PER_MONTH = 744;
-  private static readonly USD_TO_VND = 26310;
+  // USD→VND used only for the Windows license uplift. Overridable via env so ops
+  // can keep it aligned with FX without a code change (fallback = conservative default).
+  private get usdToVnd(): number {
+    const v = parseFloat(process.env.WINDOWS_UPLIFT_USD_TO_VND || '');
+    return Number.isFinite(v) && v > 0 ? v : 26310;
+  }
   private get windowsLicenseUsdPerOcpuHour(): number {
     const v = parseFloat(process.env.WINDOWS_LICENSE_USD_PER_OCPU_HOUR || '');
     return Number.isFinite(v) && v > 0 ? v : 0.092;
@@ -46,9 +51,12 @@ export class SubscriptionService {
 
   /** Monthly Windows-license uplift (VND) for a package's OCPU count. */
   private windowsUpliftVnd(cloudPackage: CloudPackage): number {
-    const ocpu = this.parseVcpu(cloudPackage.cpu) / 2;
+    // Bill the uplift on the SAME OCPU count that is actually provisioned
+    // (ceil, min 1) — matches vcpuToOcpu in vm-subscription so odd/1-vCPU
+    // packages are not under-billed.
+    const ocpu = Math.max(1, Math.ceil(this.parseVcpu(cloudPackage.cpu) / 2));
     const upliftUsd = ocpu * this.windowsLicenseUsdPerOcpuHour * SubscriptionService.HOURS_PER_MONTH;
-    return Math.round(upliftUsd * SubscriptionService.USD_TO_VND);
+    return Math.round(upliftUsd * this.usdToVnd);
   }
 
   /** Effective monthly price (VND) for a package given the chosen OS family. */
