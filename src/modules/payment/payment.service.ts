@@ -29,19 +29,32 @@ export class PaymentService {
   ) {}
 
   async create(createPaymentDto: CreatePaymentDto): Promise<Payment> {
+    // SECURITY: this public endpoint may ONLY create wallet deposits. Subscription
+    // payments must go through SubscriptionService.subscribe-with-payment, which
+    // derives the amount server-side from the package/months. Allowing a client to
+    // POST an arbitrary { payment_type:'subscription', subscription_id, amount:0 }
+    // let an attacker activate an expensive subscription for ~nothing.
+    if (createPaymentDto.payment_type !== 'deposit') {
+      throw new BadRequestException('Only deposit payments can be created via this endpoint.');
+    }
+
     // Generate unique transaction code if not provided
     if (!createPaymentDto.transaction_code) {
       createPaymentDto.transaction_code = `PAY_${Date.now()}_${uuidv4().substring(0, 8)}`;
     }
 
-    // Tạo object payment mà không include metadata
-    const { metadata, ...paymentData } = createPaymentDto;
-    
+    // Build the deposit explicitly: never carry client-supplied subscription/package
+    // linkage or metadata into a deposit payment.
     const payment = this.paymentRepository.create({
-      ...paymentData,
+      user_id: createPaymentDto.user_id,
+      payment_method: createPaymentDto.payment_method,
+      payment_type: 'deposit',
+      amount: createPaymentDto.amount,
+      transaction_code: createPaymentDto.transaction_code,
+      description: createPaymentDto.description,
       status: 'pending',
     });
-    
+
     return await this.paymentRepository.save(payment);
   }
 

@@ -1764,19 +1764,10 @@ chmod 600 ~/.ssh/authorized_keys`;
           reject(new Error(`SSH connection failed: ${err.message}`));
         });
         
-        // Debug: Log SSH connection configuration
-        const sshConfig = {
-          host: publicIp,
-          port: 22,
-          username: username,
-          privateKeyFormat: adminPrivateKey.includes('BEGIN RSA PRIVATE KEY') ? 'PKCS#1' : 
-                           adminPrivateKey.includes('BEGIN PRIVATE KEY') ? 'PKCS#8' : 'UNKNOWN',
-          privateKeyLength: adminPrivateKey.length,
-          privateKeyStart: adminPrivateKey.substring(0, 50),
-          readyTimeout: 60000,
-        };
-        this.logger.log(`🔧 SSH Config: ${JSON.stringify(sshConfig, null, 2)}`);
-        
+        // Log only non-sensitive SSH connection metadata. Never log any bytes,
+        // length, or format of the private key material.
+        this.logger.log(`🔧 SSH Config: host=${publicIp} port=22 username=${username} readyTimeout=60000`);
+
         // Connect to the instance
         conn.connect({
           host: publicIp,

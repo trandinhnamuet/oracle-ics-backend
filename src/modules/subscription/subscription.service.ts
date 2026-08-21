@@ -205,8 +205,19 @@ export class SubscriptionService {
       throw new NotFoundException(`Cloud package with ID ${cloudPackageId} not found`);
     }
 
+    // Bound monthsCount (mirror createWithAccountBalance): an unvalidated or
+    // negative value makes totalAmount negative, which the Sepay webhook would
+    // "refund" as arbitrary wallet credit on a tiny real transfer.
+    if (!Number.isFinite(monthsCount) || monthsCount < 1 || monthsCount > 24) {
+      throw new BadRequestException('monthsCount must be between 1 and 24');
+    }
+    const unitCost = parseFloat(cloudPackage.cost_vnd.toString());
+    if (!Number.isFinite(unitCost) || unitCost <= 0) {
+      throw new BadRequestException('Invalid package cost');
+    }
+
     // Calculate total amount
-    const totalAmount = cloudPackage.cost_vnd * monthsCount;
+    const totalAmount = unitCost * monthsCount;
 
     // Generate unique transaction code
     const transactionCode = `SUB${Date.now()}${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
@@ -398,20 +409,22 @@ export class SubscriptionService {
         }
       }
 
-      // Apply sorting
-      if (sortBy === 'user_id') {
-        queryBuilder.orderBy('subscription.user_id', sortOrder);
-      } else if (sortBy === 'cloud_package_id') {
-        queryBuilder.orderBy('subscription.cloud_package_id', sortOrder);
-      } else if (sortBy === 'start_date') {
-        queryBuilder.orderBy('subscription.start_date', sortOrder);
-      } else if (sortBy === 'end_date') {
-        queryBuilder.orderBy('subscription.end_date', sortOrder);
-      } else if (sortBy === 'status') {
-        queryBuilder.orderBy('subscription.status', sortOrder);
-      } else {
-        queryBuilder.orderBy(`subscription.${sortBy}`, sortOrder);
-      }
+      // Apply sorting. Whitelist the column and direction: `sortBy`/`sortOrder`
+      // are request-controlled and TypeORM does NOT parameterize identifiers, so
+      // an unknown value must fall back to a safe default rather than be
+      // interpolated raw into ORDER BY (SQL injection).
+      const sortableColumns: Record<string, string> = {
+        id: 'subscription.id',
+        user_id: 'subscription.user_id',
+        cloud_package_id: 'subscription.cloud_package_id',
+        start_date: 'subscription.start_date',
+        end_date: 'subscription.end_date',
+        status: 'subscription.status',
+        created_at: 'subscription.created_at',
+      };
+      const orderColumn = sortableColumns[sortBy as string] ?? 'subscription.created_at';
+      const orderDir: 'ASC' | 'DESC' = sortOrder === 'ASC' ? 'ASC' : 'DESC';
+      queryBuilder.orderBy(orderColumn, orderDir);
 
       // Get total count
       const total = await queryBuilder.getCount();

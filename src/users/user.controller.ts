@@ -6,6 +6,31 @@ import { ChangePasswordDto } from './dto/change-password.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { AdminGuard } from '../auth/admin.guard';
 
+/**
+ * Strip sensitive fields before returning a user over the API. These handlers
+ * return plain objects (spread), so the entity's @Exclude (ClassSerializer) does
+ * NOT apply — an admin listing would otherwise leak live OTP/reset codes and
+ * refresh tokens, enabling account takeover via the unauthenticated reset flow.
+ */
+const SENSITIVE_USER_FIELDS = [
+  'password',
+  'emailVerificationOtp',
+  'otpExpiresAt',
+  'emailVerificationOtpAttempts',
+  'passwordResetOtp',
+  'passwordResetOtpExpiresAt',
+  'passwordResetOtpAttempts',
+  'refreshToken',
+  'refreshTokenExpiresAt',
+] as const;
+
+function sanitizeUser<T extends Record<string, any>>(user: T): Partial<T> {
+  if (!user) return user;
+  const clone: Record<string, any> = { ...user };
+  for (const f of SENSITIVE_USER_FIELDS) delete clone[f];
+  return clone as Partial<T>;
+}
+
 @Controller('users')
 export class UserController {
   constructor(private readonly userService: UserService) {}
@@ -14,8 +39,7 @@ export class UserController {
   @UseGuards(JwtAuthGuard, AdminGuard)
   async create(@Body() createUserDto: CreateUserDto) {
     const user = await this.userService.create(createUserDto);
-    const { password, ...userWithoutPassword } = user;
-    return userWithoutPassword;
+    return sanitizeUser(user);
   }
 
   @Get()
@@ -30,7 +54,7 @@ export class UserController {
     const result = await this.userService.findAll(+page, +limit, search, sortBy, sortOrder);
     return {
       ...result,
-      data: result.data.map(({ password, ...user }) => user),
+      data: result.data.map((u) => sanitizeUser(u)),
     };
   }
 
@@ -45,8 +69,7 @@ export class UserController {
     // Prevent updating sensitive fields
     const { password, role, email, isActive, ...allowedFields } = updateUserDto as any;
     const user = await this.userService.update(userId, allowedFields);
-    const { password: _pw, ...userWithoutPassword } = user;
-    return userWithoutPassword;
+    return sanitizeUser(user);
   }
 
   @Patch('me/change-password')
@@ -66,16 +89,14 @@ export class UserController {
   async findOne(@Param('id') id: string) {
     const user = await this.userService.findOne(Number(id));
     if (!user) return null;
-    const { password, ...userWithoutPassword } = user;
-    return userWithoutPassword;
+    return sanitizeUser(user);
   }
 
   @Patch(':id')
   @UseGuards(JwtAuthGuard, AdminGuard)
   async update(@Param('id') id: string, @Body() updateUserDto: UpdateUserDto) {
     const user = await this.userService.update(Number(id), updateUserDto);
-    const { password, ...userWithoutPassword } = user;
-    return userWithoutPassword;
+    return sanitizeUser(user);
   }
 
   @Delete(':id')

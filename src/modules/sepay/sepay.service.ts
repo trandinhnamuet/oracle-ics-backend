@@ -155,16 +155,28 @@ export class SepayService {
     this.logger.log(`[SEPAY] Underpayment for payment ${payment.id}: crediting ${received} VND to wallet`);
 
     const updatedWallet = await this.userWalletService.addBalance(payment.user_id, received);
-    const userWallet = await this.userWalletService.findByUserId(payment.user_id);
 
-    await this.userWalletService.createTransaction({
-      wallet_id: userWallet.id,
-      payment_id: payment.id,
-      subscription_id: payment.subscription_id ?? null,
-      change_amount: received,
-      balance_after: updatedWallet.balance,
-      type: 'underpayment_deposit',
-    });
+    // IMPORTANT: once the wallet has been credited we must NOT let a later failure
+    // propagate to handleWebhook's catch — that would release the idempotency claim
+    // while the payment is still 'pending', and a webhook replay would re-credit the
+    // wallet (double-credit). So from here on we swallow errors (logged for manual
+    // reconciliation) and keep the claim, guaranteeing the credit happens at most once.
+    try {
+      const userWallet = await this.userWalletService.findByUserId(payment.user_id);
+      await this.userWalletService.createTransaction({
+        wallet_id: userWallet.id,
+        payment_id: payment.id,
+        subscription_id: payment.subscription_id ?? null,
+        change_amount: received,
+        balance_after: updatedWallet.balance,
+        type: 'underpayment_deposit',
+      });
+    } catch (ledgerErr) {
+      this.logger.error(
+        `CRITICAL: wallet credited for underpayment on payment ${payment.id} but ledger write failed; ` +
+          `manual reconciliation needed. Error: ${(ledgerErr as Error)?.message}`,
+      );
+    }
 
     const fmt = (n: number) => new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(n);
 

@@ -119,7 +119,6 @@ export class VmSubscriptionController {
     this.logger.log(
       `Request New SSH Key endpoint hit (subscriptionId=${subscriptionId}, userId=${req.user?.id})`,
     );
-    this.logger.debug(`Request body: ${JSON.stringify(requestNewKeyDto)}`);
 
     const userId = req.user.id;
     return this.vmSubscriptionService.requestNewSshKey(
