@@ -39,7 +39,7 @@ export class SubscriptionController {
   @Post('subscribe-with-balance')
   @UseGuards(JwtAuthGuard)
   async subscribeWithBalance(
-    @Body() body: { cloudPackageId: number; monthsCount?: number; autoRenew?: boolean },
+    @Body() body: { cloudPackageId: number; monthsCount?: number; autoRenew?: boolean; osType?: string },
     @Request() req,
   ) {
     return await this.subscriptionService.createWithAccountBalance(
@@ -47,13 +47,14 @@ export class SubscriptionController {
       body.cloudPackageId,
       body.monthsCount,
       body.autoRenew,
+      body.osType,
     );
   }
 
   @Post('subscribe-with-payment')
   @UseGuards(JwtAuthGuard)
   async subscribeWithPayment(
-    @Body() body: { cloudPackageId: number; monthsCount: number; autoRenew?: boolean },
+    @Body() body: { cloudPackageId: number; monthsCount: number; autoRenew?: boolean; osType?: string },
     @Request() req,
   ) {
     return await this.subscriptionService.createWithPayment(
@@ -61,6 +62,7 @@ export class SubscriptionController {
       body.cloudPackageId,
       body.monthsCount,
       body.autoRenew,
+      body.osType,
     );
   }
 

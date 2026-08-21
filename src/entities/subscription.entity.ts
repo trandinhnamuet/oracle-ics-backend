@@ -32,6 +32,12 @@ export class Subscription {
   @Column({ type: 'integer', default: 1 })
   months_paid: number;
 
+  // OS family chosen AT PURCHASE. 'windows' costs more (OCI charges a per-OCPU
+  // Windows license) and locks VM creation to Windows images; 'linux' locks it
+  // to Linux images. Defaults to 'linux' for rows created before this feature.
+  @Column({ type: 'varchar', length: 10, default: 'linux' })
+  os_type: string;
+
   @Column({ type: 'json', nullable: true })
   configuration: any; // Store VM configuration
 

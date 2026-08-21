@@ -229,6 +229,29 @@ export class VmSubscriptionService implements OnModuleInit, OnModuleDestroy {
       throw new BadRequestException('Subscription does not have an associated cloud package');
     }
 
+    // Step 1.6: Enforce that the chosen image's OS family matches the OS the
+    // customer PAID for. A Windows subscription (which cost more) may only launch
+    // a Windows image, and a Linux subscription may only launch a Linux image.
+    const subOsType = String(subscription.os_type || 'linux').toLowerCase();
+    if (configureVmDto.imageId) {
+      let imageOs = '';
+      try {
+        const img = await this.ociService.getImage(configureVmDto.imageId);
+        imageOs = String(img?.operatingSystem || '').toLowerCase();
+      } catch (e) {
+        this.logger.warn(`Could not fetch image OS for ${configureVmDto.imageId}: ${(e as Error)?.message}`);
+      }
+      if (imageOs) {
+        const imageIsWindows = imageOs.includes('windows');
+        if (subOsType === 'windows' && !imageIsWindows) {
+          throw new BadRequestException('This subscription is Windows-only; please choose a Windows image.');
+        }
+        if (subOsType !== 'windows' && imageIsWindows) {
+          throw new BadRequestException('This subscription is Linux-only; a Windows image is not allowed.');
+        }
+      }
+    }
+
     // CPU trong cloud_package lưu theo đơn vị vCPU, cần chuyển sang OCPU cho OCI SDK (2 vCPU = 1 OCPU)
     const packageVcpus = this.parsePackageNumericValue(cloudPackage.cpu, 2);
     const packageOcpus = this.vcpuToOcpu(packageVcpus);

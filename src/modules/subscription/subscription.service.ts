@@ -24,6 +24,38 @@ import { NotificationType } from '../../entities/notification.entity';
 export class SubscriptionService {
   private readonly logger = new Logger(SubscriptionService.name);
   private readonly pendingDeletionTimers = new Map<string, NodeJS.Timeout>();
+
+  // Windows pricing mirrors OCI: a per-OCPU/hour OS license added on top of the
+  // (Linux) compute price. 1 OCPU = 2 vCPU; monthly = OCPU × rate × 744h.
+  private static readonly HOURS_PER_MONTH = 744;
+  private static readonly USD_TO_VND = 26310;
+  private get windowsLicenseUsdPerOcpuHour(): number {
+    const v = parseFloat(process.env.WINDOWS_LICENSE_USD_PER_OCPU_HOUR || '');
+    return Number.isFinite(v) && v > 0 ? v : 0.092;
+  }
+
+  private normalizeOsType(osType?: string): 'linux' | 'windows' {
+    return String(osType || '').toLowerCase() === 'windows' ? 'windows' : 'linux';
+  }
+
+  /** vCPU count parsed from a package's cpu string (e.g. "10 vCPU"). */
+  private parseVcpu(cpu?: string): number {
+    const m = String(cpu || '').match(/(\d+)/);
+    return m ? parseInt(m[1], 10) : 0;
+  }
+
+  /** Monthly Windows-license uplift (VND) for a package's OCPU count. */
+  private windowsUpliftVnd(cloudPackage: CloudPackage): number {
+    const ocpu = this.parseVcpu(cloudPackage.cpu) / 2;
+    const upliftUsd = ocpu * this.windowsLicenseUsdPerOcpuHour * SubscriptionService.HOURS_PER_MONTH;
+    return Math.round(upliftUsd * SubscriptionService.USD_TO_VND);
+  }
+
+  /** Effective monthly price (VND) for a package given the chosen OS family. */
+  private monthlyPriceVnd(cloudPackage: CloudPackage, osType: string): number {
+    const base = parseFloat(cloudPackage.cost_vnd.toString());
+    return this.normalizeOsType(osType) === 'windows' ? base + this.windowsUpliftVnd(cloudPackage) : base;
+  }
   /** Guard chống cron chạy đè nhau: nếu lần trước chưa xong thì bỏ qua run mới */
   private isRenewalRunning = false;
 
@@ -101,10 +133,11 @@ export class SubscriptionService {
   }
 
   async createWithAccountBalance(
-    userId: number, 
-    cloudPackageId: number, 
+    userId: number,
+    cloudPackageId: number,
     monthsCount: number = 1,
-    autoRenew: boolean = false
+    autoRenew: boolean = false,
+    osType: string = 'linux'
   ): Promise<Subscription> {
     // Get cloud package
     const cloudPackage = await this.cloudPackageRepository.findOne({
@@ -123,8 +156,9 @@ export class SubscriptionService {
     }
 
     // Check balance - Convert to number for accurate comparison
+    const normalizedOs = this.normalizeOsType(osType);
     const currentBalance = parseFloat(userWallet.balance.toString());
-    const packageCost = parseFloat(cloudPackage.cost_vnd.toString()) * monthsCount;
+    const packageCost = this.monthlyPriceVnd(cloudPackage, normalizedOs) * monthsCount;
     
     this.logger.log(
       `[createWithAccountBalance] Balance check userId=${userId} cloudPackageId=${cloudPackageId} monthsCount=${monthsCount} currentBalance=${currentBalance} packageCost=${packageCost} sufficient=${currentBalance >= packageCost}`,
@@ -153,6 +187,7 @@ export class SubscriptionService {
       auto_renew: autoRenew,
       amount_paid: packageCost,
       months_paid: monthsCount,
+      os_type: normalizedOs,
     });
 
     const savedSubscription = await this.subscriptionRepository.save(subscription);
@@ -194,7 +229,8 @@ export class SubscriptionService {
     userId: number,
     cloudPackageId: number,
     monthsCount: number,
-    autoRenew: boolean = false
+    autoRenew: boolean = false,
+    osType: string = 'linux'
   ): Promise<{ subscription: Subscription; payment: Payment }> {
     // Get cloud package
     const cloudPackage = await this.cloudPackageRepository.findOne({
@@ -211,12 +247,13 @@ export class SubscriptionService {
     if (!Number.isFinite(monthsCount) || monthsCount < 1 || monthsCount > 24) {
       throw new BadRequestException('monthsCount must be between 1 and 24');
     }
-    const unitCost = parseFloat(cloudPackage.cost_vnd.toString());
+    const normalizedOs = this.normalizeOsType(osType);
+    const unitCost = this.monthlyPriceVnd(cloudPackage, normalizedOs);
     if (!Number.isFinite(unitCost) || unitCost <= 0) {
       throw new BadRequestException('Invalid package cost');
     }
 
-    // Calculate total amount
+    // Calculate total amount (includes the Windows license uplift when applicable)
     const totalAmount = unitCost * monthsCount;
 
     // Generate unique transaction code
@@ -250,6 +287,7 @@ export class SubscriptionService {
       auto_renew: autoRenew,
       amount_paid: totalAmount,
       months_paid: monthsCount,
+      os_type: normalizedOs,
     });
 
     const savedSubscription = await this.subscriptionRepository.save(subscription);
