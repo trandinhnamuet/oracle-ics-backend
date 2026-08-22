@@ -30,8 +30,10 @@ export class GoogleStrategy extends PassportStrategy(Strategy, 'google') {
     // Only trust a Google-verified email: account-linking keys off this address,
     // so an unverified (attacker-settable) email must not be able to link to a
     // pre-existing local account. passport exposes it as `verified` ('true'|'false').
+    // Fail closed: link only when Google EXPLICITLY marks the email verified.
+    // A missing/undefined flag must be rejected, not trusted (F5).
     const isVerified = (primaryEmail as { verified?: boolean | string }).verified;
-    if (isVerified === false || isVerified === 'false') {
+    if (isVerified !== true && isVerified !== 'true') {
       return done(new UnauthorizedException('Email Google chưa được xác minh.'), undefined);
     }
 

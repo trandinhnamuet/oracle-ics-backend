@@ -188,6 +188,14 @@ export class VmSubscriptionService implements OnModuleInit, OnModuleDestroy {
       throw new BadRequestException('Subscription has expired');
     }
 
+    // A suspended subscription (admin action) is NOT eligible. Previously it fell
+    // through and configure/reset flows forced status back to 'active', letting a
+    // user undo their own suspension and keep operating the VM (M-S1).
+    if (subscription.status === 'suspended') {
+      this.logger.debug('Subscription is suspended');
+      throw new BadRequestException('Subscription is suspended');
+    }
+
     this.logger.debug('Subscription eligibility check passed');
     return subscription;
   }

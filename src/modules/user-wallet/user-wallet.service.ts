@@ -1,6 +1,6 @@
-import { Injectable, Logger, NotFoundException, ConflictException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource } from 'typeorm';
+import { Repository, DataSource, EntityManager } from 'typeorm';
 import { UserWallet } from '../../entities/user-wallet.entity';
 import { WalletTransaction } from '../../entities/wallet-transaction.entity';
 import { CreateUserWalletDto } from './dto/create-user-wallet.dto';
@@ -97,56 +97,33 @@ export class UserWalletService {
   }
 
   async findByUserId(userId: number): Promise<UserWallet> {
-    // Kiểm tra xem đang có process nào tạo wallet cho user này không
-    if (creatingWallets.has(userId)) {
-      // Đợi một chút và thử lại
-      await new Promise(resolve => setTimeout(resolve, 100));
-      return await this.findByUserId(userId);
-    }
-    
-    // Tìm wallet trước
     let wallet = await this.userWalletRepository.findOne({
       where: { user_id: userId },
       relations: ['user'],
     });
-    
     if (wallet) {
       return wallet;
     }
-    
-    // Nếu không có wallet, đánh dấu đang tạo
-    creatingWallets.add(userId);
-    
+
+    // No wallet yet — create it. The in-memory guard used previously was useless
+    // across workers and raced single-process; instead rely on the DB unique
+    // constraint on user_id: if a concurrent request wins the create, ours throws
+    // and we simply re-find the row it created.
     try {
-      // Kiểm tra lại một lần nữa để chắc chắn
-      wallet = await this.userWalletRepository.findOne({
-        where: { user_id: userId },
-        relations: ['user'],
-      });
-      
-      if (wallet) {
-        return wallet;
-      }
-      
-      // Tạo wallet mới
       this.logger.log(`Creating new wallet for user ${userId}`);
-      const newWallet = await this.create({ user_id: userId });
-      
-      // Load lại với relations
-      wallet = await this.userWalletRepository.findOne({
-        where: { user_id: userId },
-        relations: ['user'],
-      });
-      
-      if (!wallet) {
-        throw new Error(`Failed to create or find wallet for user ${userId}`);
-      }
-      
-      return wallet;
-    } finally {
-      // Xóa khỏi cache tạo wallet
-      creatingWallets.delete(userId);
+      await this.create({ user_id: userId });
+    } catch (e: any) {
+      this.logger.warn(`Wallet create race for user ${userId} (will re-find): ${e?.message ?? e}`);
     }
+
+    wallet = await this.userWalletRepository.findOne({
+      where: { user_id: userId },
+      relations: ['user'],
+    });
+    if (!wallet) {
+      throw new Error(`Failed to create or find wallet for user ${userId}`);
+    }
+    return wallet;
   }
 
   async findOne(id: number): Promise<UserWallet> {
@@ -230,6 +207,40 @@ export class UserWalletService {
     } finally {
       await queryRunner.release();
     }
+  }
+
+  /**
+   * Deduct within a caller-supplied transaction. Locks the wallet row
+   * (pessimistic_write), re-checks sufficiency, returns the updated wallet.
+   * Lets a debit be atomic with the ledger/status writes that accompany it, so a
+   * crash or downstream error rolls the whole thing back (no charge-without-record).
+   */
+  async deductBalanceTx(manager: EntityManager, userId: number, amount: number): Promise<UserWallet> {
+    const amt = parseFloat(amount.toString());
+    if (!(amt > 0)) throw new BadRequestException('amount must be greater than 0');
+    const wallet = await manager.findOne(UserWallet, {
+      where: { user_id: userId },
+      lock: { mode: 'pessimistic_write' },
+    });
+    if (!wallet) throw new NotFoundException(`Wallet not found for user ${userId}`);
+    const current = parseFloat(wallet.balance.toString());
+    if (current < amt) throw new ConflictException('Insufficient balance');
+    wallet.balance = current - amt;
+    return manager.save(wallet);
+  }
+
+  /** Add within a caller-supplied transaction (see deductBalanceTx). */
+  async addBalanceTx(manager: EntityManager, userId: number, amount: number): Promise<UserWallet> {
+    const amt = parseFloat(amount.toString());
+    if (!(amt > 0)) throw new BadRequestException('amount must be greater than 0');
+    const wallet = await manager.findOne(UserWallet, {
+      where: { user_id: userId },
+      lock: { mode: 'pessimistic_write' },
+    });
+    if (!wallet) throw new NotFoundException(`Wallet not found for user ${userId}`);
+    const current = parseFloat(wallet.balance.toString());
+    wallet.balance = current + amt;
+    return manager.save(wallet);
   }
 
   async getBalance(userId: number): Promise<{ balance: number }> {

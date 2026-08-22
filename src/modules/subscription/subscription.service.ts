@@ -159,7 +159,7 @@ export class SubscriptionService {
     // Get user wallet (sử dụng UserWalletService để auto-create nếu cần)
     const userWallet = await this.userWalletService.findByUserId(userId);
 
-    if (!Number.isFinite(monthsCount) || monthsCount < 1 || monthsCount > 24) {
+    if (!Number.isInteger(monthsCount) || monthsCount < 1 || monthsCount > 24) {
       throw new BadRequestException('monthsCount must be between 1 and 24');
     }
 
@@ -179,49 +179,43 @@ export class SubscriptionService {
       throw new BadRequestException('Insufficient balance');
     }
 
-    // Deduct balance. A4: use the authoritative post-deduct balance (returned by
-    // deductBalance under a row lock) for the ledger snapshot, not a stale pre-read.
-    const updatedWallet = await this.userWalletService.deductBalance(userId, packageCost);
-    const balanceAfter = parseFloat(updatedWallet.balance.toString());
-
     const startDate = new Date();
     const endDate = new Date();
     endDate.setMonth(endDate.getMonth() + monthsCount);
 
-    let savedSubscription;
-    try {
-      const subscription = this.subscriptionRepository.create({
-        user_id: userId,
-        cloud_package_id: cloudPackageId,
-        start_date: startDate,
-        end_date: this.toEndOfDay(endDate),
-        status: 'active',
-        auto_renew: autoRenew,
-        amount_paid: packageCost,
-        months_paid: monthsCount,
-        os_type: normalizedOs,
-      });
-
-      savedSubscription = await this.subscriptionRepository.save(subscription);
-
-      // Create wallet transaction — payment_id is null (no Payment record for account_balance),
-      // subscription_id links this debit to the subscription it paid for
-      const walletTransaction = this.walletTransactionRepository.create({
-        wallet_id: userWallet.id,
-        payment_id: null,
-        subscription_id: savedSubscription.id,
-        change_amount: -packageCost, // Negative for debit
-        balance_after: balanceAfter,
-        type: 'subscription_payment',
-      });
-
-      await this.walletTransactionRepository.save(walletTransaction);
-    } catch (persistError) {
-      // A5: the wallet was already debited; if persisting the subscription/ledger
-      // fails, refund so the user is never charged without a subscription record.
-      await this.userWalletService.addBalance(userId, packageCost);
-      throw persistError;
-    }
+    // All-or-nothing: debit + subscription + ledger commit in ONE transaction with
+    // the wallet row locked across all writes. A crash or any error rolls the whole
+    // thing back — the user is never charged without a subscription + ledger record,
+    // and the ledger balance_after is the authoritative post-deduct balance.
+    const { savedSubscription, balanceAfter } = await this.dataSource.transaction(async (manager) => {
+      const wallet = await this.userWalletService.deductBalanceTx(manager, userId, packageCost);
+      const balAfter = parseFloat(wallet.balance.toString());
+      const saved = await manager.save(
+        manager.create(Subscription, {
+          user_id: userId,
+          cloud_package_id: cloudPackageId,
+          start_date: startDate,
+          end_date: this.toEndOfDay(endDate),
+          status: 'active',
+          auto_renew: autoRenew,
+          amount_paid: packageCost,
+          months_paid: monthsCount,
+          os_type: normalizedOs,
+        }),
+      );
+      await manager.save(
+        manager.create(WalletTransaction, {
+          wallet_id: wallet.id,
+          payment_id: null,
+          subscription_id: saved.id,
+          change_amount: -packageCost,
+          balance_after: balAfter,
+          type: 'subscription_payment',
+        }),
+      );
+      return { savedSubscription: saved, balanceAfter: balAfter };
+    });
+    void balanceAfter;
 
     // Không tạo Payment record cho phương thức account_balance vì tiền đã có sẵn trong hệ thống.
     // Payment chỉ ghi nhận các giao dịch tiền đi vào hệ thống (nạp tiền, QR, chuyển khoản).
@@ -262,7 +256,7 @@ export class SubscriptionService {
     // Bound monthsCount (mirror createWithAccountBalance): an unvalidated or
     // negative value makes totalAmount negative, which the Sepay webhook would
     // "refund" as arbitrary wallet credit on a tiny real transfer.
-    if (!Number.isFinite(monthsCount) || monthsCount < 1 || monthsCount > 24) {
+    if (!Number.isInteger(monthsCount) || monthsCount < 1 || monthsCount > 24) {
       throw new BadRequestException('monthsCount must be between 1 and 24');
     }
     const normalizedOs = this.normalizeOsType(osType);
@@ -643,52 +637,43 @@ export class SubscriptionService {
       );
     }
 
-    // A2: atomically claim the renewal (expired -> active). Only one concurrent
-    // request wins (affected === 1); a double-click or a cron/manual race gets
-    // affected === 0 and aborts BEFORE any wallet deduction — no double charge.
-    const claim = await this.subscriptionRepository.update(
-      { id, user_id: userId, status: 'expired' },
-      { status: 'active' },
-    );
-    if (!claim.affected) {
-      throw new BadRequestException('Gói đang được gia hạn hoặc đã được gia hạn, vui lòng thử lại.');
-    }
+    // All-or-nothing renewal in ONE transaction: the CAS claim (expired->active +
+    // new end_date), the debit and the ledger row either ALL commit or ALL roll
+    // back. Prevents double-charge (only one concurrent claim gets affected===1)
+    // AND the charge-without-record / permanently-stuck-active states that a crash
+    // between separate statements would otherwise leave.
+    const newEndDate = new Date();
+    newEndDate.setMonth(newEndDate.getMonth() + 1);
+    const endOfDay = this.toEndOfDay(newEndDate);
 
-    // A4: use the authoritative post-deduct balance for the ledger snapshot.
-    let balanceAfter: number;
-    try {
-      const updatedWallet = await this.userWalletService.deductBalance(userId, packageCost);
-      balanceAfter = parseFloat(updatedWallet.balance.toString());
-    } catch (deductError) {
-      // Deduct failed (e.g. a concurrent debit drained the wallet) -> release the claim.
-      await this.subscriptionRepository.update({ id }, { status: 'expired' });
-      throw deductError;
-    }
+    const balanceAfter = await this.dataSource.transaction(async (manager) => {
+      const claim = await manager.update(
+        Subscription,
+        { id, user_id: userId, status: 'expired' },
+        { status: 'active', end_date: endOfDay },
+      );
+      if (!claim.affected) {
+        throw new BadRequestException('Gói đang được gia hạn hoặc đã được gia hạn, vui lòng thử lại.');
+      }
+      const wallet = await this.userWalletService.deductBalanceTx(manager, userId, packageCost);
+      const balAfter = parseFloat(wallet.balance.toString());
+      await manager.save(
+        manager.create(WalletTransaction, {
+          wallet_id: wallet.id,
+          payment_id: null,
+          subscription_id: id,
+          change_amount: -packageCost,
+          balance_after: balAfter,
+          type: 'manual_renewal',
+        }),
+      );
+      return balAfter;
+    });
 
-    try {
-      // payment_id is null — manual renewal debits from wallet, no Payment record exists
-      const walletTransaction = this.walletTransactionRepository.create({
-        wallet_id: userWallet.id,
-        payment_id: null,
-        subscription_id: subscription.id,
-        change_amount: -packageCost,
-        balance_after: balanceAfter,
-        type: 'manual_renewal',
-      });
-      await this.walletTransactionRepository.save(walletTransaction);
-
-      // Extend end_date by 1 month from today (not from expired end_date) and normalize to end-of-day
-      const newEndDate = new Date();
-      newEndDate.setMonth(newEndDate.getMonth() + 1);
-      subscription.end_date = this.toEndOfDay(newEndDate);
-      subscription.status = 'active';
-      await this.subscriptionRepository.save(subscription);
-    } catch (persistError) {
-      // A5: refund + revert if the wallet was debited but persistence failed.
-      await this.userWalletService.addBalance(userId, packageCost);
-      await this.subscriptionRepository.update({ id }, { status: 'expired' });
-      throw persistError;
-    }
+    // Reflect the committed state on the in-memory entity for the post-commit
+    // VM-start + notification steps below.
+    subscription.end_date = endOfDay;
+    subscription.status = 'active';
 
     // Start VM if configured
     if (subscription.vm_instance_id) {
@@ -924,52 +909,47 @@ export class SubscriptionService {
         return;
       }
 
-      // A2: claim the renewal atomically so a concurrent manualRenew (or another
-      // cron tick) cannot also charge. affected === 0 -> already renewed, skip.
-      const claim = await this.subscriptionRepository.update(
-        { id: subId, user_id: subscription.user_id, status: 'expired' },
-        { status: 'active' },
-      );
-      if (!claim.affected) {
+      // All-or-nothing renewal in ONE transaction (see manualRenew). The CAS claim
+      // (expired->active + new end_date), the debit and the ledger row all commit or
+      // all roll back — no double charge (only one concurrent claim wins) and no
+      // stuck-active / charge-without-ledger state if the process crashes mid-way.
+      const prevEndDate = new Date(subscription.end_date);
+      const nextEndDate = new Date(prevEndDate);
+      nextEndDate.setMonth(nextEndDate.getMonth() + 1);
+      const endOfDay = this.toEndOfDay(nextEndDate);
+
+      const result = await this.dataSource.transaction(async (manager) => {
+        const claim = await manager.update(
+          Subscription,
+          { id: subId, user_id: subscription.user_id, status: 'expired' },
+          { status: 'active', end_date: endOfDay },
+        );
+        if (!claim.affected) {
+          return null; // already renewed by a concurrent manualRenew / cron tick
+        }
+        const wallet = await this.userWalletService.deductBalanceTx(manager, subscription.user_id, packageCost);
+        const balAfter = parseFloat(wallet.balance.toString());
+        await manager.save(
+          manager.create(WalletTransaction, {
+            wallet_id: wallet.id,
+            payment_id: null,
+            subscription_id: subscription.id,
+            change_amount: -packageCost,
+            balance_after: balAfter,
+            type: 'auto_renewal',
+          }),
+        );
+        return balAfter;
+      });
+
+      if (result === null) {
         this.appendRenewalLog(`    [AutoRenew SKIP] sub=${subId} đã được gia hạn bởi tiến trình khác`);
         return;
       }
-
-      // A4: authoritative post-deduct balance for the ledger snapshot.
-      let balanceAfter: number;
-      try {
-        const updatedWallet = await this.userWalletService.deductBalance(subscription.user_id, packageCost);
-        balanceAfter = parseFloat(updatedWallet.balance.toString());
-      } catch (deductError) {
-        await this.subscriptionRepository.update({ id: subId }, { status: 'expired' });
-        throw deductError;
-      }
+      const balanceAfter = result;
       this.appendRenewalLog(`    [AutoRenew] Đã trừ ví → balance_after=${balanceAfter}`);
-
-      const prevEndDate = new Date(subscription.end_date);
-      try {
-        const walletTransaction = this.walletTransactionRepository.create({
-          wallet_id: userWallet.id,
-          payment_id: null, // auto-renewal không liên quan đến Payment record
-          subscription_id: subscription.id,
-          change_amount: -packageCost,
-          balance_after: balanceAfter,
-          type: 'auto_renewal',
-        });
-        await this.walletTransactionRepository.save(walletTransaction);
-        this.appendRenewalLog(`    [AutoRenew] Đã tạo wallet_transaction id=${walletTransaction.id}`);
-
-        const newEndDate = new Date(prevEndDate);
-        newEndDate.setMonth(newEndDate.getMonth() + 1);
-        subscription.end_date = this.toEndOfDay(newEndDate);
-        subscription.status = 'active';
-        await this.subscriptionRepository.save(subscription);
-      } catch (persistError) {
-        // A5: refund + revert on persistence failure after debit.
-        await this.userWalletService.addBalance(subscription.user_id, packageCost);
-        await this.subscriptionRepository.update({ id: subId }, { status: 'expired' });
-        throw persistError;
-      }
+      subscription.end_date = endOfDay;
+      subscription.status = 'active';
 
       this.appendRenewalLog(
         `    [AutoRenew SUCCESS] sub=${subId} | end_date cũ=${prevEndDate.toISOString()} | end_date mới=${subscription.end_date.toISOString()}`,
@@ -978,31 +958,38 @@ export class SubscriptionService {
       const fmtCost = new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(packageCost);
       const fmtEnd = subscription.end_date.toLocaleDateString('vi-VN');
       const fmtEndEn = subscription.end_date.toLocaleDateString('en-US');
-      await this.notificationService.notify(
-        subscription.user_id,
-        NotificationType.SUBSCRIPTION_RENEWED,
-        '✅ Gói dịch vụ đã được gia hạn',
-        `Gói "${pkgName}" đã được tự động gia hạn đến ${fmtEnd}. Đã trừ ${fmtCost} từ ví của bạn.`,
-        { subscription_id: subId, package_name: pkgName, amount: packageCost, new_end_date: subscription.end_date },
-        '✅ Subscription renewed',
-        `"${pkgName}" was automatically renewed until ${fmtEndEn}. ${fmtCost} was deducted from your wallet.`,
-      );
-      await this.notificationService.notify(
-        subscription.user_id,
-        NotificationType.WALLET_DEBIT,
-        '💸 Ví bị trừ tiền',
-        `Đã trừ ${fmtCost} để gia hạn gói "${pkgName}". Số dư còn lại: ${new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(balanceAfter)}.`,
-        { amount: packageCost, balance_after: balanceAfter, subscription_id: subId },
-        '💸 Wallet debited',
-        `${fmtCost} was deducted to renew "${pkgName}". Remaining balance: ${new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(balanceAfter)}.`,
-      );
+      // Notifications are best-effort and run AFTER the renewal has committed — a
+      // failure here must NOT reach the outer catch and revert a paid renewal.
+      try {
+        await this.notificationService.notify(
+          subscription.user_id,
+          NotificationType.SUBSCRIPTION_RENEWED,
+          '✅ Gói dịch vụ đã được gia hạn',
+          `Gói "${pkgName}" đã được tự động gia hạn đến ${fmtEnd}. Đã trừ ${fmtCost} từ ví của bạn.`,
+          { subscription_id: subId, package_name: pkgName, amount: packageCost, new_end_date: subscription.end_date },
+          '✅ Subscription renewed',
+          `"${pkgName}" was automatically renewed until ${fmtEndEn}. ${fmtCost} was deducted from your wallet.`,
+        );
+        await this.notificationService.notify(
+          subscription.user_id,
+          NotificationType.WALLET_DEBIT,
+          '💸 Ví bị trừ tiền',
+          `Đã trừ ${fmtCost} để gia hạn gói "${pkgName}". Số dư còn lại: ${new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(balanceAfter)}.`,
+          { amount: packageCost, balance_after: balanceAfter, subscription_id: subId },
+          '💸 Wallet debited',
+          `${fmtCost} was deducted to renew "${pkgName}". Remaining balance: ${new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(balanceAfter)}.`,
+        );
+      } catch (notifyErr: any) {
+        this.appendRenewalLog(`    [AutoRenew] notify failed (ignored) sub=${subId}: ${notifyErr?.message ?? notifyErr}`);
+      }
     } catch (error: any) {
       this.appendRenewalLog(
         `    [AutoRenew ERROR] sub=${subId} | ${error?.message ?? error}\n    Stack: ${error?.stack ?? ''}`,
       );
-      // Nếu gia hạn thất bại vì lý do không mong muốn, đánh dấu expired
-      subscription.status = 'expired';
-      await this.subscriptionRepository.save(subscription);
+      // Renewal failed BEFORE commit (transaction rolled back) → mark expired at the
+      // DB level. Never save the in-memory entity here — its end_date may already be
+      // advanced, which would persist a free extension (M-W1).
+      await this.subscriptionRepository.update({ id: subId }, { status: 'expired' });
     }
   }
 

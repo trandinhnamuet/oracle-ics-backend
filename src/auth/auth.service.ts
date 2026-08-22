@@ -22,6 +22,9 @@ interface JwtPayload {
   sub: string;
   email: string;
   role: string;
+  /** 'access' | 'refresh' — makes the two token kinds non-interchangeable even
+   *  if JWT_SECRET and JWT_REFRESH_SECRET were ever misconfigured to be equal. */
+  type?: 'access' | 'refresh';
   /**
    * Session id — equals the `user_sessions.id` row created at login/refresh.
    * The access token is validated against this session on every request, so
@@ -146,23 +149,32 @@ export class AuthService {
       throw new BadRequestException(t('verifyOtp.otpExpired', lang));
     }
 
-    // Per-account attempt limiting: burn the code after too many wrong guesses
-    // so the 6-digit space cannot be brute-forced across many IPs.
-    if ((user.emailVerificationOtpAttempts ?? 0) >= AuthService.MAX_OTP_ATTEMPTS) {
-      user.emailVerificationOtp = undefined;
-      user.otpExpiresAt = undefined;
-      await this.userRepository.save(user);
+    // Per-account attempt limiting done ATOMICALLY: a single conditional increment
+    // (attempts < MAX). Previously this was a non-atomic read→compare→increment→save,
+    // so concurrent guesses all read attempts<MAX and blew past the 5-cap, making the
+    // low-entropy 6-digit code brute-forceable (M-O1). affected===0 ⇒ cap reached ⇒ burn.
+    const inc = await this.userRepository.increment(
+      { id: user.id, emailVerificationOtpAttempts: LessThan(AuthService.MAX_OTP_ATTEMPTS) },
+      'emailVerificationOtpAttempts',
+      1,
+    );
+    if (!inc.affected) {
+      await this.userRepository.update(
+        { id: user.id },
+        { emailVerificationOtp: null as any, otpExpiresAt: null as any },
+      );
       throw new BadRequestException(t('verifyOtp.invalidOtp', lang));
     }
 
     if (user.emailVerificationOtp !== otp) {
       this.logger.warn(`OTP verification failed: Invalid OTP for ${email}`);
-      user.emailVerificationOtpAttempts = (user.emailVerificationOtpAttempts ?? 0) + 1;
-      if (user.emailVerificationOtpAttempts >= AuthService.MAX_OTP_ATTEMPTS) {
-        user.emailVerificationOtp = undefined;
-        user.otpExpiresAt = undefined;
+      // This wrong guess was already counted atomically above; burn if it hit the cap.
+      if ((user.emailVerificationOtpAttempts ?? 0) + 1 >= AuthService.MAX_OTP_ATTEMPTS) {
+        await this.userRepository.update(
+          { id: user.id },
+          { emailVerificationOtp: null as any, otpExpiresAt: null as any },
+        );
       }
-      await this.userRepository.save(user);
       throw new BadRequestException(t('verifyOtp.invalidOtp', lang));
     }
 
@@ -273,7 +285,8 @@ export class AuthService {
   }
 
   private generateOtp(): string {
-    return randomInt(100000, 999999).toString();
+    // Full 000000–999999 space (include leading-zero codes) for maximum entropy.
+    return randomInt(0, 1000000).toString().padStart(6, '0');
   }
 
   /**
@@ -295,21 +308,29 @@ export class AuthService {
       throw new BadRequestException(t('resetPassword.otpExpired', lang));
     }
 
-    if ((user.passwordResetOtpAttempts ?? 0) >= AuthService.MAX_OTP_ATTEMPTS) {
-      // Too many wrong guesses: burn the code so it can't be used further.
-      user.passwordResetOtp = undefined;
-      user.passwordResetOtpExpiresAt = undefined;
-      await this.userRepository.save(user);
+    // ATOMIC attempt limiting (M-O1): conditional increment (attempts < MAX) so
+    // concurrent guesses cannot all pass the cap check and brute-force the code.
+    const inc = await this.userRepository.increment(
+      { id: user.id, passwordResetOtpAttempts: LessThan(AuthService.MAX_OTP_ATTEMPTS) },
+      'passwordResetOtpAttempts',
+      1,
+    );
+    if (!inc.affected) {
+      await this.userRepository.update(
+        { id: user.id },
+        { passwordResetOtp: null as any, passwordResetOtpExpiresAt: null as any },
+      );
       throw invalid();
     }
 
     if (user.passwordResetOtp !== otp) {
-      user.passwordResetOtpAttempts = (user.passwordResetOtpAttempts ?? 0) + 1;
-      if (user.passwordResetOtpAttempts >= AuthService.MAX_OTP_ATTEMPTS) {
-        user.passwordResetOtp = undefined;
-        user.passwordResetOtpExpiresAt = undefined;
+      // Wrong guess already counted atomically above; burn if it reached the cap.
+      if ((user.passwordResetOtpAttempts ?? 0) + 1 >= AuthService.MAX_OTP_ATTEMPTS) {
+        await this.userRepository.update(
+          { id: user.id },
+          { passwordResetOtp: null as any, passwordResetOtpExpiresAt: null as any },
+        );
       }
-      await this.userRepository.save(user);
       throw invalid();
     }
   }
@@ -586,16 +607,30 @@ export class AuthService {
       sid: sessionId,
     };
 
-    const accessToken = this.jwtService.sign(payload, {
-      expiresIn: '30m',
-    });
+    const accessToken = this.jwtService.sign(
+      { ...payload, type: 'access' },
+      { expiresIn: '30m' },
+    );
 
-    const refreshToken = this.jwtService.sign(payload, {
-      secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
-      expiresIn: '30d',
-    });
+    const refreshToken = this.jwtService.sign(
+      { ...payload, type: 'refresh' },
+      { secret: this.getRefreshSecret(), expiresIn: '30d' },
+    );
 
     return { accessToken, refreshToken };
+  }
+
+  /**
+   * Refresh-token signing/verification secret. Fails closed: it MUST be configured
+   * and MUST differ from JWT_SECRET, otherwise a 30-day refresh token would verify
+   * as an access token (identical payload, same secret) and become directly usable.
+   */
+  private getRefreshSecret(): string {
+    const secret = this.configService.getOrThrow<string>('JWT_REFRESH_SECRET');
+    if (secret === this.configService.get<string>('JWT_SECRET')) {
+      throw new Error('JWT_REFRESH_SECRET must be set and must differ from JWT_SECRET');
+    }
+    return secret;
   }
 
   async login(loginDto: LoginDto, userAgent: string, request: any, lang: string = DEFAULT_LANG, adminOnly = false) {
@@ -875,6 +910,12 @@ export class AuthService {
     if (!user) {
       throw new UnauthorizedException(t('validateUser.userNotFound', DEFAULT_LANG));
     }
+    // A deactivated account must lose access immediately — not keep every live
+    // session and keep minting 30-day refreshes. JwtStrategy calls this on every
+    // request, so flipping isActive=false takes effect on the next call.
+    if (user.isActive === false) {
+      throw new UnauthorizedException('Account is deactivated');
+    }
     return this.sanitizeUser(user);
   }
 
@@ -890,11 +931,16 @@ export class AuthService {
     let payload: JwtPayload;
     try {
       payload = this.jwtService.verify<JwtPayload>(refreshToken, {
-        secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
+        secret: this.getRefreshSecret(),
         algorithms: ['HS256'],
       });
     } catch {
       throw new UnauthorizedException(t('refresh.jwtExpired', lang));
+    }
+
+    // Reject an access token presented at the refresh endpoint (type must be refresh).
+    if (payload.type && payload.type !== 'refresh') {
+      throw new UnauthorizedException(t('refresh.invalidSession', lang));
     }
 
     const session = await this.findSessionByToken(payload.sub, refreshToken);
@@ -907,10 +953,12 @@ export class AuthService {
       throw new UnauthorizedException(t('refresh.sessionExpired', lang));
     }
 
-    const user = await this.userRepository.findOne({ 
-      where: { id: parseInt(payload.sub) } 
+    const user = await this.userRepository.findOne({
+      where: { id: parseInt(payload.sub) }
     });
-    if (!user) {
+    if (!user || user.isActive === false) {
+      // Missing OR deactivated account cannot refresh (M-A2).
+      await this.deleteSession(session.id);
       throw new UnauthorizedException(t('validateUser.userNotFound', lang));
     }
 

@@ -28,6 +28,11 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   }
 
   async validate(payload: any) {
+    // A refresh token must never authenticate a normal request, even if the
+    // access/refresh secrets were ever misconfigured to be identical.
+    if (payload?.type === 'refresh') {
+      throw new UnauthorizedException('Refresh token cannot be used as an access token');
+    }
     // Reject access tokens whose backing session no longer exists. A session is
     // removed on logout, logout-all, and refresh-token rotation, so this is what
     // makes an access token stop working the moment the user logs out

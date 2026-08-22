@@ -29,6 +29,7 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
 
   private readonly logger = new Logger(TerminalGateway.name);
   private socketToSession: Map<string, string> = new Map(); // socketId -> sessionId
+  private sessionRevalidators: Map<string, NodeJS.Timeout> = new Map(); // socketId -> interval
 
   constructor(
     private readonly terminalService: TerminalService,
@@ -76,6 +77,26 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
         (client as any).userId = payload.id || payload.sub;
         (client as any).userEmail = payload.email;
 
+        // M-T1: A1 checks the session only at connect. A live root shell must also
+        // die when the session is revoked MID-session (logout-all / password change
+        // / refresh rotation), so re-validate periodically and disconnect on failure.
+        if (sid) {
+          const revalidate = setInterval(async () => {
+            try {
+              const s = await this.sessionRepository.findOne({ where: { id: sid } });
+              const active = !!s && (!s.expiresAt || new Date() <= s.expiresAt);
+              if (!active) {
+                this.logger.warn(`Session revoked mid-session; closing terminal for ${client.id}`);
+                client.emit('error', { message: 'Session has been terminated. Please log in again.' });
+                client.disconnect();
+              }
+            } catch {
+              /* transient DB error — re-check on the next tick */
+            }
+          }, 30000);
+          this.sessionRevalidators.set(client.id, revalidate);
+        }
+
         this.logger.log(`Client connected: ${client.id} (User: ${payload.email})`);
       } catch (error) {
         this.logger.warn(`Connection rejected: Invalid token from ${client.id}`);
@@ -94,6 +115,11 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
    * Handle client disconnection
    */
   handleDisconnect(client: Socket) {
+    const revalidator = this.sessionRevalidators.get(client.id);
+    if (revalidator) {
+      clearInterval(revalidator);
+      this.sessionRevalidators.delete(client.id);
+    }
     const sessionId = this.socketToSession.get(client.id);
     if (sessionId) {
       this.logger.log(`Client disconnected: ${client.id}, closing session: ${sessionId}`);

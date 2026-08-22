@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, DataSource } from 'typeorm';
 import { Payment } from '../../entities/payment.entity';
 import { UserWallet } from '../../entities/user-wallet.entity';
 import { WalletTransaction } from '../../entities/wallet-transaction.entity';
@@ -26,6 +26,7 @@ export class PaymentService {
     @InjectRepository(Subscription)
     private subscriptionRepository: Repository<Subscription>,
     private notificationService: NotificationService,
+    private dataSource: DataSource,
   ) {}
 
   async create(createPaymentDto: CreatePaymentDto): Promise<Payment> {
@@ -138,6 +139,68 @@ export class PaymentService {
         await this.paymentRepository.save(payment);
         throw new BadRequestException('Payment has expired (over 15 minutes).');
       }
+    }
+
+    // M-W2: for a pending DEPOSIT, claim (pending→success) AND credit the wallet in
+    // ONE transaction. Previously the claim committed first and the credit ran after,
+    // so a crash / DB error in between left the payment 'success' with the wallet
+    // never credited and no retry — a silently lost deposit.
+    if (payment.status === 'pending' && payment.payment_type === 'deposit') {
+      let credited: { balanceAfter: number } | null = null;
+      await this.dataSource.transaction(async (manager) => {
+        const claim = await manager.update(
+          Payment,
+          { id: payment.id, status: 'pending' },
+          { status: 'success' },
+        );
+        if (!claim.affected) {
+          return; // a concurrent completion already credited this payment
+        }
+        const wallet = await manager.findOne(UserWallet, {
+          where: { user_id: payment.user_id },
+          lock: { mode: 'pessimistic_write' },
+        });
+        if (!wallet) {
+          throw new NotFoundException(`User wallet for user ${payment.user_id} not found`);
+        }
+        const balanceAfter = parseFloat(wallet.balance.toString()) + Number(payment.amount);
+        wallet.balance = balanceAfter;
+        await manager.save(wallet);
+        await manager.save(
+          manager.create(WalletTransaction, {
+            wallet_id: wallet.id,
+            payment_id: payment.id,
+            change_amount: payment.amount,
+            balance_after: balanceAfter,
+            type: 'deposit',
+          }),
+        );
+        credited = { balanceAfter };
+      });
+
+      const fresh = await this.paymentRepository.findOne({ where: { id: payment.id } });
+      if (fresh) payment.status = fresh.status;
+
+      if (credited) {
+        // Best-effort deposit notification, outside the transaction.
+        try {
+          const amt = Number(payment.amount);
+          const fa = new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(amt);
+          const fb = new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format((credited as { balanceAfter: number }).balanceAfter);
+          await this.notificationService.notify(
+            payment.user_id,
+            NotificationType.WALLET_CREDIT,
+            '💰 Nạp tiền thành công',
+            `Bạn đã nạp thành công ${fa} vào tài khoản. Số dư mới: ${fb}.`,
+            { amount: amt, balance_after: (credited as { balanceAfter: number }).balanceAfter, payment_id: payment.id },
+            '💰 Deposit successful',
+            `You have successfully deposited ${fa} to your account. New balance: ${fb}.`,
+          );
+        } catch (e) {
+          this.logger.warn(`[completePayment] deposit notify failed (ignored): ${(e as Error)?.message}`);
+        }
+      }
+      return payment;
     }
 
     // Atomically claim the payment: only one concurrent completion may flip

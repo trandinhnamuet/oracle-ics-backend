@@ -119,10 +119,18 @@ export class UserService {
   // carries an optional password); otherwise it would overwrite the bcrypt hash
   // with plaintext and lock the user out.
   const toUpdate: UpdateUserDto = { ...updateUserDto };
+  const passwordChanged = !!toUpdate.password;
+  const deactivated = toUpdate.isActive === false;
   if (toUpdate.password) {
     toUpdate.password = await bcrypt.hash(toUpdate.password, 10);
   }
   await this.userRepository.update(id, toUpdate);
+  if (passwordChanged || deactivated) {
+    // Admin reset the password or disabled the account → terminate every session so
+    // stolen/existing access+refresh tokens can't outlive the remediation (M-A3),
+    // mirroring self-service changePassword/resetPassword.
+    await this.sessionRepository.delete({ userId: String(id) });
+  }
   const user = await this.userRepository.findOne({ where: { id } });
   if (!user) throw new Error('User not found');
   return user;

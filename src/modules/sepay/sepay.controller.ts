@@ -1,4 +1,5 @@
 import { Controller, Post, Body, HttpCode, HttpStatus, Logger, UseGuards, Headers, UnauthorizedException } from '@nestjs/common';
+import { timingSafeEqual } from 'crypto';
 import { SepayService } from './sepay.service';
 import { SepayWebhookDto, CreatePaymentDto } from './dto/sepay.dto';
 import { JwtAuthGuard } from '../../auth/jwt-auth.guard';
@@ -22,7 +23,10 @@ export class SepayController {
       this.logger.error('SEPAY_WEBHOOK_API_KEY is not configured; rejecting webhook');
       throw new UnauthorizedException('Webhook API key is not configured');
     }
-    if (authHeader !== `Apikey ${apiKey}`) {
+    // Constant-time comparison to avoid leaking the key via response timing.
+    const provided = Buffer.from(authHeader || '');
+    const expected = Buffer.from(`Apikey ${apiKey}`);
+    if (provided.length !== expected.length || !timingSafeEqual(provided, expected)) {
       throw new UnauthorizedException('Invalid webhook API key');
     }
     this.logger.log(`Received Sepay webhook for transaction ${webhookData.id}`);

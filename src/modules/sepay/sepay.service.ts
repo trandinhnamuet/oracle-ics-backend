@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, InternalServerErrorException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { QueryFailedError, Repository } from 'typeorm';
 import { SepayWebhookDto, CreatePaymentDto } from './dto/sepay.dto';
@@ -140,8 +140,14 @@ export class SepayService {
       }
 
     } catch (error) {
+      // Transient/internal failure while processing a REAL transfer. Throw a 5xx so
+      // SePay's retry mechanism redelivers — returning HTTP 200 here made SePay treat
+      // it as delivered and the customer's credit was silently lost (M-P1). Terminal
+      // business outcomes (not-in / no-match / duplicate / expired) already returned
+      // 200 above and never reach here; the idempotency claim is released on the
+      // processing path so a redelivery re-runs cleanly.
       this.logger.error(`Error processing Sepay webhook: ${error.message}`, error.stack);
-      return { success: false, message: 'Internal server error' };
+      throw new InternalServerErrorException('Error processing webhook; please retry');
     }
   }
 
