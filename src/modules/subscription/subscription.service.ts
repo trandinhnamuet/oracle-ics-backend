@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, BadRequestException, ForbiddenException, Logger } from '@nestjs/common';
 import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
-import { Repository, DataSource, In } from 'typeorm';
+import { Repository, DataSource, In, LessThanOrEqual } from 'typeorm';
 import { Subscription } from '../../entities/subscription.entity';
 import { UserWallet } from '../../entities/user-wallet.entity';
 import { WalletTransaction } from '../../entities/wallet-transaction.entity';
@@ -844,7 +844,7 @@ export class SubscriptionService {
           this.appendRenewalLog(`    → Đánh dấu EXPIRED (không có auto_renew)`);
           // Guarded update (not stale save) — don't erase a concurrent renewal.
           await this.subscriptionRepository.update(
-            { id: subscription.id, status: In(['active']), end_date: subscription.end_date },
+            { id: subscription.id, status: In(['active']), end_date: LessThanOrEqual(now) },
             { status: 'expired' },
           );
 
@@ -880,9 +880,12 @@ export class SubscriptionService {
     const subId = subscription.id;
     const pkgName = subscription.cloudPackage?.name ?? `#${subscription.cloud_package_id}`;
     this.appendRenewalLog(`    [AutoRenew START] sub=${subId} | pkg=${pkgName} | user=${subscription.user_id}`);
-    // The end_date this cron run observed. Every status write below is guarded by it
-    // so a concurrent manualRenew/cancel/suspend (which changes status and/or end_date)
-    // makes our write a no-op instead of clobbering a committed change.
+    // Guard every status write below by "still overdue" (end_date <= now) rather than
+    // an exact end_date match (Date round-trips DB->JS->SQL don't compare reliably, which
+    // made the CAS never claim). A concurrent manualRenew advances end_date into the
+    // future so our write becomes a no-op instead of clobbering it; a cancel/suspend
+    // moves status out of the {active,expired} set. now is captured once for all guards.
+    const now = new Date();
     const scanEndDate = subscription.end_date;
 
     try {
@@ -905,7 +908,7 @@ export class SubscriptionService {
         // M7: mark expired via a guarded UPDATE (not save() of the stale entity),
         // so a concurrent manualRenew that just renewed this sub isn't erased.
         await this.subscriptionRepository.update(
-          { id: subId, status: In(['active', 'expired']), end_date: scanEndDate },
+          { id: subId, status: In(['active', 'expired']), end_date: LessThanOrEqual(now) },
           { status: 'expired' },
         );
         this.appendRenewalLog(`    [AutoRenew FAIL] Số dư không đủ → đánh dấu EXPIRED | sub=${subId}`);
@@ -926,7 +929,6 @@ export class SubscriptionService {
       // (expired->active + new end_date), the debit and the ledger row all commit or
       // all roll back — no double charge (only one concurrent claim wins) and no
       // stuck-active / charge-without-ledger state if the process crashes mid-way.
-      const now = new Date();
       const prevEndDate = new Date(scanEndDate);
       // H2: renew from max(prevEnd, now) — a sub that lapsed N months ago must not be
       // charged one month per cron tick to crawl its end_date forward from the past.
@@ -943,7 +945,7 @@ export class SubscriptionService {
         // the scan-time end_date so a concurrent manualRenew is a no-op (affected=0).
         const claim = await manager.update(
           Subscription,
-          { id: subId, user_id: subscription.user_id, status: In(['active', 'expired']), end_date: scanEndDate },
+          { id: subId, user_id: subscription.user_id, status: In(['active', 'expired']), end_date: LessThanOrEqual(now) },
           { status: 'active', end_date: endOfDay },
         );
         if (!claim.affected) {
@@ -1012,7 +1014,7 @@ export class SubscriptionService {
       // DB level, guarded by status + scan-time end_date (H1) so this can never clobber
       // a concurrent committed manualRenew or an admin cancel/suspend.
       await this.subscriptionRepository.update(
-        { id: subId, status: In(['active', 'expired']), end_date: scanEndDate },
+        { id: subId, status: In(['active', 'expired']), end_date: LessThanOrEqual(now) },
         { status: 'expired' },
       );
     }
