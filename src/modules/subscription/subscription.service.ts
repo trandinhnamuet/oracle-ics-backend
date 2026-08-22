@@ -340,11 +340,13 @@ export class SubscriptionService {
       throw new BadRequestException('Only pending subscriptions can have their payment renewed');
     }
 
-    // Mark any existing pending payments for this subscription as expired
-    await this.paymentRepository.update(
-      { subscription_id: subscriptionId, status: 'pending' },
-      { status: 'expired' },
-    );
+    // M-P2: intentionally do NOT expire the existing pending payment(s) here. A bank
+    // transfer for the previous transaction_code may already be in flight; expiring it
+    // makes the webhook (which matches only 'pending') drop that real transfer and lose
+    // the customer's money. Leaving the old payment pending lets the late transfer still
+    // match and activate the subscription; the new payment simply expires unused. Each
+    // transfer maps to exactly one payment by its unique transaction_code, and the
+    // bank-tx idempotency claim prevents any double-processing.
 
     const cloudPackage =
       subscription.cloudPackage ??

@@ -255,11 +255,50 @@ export class SepayService {
         }
 
       } else if (payment.payment_type === 'subscription') {
-        // Kích hoạt subscription
-        if (payment.subscription_id) {
-          await this.subscriptionRepository.update(payment.subscription_id, { status: 'active' });
-          this.logger.log(`Activated subscription ${payment.subscription_id}`);
+        // Activate ONLY while the subscription is still pending. If it was auto-deleted
+        // before this (late) transfer arrived, or already activated by another transfer,
+        // DON'T net-zero the money — credit the received amount to the wallet so the
+        // customer never loses a real transfer (M-S2 + duplicate-transfer reconciliation).
+        const activated = payment.subscription_id
+          ? (
+              await this.subscriptionRepository.update(
+                { id: payment.subscription_id, status: 'pending' },
+                { status: 'active' },
+              )
+            ).affected
+          : 0;
+
+        if (!activated) {
+          const updatedWallet = await this.userWalletService.addBalance(payment.user_id, received);
+          const uw = await this.userWalletService.findByUserId(payment.user_id);
+          await this.userWalletService.createTransaction({
+            wallet_id: uw.id,
+            payment_id: payment.id,
+            subscription_id: null,
+            change_amount: received,
+            balance_after: updatedWallet.balance,
+            type: 'deposit',
+          });
+          this.logger.warn(
+            `[SEPAY] Subscription ${payment.subscription_id} not pending (deleted/already-active) for payment ${payment.id}; credited ${received} to wallet (reconciliation).`,
+          );
+          const fmtR = (n: number) => new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(n);
+          try {
+            await this.notificationService.notify(
+              payment.user_id,
+              NotificationType.WALLET_CREDIT,
+              '💰 Tiền đã được cộng vào ví',
+              `Khoản chuyển ${fmtR(received)} đã được cộng vào ví (gói không còn ở trạng thái chờ thanh toán). Số dư mới: ${fmtR(updatedWallet.balance)}.`,
+              { amount: received, balance_after: updatedWallet.balance, payment_id: payment.id },
+              '💰 Credited to wallet',
+              `Your ${fmtR(received)} transfer was credited to your wallet. New balance: ${fmtR(updatedWallet.balance)}.`,
+            );
+          } catch (notifyErr: any) {
+            this.logger.error(`Reconciliation notify failed for payment ${payment.id}: ${notifyErr?.message}`);
+          }
+          return;
         }
+        this.logger.log(`Activated subscription ${payment.subscription_id}`);
 
         // Ghi 2 giao dịch thống kê (tiền đến thẳng ngân hàng, ví không thay đổi)
         const userWallet = await this.userWalletService.findByUserId(payment.user_id);
