@@ -9,6 +9,7 @@ import { CreateSupportTicketDto, UpdateSupportTicketDto } from './dto/support-ti
 import { JwtAuthGuard } from '../../auth/jwt-auth.guard';
 import { OptionalJwtAuthGuard } from '../../auth/optional-jwt-auth.guard';
 import { AdminGuard } from '../../auth/admin.guard';
+import { Throttle } from '@nestjs/throttler';
 import { ImageService } from '../image/image.service';
 
 const ALLOWED_MIME_TYPES = new Set([
@@ -75,6 +76,9 @@ export class SupportTicketController {
 
   /** Upload files for a support ticket (images + PDF + common docs) */
   @Post('upload-files')
+  // Anonymous (OptionalJwtAuthGuard) + up to 10×20MB per request — throttle per-IP so
+  // it can't be used as an unauthenticated disk-fill / abuse vector.
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
   @UseGuards(OptionalJwtAuthGuard)
   @UseInterceptors(FilesInterceptor('files', 10, { limits: { fileSize: 20 * 1024 * 1024 } }))
   async uploadFiles(

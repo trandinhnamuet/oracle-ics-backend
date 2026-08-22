@@ -1,9 +1,11 @@
 import { Injectable, Logger, InternalServerErrorException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { QueryFailedError, Repository } from 'typeorm';
+import { QueryFailedError, Repository, DataSource, EntityManager } from 'typeorm';
 import { SepayWebhookDto, CreatePaymentDto } from './dto/sepay.dto';
 import { Payment } from '../../entities/payment.entity';
 import { Subscription } from '../../entities/subscription.entity';
+import { UserWallet } from '../../entities/user-wallet.entity';
+import { WalletTransaction } from '../../entities/wallet-transaction.entity';
 import { ProcessedSepayTransaction } from '../../entities/processed-sepay-transaction.entity';
 import { UserWalletService } from '../user-wallet/user-wallet.service';
 import { NotificationService } from '../notification/notification.service';
@@ -23,6 +25,7 @@ export class SepayService {
     private processedTxRepository: Repository<ProcessedSepayTransaction>,
     private userWalletService: UserWalletService,
     private notificationService: NotificationService,
+    private dataSource: DataSource,
   ) {}
 
   /**
@@ -208,41 +211,32 @@ export class SepayService {
    * - Lưu lịch sử giao dịch đầy đủ.
    */
   /**
-   * Credit a received transfer to the user's wallet. Ensures the wallet exists first
-   * (auto-create — addBalance throws on a missing wallet, F5), then adds the balance.
-   * If the ledger/notify step then fails it is SWALLOWED so the money stays credited
-   * AND the bank-tx idempotency claim stays held — a SePay replay can therefore never
-   * double-credit (mirrors handleUnderpayment / N7). Used for deposits, M-S2
-   * reconciliation, and a 2nd real transfer that lost the payment CAS (M6).
+   * Credit an amount to the user's wallet INSIDE a caller-supplied transaction, and
+   * insert the ledger row in the SAME transaction. Auto-creates the wallet if missing
+   * (F5). Returns the post-credit balance. Because it runs in the caller's transaction,
+   * a downstream failure rolls the credit AND ledger back together — no lost/duplicated
+   * money and no ledger-less credit.
    */
-  private async creditReceivedToWallet(payment: Payment, amount: number, viTitle: string): Promise<void> {
-    await this.userWalletService.findByUserId(payment.user_id); // auto-create if missing
-    const updatedWallet = await this.userWalletService.addBalance(payment.user_id, amount);
-    try {
-      const uw = await this.userWalletService.findByUserId(payment.user_id);
-      await this.userWalletService.createTransaction({
-        wallet_id: uw.id,
-        payment_id: payment.id,
+  private async creditWalletTx(manager: EntityManager, userId: number, amount: number, paymentId: string): Promise<number> {
+    let wallet = await manager.findOne(UserWallet, { where: { user_id: userId }, lock: { mode: 'pessimistic_write' } });
+    if (!wallet) {
+      await manager.insert(UserWallet, { user_id: userId, balance: 0, currency: 'VND', status: 'active', is_active: true } as any);
+      wallet = await manager.findOne(UserWallet, { where: { user_id: userId }, lock: { mode: 'pessimistic_write' } });
+    }
+    const balAfter = parseFloat(wallet!.balance.toString()) + Number(amount);
+    wallet!.balance = balAfter as any;
+    await manager.save(wallet!);
+    await manager.save(
+      manager.create(WalletTransaction, {
+        wallet_id: wallet!.id,
+        payment_id: paymentId,
         subscription_id: null,
         change_amount: amount,
-        balance_after: updatedWallet.balance,
+        balance_after: balAfter,
         type: 'deposit',
-      });
-      const fmt = (n: number) => new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(n);
-      await this.notificationService.notify(
-        payment.user_id,
-        NotificationType.WALLET_CREDIT,
-        `💰 ${viTitle}`,
-        `${fmt(amount)} đã được cộng vào ví. Số dư mới: ${fmt(updatedWallet.balance)}.`,
-        { amount, balance_after: updatedWallet.balance, payment_id: payment.id },
-        '💰 Credited to wallet',
-        `${fmt(amount)} credited to your wallet. New balance: ${fmt(updatedWallet.balance)}.`,
-      );
-    } catch (postErr: any) {
-      this.logger.error(
-        `[SEPAY] post-credit step failed for payment ${payment.id} (money IS credited, idempotency claim kept): ${postErr?.message ?? postErr}`,
-      );
-    }
+      }),
+    );
+    return balAfter;
   }
 
   private async handleFullPayment(
@@ -251,143 +245,89 @@ export class SepayService {
     expected: number,
     excess: number,
   ): Promise<void> {
-    // Đánh dấu payment thành công bằng compare-and-set atomic: chỉ chuyển khi
-    // vẫn còn 'pending'. Nếu affected=0 thì một lần xử lý khác đã hoàn tất → dừng.
-    const claim = await this.paymentRepository.update(
-      { id: payment.id, status: 'pending' },
-      { status: 'success' },
-    );
-    if (!claim.affected) {
-      // M6: this payment was already completed by a DIFFERENT bank transaction (same-tx
-      // replays are blocked earlier by the bankTxId unique claim). This is a second REAL
-      // transfer for the same payment — credit it to the wallet, don't swallow it.
-      this.logger.warn(`[SEPAY] Payment ${payment.id} already completed by another transfer; crediting ${received} to wallet.`);
-      await this.creditReceivedToWallet(payment, received, 'Khoản chuyển được cộng vào ví');
-      return;
-    }
+    // M4: the payment CAS, wallet credit / subscription activation, and every ledger
+    // row commit in ONE transaction. A crash or any error rolls it ALL back — the
+    // payment stays 'pending' so SePay's redelivery reprocesses cleanly (no lost
+    // credit, no stuck 'failed' dead-end, no double-credit on operator replay). The
+    // bankTx idempotency claim (inserted by the caller) still blocks same-tx replays,
+    // and is released by the caller on throw. Notifications run AFTER commit.
+    const outcome = await this.dataSource.transaction(async (manager) => {
+      const claim = await manager.update(Payment, { id: payment.id, status: 'pending' }, { status: 'success' });
+      if (!claim.affected) {
+        // M6: already completed by a DIFFERENT bank tx — this is a 2nd real transfer.
+        const balanceAfter = await this.creditWalletTx(manager, payment.user_id, received, payment.id);
+        return { kind: 'credited' as const, amount: received, balanceAfter };
+      }
 
-    try {
       if (payment.payment_type === 'deposit') {
-        // Nạp tiền vào ví (auto-create ví nếu thiếu + giữ claim nếu ledger lỗi).
-        await this.creditReceivedToWallet(payment, received, 'Nạp tiền thành công');
-
-      } else if (payment.payment_type === 'subscription') {
-        // Activate ONLY while the subscription is still pending. If it was auto-deleted
-        // before this (late) transfer arrived, or already activated by another transfer,
-        // DON'T net-zero the money — credit the received amount to the wallet so the
-        // customer never loses a real transfer (M-S2 + duplicate-transfer reconciliation).
-        const activated = payment.subscription_id
-          ? (
-              await this.subscriptionRepository.update(
-                { id: payment.subscription_id, status: 'pending' },
-                { status: 'active' },
-              )
-            ).affected
-          : 0;
-
-        if (!activated) {
-          // M-S2: subscription gone (auto-deleted) or already active → credit the real
-          // transfer to the wallet (keeps claim on post-credit failure — no replay).
-          this.logger.warn(
-            `[SEPAY] Subscription ${payment.subscription_id} not pending for payment ${payment.id}; crediting ${received} to wallet (reconciliation).`,
-          );
-          await this.creditReceivedToWallet(payment, received, 'Tiền đã được cộng vào ví');
-          return;
-        }
-        this.logger.log(`Activated subscription ${payment.subscription_id}`);
-
-        // Ghi 2 giao dịch thống kê (tiền đến thẳng ngân hàng, ví không thay đổi)
-        const userWallet = await this.userWalletService.findByUserId(payment.user_id);
-        const currentBalance = Number(userWallet.balance);
-
-        await this.userWalletService.createTransaction({
-          wallet_id: userWallet.id,
-          payment_id: payment.id,
-          subscription_id: payment.subscription_id ?? null,
-          change_amount: expected,
-          balance_after: currentBalance + expected,
-          type: 'qr_payment_received',
-        });
-
-        await this.userWalletService.createTransaction({
-          wallet_id: userWallet.id,
-          payment_id: payment.id,
-          subscription_id: payment.subscription_id ?? null,
-          change_amount: -expected,
-          balance_after: currentBalance,
-          type: 'qr_subscription_payment',
-        });
-
-        // Hoàn tiền dư vào ví (nếu chuyển thừa)
-        if (excess > 0) {
-          const updatedWallet = await this.userWalletService.addBalance(payment.user_id, excess);
-
-          await this.userWalletService.createTransaction({
-            wallet_id: userWallet.id,
-            payment_id: payment.id,
-            subscription_id: payment.subscription_id ?? null,
-            change_amount: excess,
-            balance_after: updatedWallet.balance,
-            type: 'overpayment_refund',
-          });
-
-          const fmt = (n: number) => new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(n);
-          try {
-            await this.notificationService.notify(
-              payment.user_id,
-              NotificationType.WALLET_CREDIT,
-              '💰 Hoàn tiền dư vào ví',
-              `Gói dịch vụ đã được kích hoạt. Bạn đã chuyển dư ${fmt(excess)}, số tiền này đã được nạp vào ví. Số dư mới: ${fmt(updatedWallet.balance)}.`,
-              { excess, balance_after: updatedWallet.balance, payment_id: payment.id },
-              '💰 Excess payment credited to wallet',
-              `Subscription activated. You overpaid by ${fmt(excess)}. The excess has been credited to your wallet. New balance: ${fmt(updatedWallet.balance)}.`,
-            );
-          } catch (notifyErr) {
-            this.logger.error(`Failed to send overpayment notification for payment ${payment.id}: ${notifyErr?.message}`);
-          }
-        }
-
-        // Notification kích hoạt subscription
-        try {
-          const subscription = await this.subscriptionRepository.findOne({
-            where: { id: payment.subscription_id },
-            relations: ['cloudPackage'],
-          });
-          if (subscription && subscription.cloudPackage) {
-            const pkgName = subscription.cloudPackage.name;
-            const fmt = (n: number) => new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(n);
-            const endDate = new Date(subscription.end_date).toLocaleDateString('vi-VN');
-            await this.notificationService.notify(
-              payment.user_id,
-              NotificationType.SUBSCRIPTION_CREATED,
-              '🚀 Đăng ký gói dịch vụ thành công',
-              `Gói "${pkgName}" (${fmt(expected)}) đã được kích hoạt. Hạn sử dụng: ${endDate}.`,
-              { subscription_id: subscription.id, package_name: pkgName, amount: expected, end_date: subscription.end_date },
-              '🚀 Subscription activated',
-              `"${pkgName}" (${fmt(expected)}) is now active until ${new Date(subscription.end_date).toLocaleDateString('en-US')}.`,
-            );
-          }
-        } catch (notifyErr) {
-          this.logger.error(`Failed to send subscription notification for payment ${payment.id}: ${notifyErr?.message}`);
-        }
-
-        this.logger.log(`[SEPAY] Payment ${payment.id} completed: subscription activated, excess=${excess}`);
+        const balanceAfter = await this.creditWalletTx(manager, payment.user_id, received, payment.id);
+        return { kind: 'deposit' as const, amount: received, balanceAfter };
       }
-    } catch (postUpdateErr) {
-      // Roll back payment status để operator có thể replay thủ công
-      this.logger.error(
-        `Post-payment side effects failed for payment ${payment.id}; rolling back to 'failed'. Error: ${postUpdateErr?.message}`,
-        postUpdateErr?.stack,
-      );
-      try {
-        await this.paymentRepository.update(payment.id, { status: 'failed' });
-      } catch (rollbackErr) {
-        this.logger.error(
-          `CRITICAL: failed to roll back payment ${payment.id}. Manual intervention required. Error: ${rollbackErr?.message}`,
-        );
+
+      // subscription: activate ONLY while still pending (CAS)
+      const activated = payment.subscription_id
+        ? (await manager.update(Subscription, { id: payment.subscription_id, status: 'pending' }, { status: 'active' })).affected
+        : 0;
+      if (!activated) {
+        // M-S2: gone (auto-deleted) or already active → credit the real transfer to wallet.
+        const balanceAfter = await this.creditWalletTx(manager, payment.user_id, received, payment.id);
+        return { kind: 'reconciled' as const, amount: received, balanceAfter };
       }
-      throw postUpdateErr;
+
+      // Activated: two net-zero statistical ledger rows (money went to the bank, not the
+      // wallet) + excess refund — all in the same transaction.
+      let wallet = await manager.findOne(UserWallet, { where: { user_id: payment.user_id }, lock: { mode: 'pessimistic_write' } });
+      if (!wallet) {
+        await manager.insert(UserWallet, { user_id: payment.user_id, balance: 0, currency: 'VND', status: 'active', is_active: true } as any);
+        wallet = await manager.findOne(UserWallet, { where: { user_id: payment.user_id }, lock: { mode: 'pessimistic_write' } });
+      }
+      const bal = parseFloat(wallet!.balance.toString());
+      await manager.save(manager.create(WalletTransaction, { wallet_id: wallet!.id, payment_id: payment.id, subscription_id: payment.subscription_id ?? null, change_amount: expected, balance_after: bal + expected, type: 'qr_payment_received' }));
+      await manager.save(manager.create(WalletTransaction, { wallet_id: wallet!.id, payment_id: payment.id, subscription_id: payment.subscription_id ?? null, change_amount: -expected, balance_after: bal, type: 'qr_subscription_payment' }));
+      let balanceAfter = bal;
+      if (excess > 0) {
+        balanceAfter = bal + excess;
+        wallet!.balance = balanceAfter as any;
+        await manager.save(wallet!);
+        await manager.save(manager.create(WalletTransaction, { wallet_id: wallet!.id, payment_id: payment.id, subscription_id: payment.subscription_id ?? null, change_amount: excess, balance_after: balanceAfter, type: 'overpayment_refund' }));
+      }
+      return { kind: 'activated' as const, excess, balanceAfter };
+    });
+
+    // ---- post-commit notifications (best-effort, outside the transaction) ----
+    const fmt = (n: number) => new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(n);
+    try {
+      if (outcome.kind === 'deposit') {
+        await this.notificationService.notify(payment.user_id, NotificationType.WALLET_CREDIT, '💰 Nạp tiền thành công',
+          `Bạn đã nạp thành công ${fmt(outcome.amount)} vào tài khoản. Số dư mới: ${fmt(outcome.balanceAfter)}.`,
+          { amount: outcome.amount, balance_after: outcome.balanceAfter, payment_id: payment.id },
+          '💰 Deposit successful', `You have successfully deposited ${fmt(outcome.amount)}. New balance: ${fmt(outcome.balanceAfter)}.`);
+      } else if (outcome.kind === 'credited' || outcome.kind === 'reconciled') {
+        await this.notificationService.notify(payment.user_id, NotificationType.WALLET_CREDIT, '💰 Tiền đã được cộng vào ví',
+          `${fmt(outcome.amount)} đã được cộng vào ví. Số dư mới: ${fmt(outcome.balanceAfter)}.`,
+          { amount: outcome.amount, balance_after: outcome.balanceAfter, payment_id: payment.id },
+          '💰 Credited to wallet', `${fmt(outcome.amount)} credited to your wallet. New balance: ${fmt(outcome.balanceAfter)}.`);
+      } else if (outcome.kind === 'activated') {
+        if (outcome.excess > 0) {
+          await this.notificationService.notify(payment.user_id, NotificationType.WALLET_CREDIT, '💰 Hoàn tiền dư vào ví',
+            `Gói dịch vụ đã được kích hoạt. Bạn đã chuyển dư ${fmt(outcome.excess)}, số tiền này đã được nạp vào ví. Số dư mới: ${fmt(outcome.balanceAfter)}.`,
+            { excess: outcome.excess, balance_after: outcome.balanceAfter, payment_id: payment.id },
+            '💰 Excess payment credited to wallet', `Subscription activated. You overpaid by ${fmt(outcome.excess)}. Credited to wallet. New balance: ${fmt(outcome.balanceAfter)}.`);
+        }
+        const subscription = await this.subscriptionRepository.findOne({ where: { id: payment.subscription_id }, relations: ['cloudPackage'] });
+        if (subscription?.cloudPackage) {
+          const pkgName = subscription.cloudPackage.name;
+          const endDate = new Date(subscription.end_date).toLocaleDateString('vi-VN');
+          await this.notificationService.notify(payment.user_id, NotificationType.SUBSCRIPTION_CREATED, '🚀 Đăng ký gói dịch vụ thành công',
+            `Gói "${pkgName}" (${fmt(expected)}) đã được kích hoạt. Hạn sử dụng: ${endDate}.`,
+            { subscription_id: subscription.id, package_name: pkgName, amount: expected, end_date: subscription.end_date },
+            '🚀 Subscription activated', `"${pkgName}" (${fmt(expected)}) is now active until ${new Date(subscription.end_date).toLocaleDateString('en-US')}.`);
+        }
+      }
+    } catch (notifyErr: any) {
+      this.logger.error(`[SEPAY] post-commit notification failed for payment ${payment.id}: ${notifyErr?.message ?? notifyErr}`);
     }
+    this.logger.log(`[SEPAY] Payment ${payment.id} processed (kind=${outcome.kind}, excess=${excess}).`);
   }
 
   async createPayment(createPaymentDto: CreatePaymentDto): Promise<{ paymentId: string; qrUrl: string }> {
