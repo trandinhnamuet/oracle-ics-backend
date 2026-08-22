@@ -4,6 +4,7 @@ import { Repository } from 'typeorm';
 import { Client } from 'ssh2';
 import { VmInstance } from '../../entities/vm-instance.entity';
 import { SystemSshKey } from '../../entities/system-ssh-key.entity';
+import { Subscription } from '../../entities/subscription.entity';
 import { decryptPrivateKey } from '../../utils/system-ssh-key.util';
 
 export interface TerminalSession {
@@ -31,6 +32,8 @@ export class TerminalService {
     private readonly vmInstanceRepo: Repository<VmInstance>,
     @InjectRepository(SystemSshKey)
     private readonly systemSshKeyRepo: Repository<SystemSshKey>,
+    @InjectRepository(Subscription)
+    private readonly subscriptionRepo: Repository<Subscription>,
   ) {
     // Cleanup idle sessions every 5 minutes
     setInterval(() => this.cleanupIdleSessions(), 5 * 60 * 1000);
@@ -53,6 +56,16 @@ export class TerminalService {
 
     if (!vm) {
       throw new NotFoundException('VM not found or you do not have access');
+    }
+
+    // H5: the web terminal is a root shell, so it must respect subscription status.
+    // Previously only VM ownership + RUNNING were checked, letting a suspended (or
+    // expired/cancelled) owner open a shell on a VM the sweep hadn't stopped yet.
+    if (vm.subscription_id) {
+      const sub = await this.subscriptionRepo.findOne({ where: { id: vm.subscription_id } });
+      if (!sub || sub.status !== 'active') {
+        throw new ForbiddenException('Subscription is not active for this VM');
+      }
     }
 
     if (vm.lifecycle_state !== 'RUNNING') {

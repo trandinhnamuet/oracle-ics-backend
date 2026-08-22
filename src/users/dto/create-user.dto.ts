@@ -45,12 +45,17 @@ export class CreateUserDto {
   @MaxLength(500, { message: 'Địa chỉ không được quá 500 ký tự' })
   address?: string;
 
+  // NOTE: no default initializers here. UpdateUserDto = PartialType(CreateUserDto),
+  // and class-transformer copies these initializers onto every instance — so with
+  // ValidationPipe({transform}) a PATCH /users/:id body of just {firstName} would
+  // silently carry isActive=true + role='customer', un-banning users and demoting
+  // admins (M10). Defaults for CREATE are applied in UserService.create instead.
   @IsOptional()
   @IsBoolean({ message: 'Trạng thái hoạt động phải là boolean' })
-  isActive?: boolean = true;
+  isActive?: boolean;
 
   @IsOptional()
   @IsString({ message: 'Role phải là chuỗi ký tự' })
   @MaxLength(20, { message: 'Role không được quá 20 ký tự' })
-  role?: string = 'customer';
+  role?: string;
 }

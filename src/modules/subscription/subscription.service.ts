@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, BadRequestException, ForbiddenException, Logger } from '@nestjs/common';
 import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
-import { Repository, DataSource } from 'typeorm';
+import { Repository, DataSource, In } from 'typeorm';
 import { Subscription } from '../../entities/subscription.entity';
 import { UserWallet } from '../../entities/user-wallet.entity';
 import { WalletTransaction } from '../../entities/wallet-transaction.entity';
@@ -842,8 +842,11 @@ export class SubscriptionService {
         } else {
           countExpiredNoRenew++;
           this.appendRenewalLog(`    → Đánh dấu EXPIRED (không có auto_renew)`);
-          subscription.status = 'expired';
-          await this.subscriptionRepository.save(subscription);
+          // Guarded update (not stale save) — don't erase a concurrent renewal.
+          await this.subscriptionRepository.update(
+            { id: subscription.id, status: In(['active']), end_date: subscription.end_date },
+            { status: 'expired' },
+          );
 
           const pkgName = subscription.cloudPackage?.name ?? `#${subscription.cloud_package_id}`;
           await this.notificationService.notify(
@@ -877,6 +880,10 @@ export class SubscriptionService {
     const subId = subscription.id;
     const pkgName = subscription.cloudPackage?.name ?? `#${subscription.cloud_package_id}`;
     this.appendRenewalLog(`    [AutoRenew START] sub=${subId} | pkg=${pkgName} | user=${subscription.user_id}`);
+    // The end_date this cron run observed. Every status write below is guarded by it
+    // so a concurrent manualRenew/cancel/suspend (which changes status and/or end_date)
+    // makes our write a no-op instead of clobbering a committed change.
+    const scanEndDate = subscription.end_date;
 
     try {
       const userWallet = await this.userWalletService.findByUserId(subscription.user_id);
@@ -895,8 +902,12 @@ export class SubscriptionService {
       );
 
       if (currentBalance < packageCost) {
-        subscription.status = 'expired';
-        await this.subscriptionRepository.save(subscription);
+        // M7: mark expired via a guarded UPDATE (not save() of the stale entity),
+        // so a concurrent manualRenew that just renewed this sub isn't erased.
+        await this.subscriptionRepository.update(
+          { id: subId, status: In(['active', 'expired']), end_date: scanEndDate },
+          { status: 'expired' },
+        );
         this.appendRenewalLog(`    [AutoRenew FAIL] Số dư không đủ → đánh dấu EXPIRED | sub=${subId}`);
 
         await this.notificationService.notify(
@@ -915,19 +926,28 @@ export class SubscriptionService {
       // (expired->active + new end_date), the debit and the ledger row all commit or
       // all roll back — no double charge (only one concurrent claim wins) and no
       // stuck-active / charge-without-ledger state if the process crashes mid-way.
-      const prevEndDate = new Date(subscription.end_date);
-      const nextEndDate = new Date(prevEndDate);
+      const now = new Date();
+      const prevEndDate = new Date(scanEndDate);
+      // H2: renew from max(prevEnd, now) — a sub that lapsed N months ago must not be
+      // charged one month per cron tick to crawl its end_date forward from the past.
+      const base = prevEndDate > now ? prevEndDate : now;
+      const nextEndDate = new Date(base);
       nextEndDate.setMonth(nextEndDate.getMonth() + 1);
       const endOfDay = this.toEndOfDay(nextEndDate);
 
       const result = await this.dataSource.transaction(async (manager) => {
+        // C1: the cron invokes attemptAutoRenewal for overdue subs whose status is
+        // still 'active' (only the non-auto-renew branch sets 'expired' first). The
+        // round-4 CAS required 'expired', so auto-renewal silently no-op'd for every
+        // such sub (free renewals). Claim from EITHER 'active' or 'expired', guarded by
+        // the scan-time end_date so a concurrent manualRenew is a no-op (affected=0).
         const claim = await manager.update(
           Subscription,
-          { id: subId, user_id: subscription.user_id, status: 'expired' },
+          { id: subId, user_id: subscription.user_id, status: In(['active', 'expired']), end_date: scanEndDate },
           { status: 'active', end_date: endOfDay },
         );
         if (!claim.affected) {
-          return null; // already renewed by a concurrent manualRenew / cron tick
+          return null; // already renewed / cancelled / suspended concurrently
         }
         const wallet = await this.userWalletService.deductBalanceTx(manager, subscription.user_id, packageCost);
         const balAfter = parseFloat(wallet.balance.toString());
@@ -989,9 +1009,12 @@ export class SubscriptionService {
         `    [AutoRenew ERROR] sub=${subId} | ${error?.message ?? error}\n    Stack: ${error?.stack ?? ''}`,
       );
       // Renewal failed BEFORE commit (transaction rolled back) → mark expired at the
-      // DB level. Never save the in-memory entity here — its end_date may already be
-      // advanced, which would persist a free extension (M-W1).
-      await this.subscriptionRepository.update({ id: subId }, { status: 'expired' });
+      // DB level, guarded by status + scan-time end_date (H1) so this can never clobber
+      // a concurrent committed manualRenew or an admin cancel/suspend.
+      await this.subscriptionRepository.update(
+        { id: subId, status: In(['active', 'expired']), end_date: scanEndDate },
+        { status: 'expired' },
+      );
     }
   }
 

@@ -6,9 +6,6 @@ import { WalletTransaction } from '../../entities/wallet-transaction.entity';
 import { CreateUserWalletDto } from './dto/create-user-wallet.dto';
 import { UpdateUserWalletDto } from './dto/update-user-wallet.dto';
 
-// Cache để track việc tạo wallet đang diễn ra
-const creatingWallets = new Set<number>();
-
 @Injectable()
 export class UserWalletService {
   private readonly logger = new Logger(UserWalletService.name);

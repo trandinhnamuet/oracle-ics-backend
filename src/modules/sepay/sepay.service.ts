@@ -207,6 +207,44 @@ export class SepayService {
    * - Cộng phần tiền dư (nếu có) vào ví.
    * - Lưu lịch sử giao dịch đầy đủ.
    */
+  /**
+   * Credit a received transfer to the user's wallet. Ensures the wallet exists first
+   * (auto-create — addBalance throws on a missing wallet, F5), then adds the balance.
+   * If the ledger/notify step then fails it is SWALLOWED so the money stays credited
+   * AND the bank-tx idempotency claim stays held — a SePay replay can therefore never
+   * double-credit (mirrors handleUnderpayment / N7). Used for deposits, M-S2
+   * reconciliation, and a 2nd real transfer that lost the payment CAS (M6).
+   */
+  private async creditReceivedToWallet(payment: Payment, amount: number, viTitle: string): Promise<void> {
+    await this.userWalletService.findByUserId(payment.user_id); // auto-create if missing
+    const updatedWallet = await this.userWalletService.addBalance(payment.user_id, amount);
+    try {
+      const uw = await this.userWalletService.findByUserId(payment.user_id);
+      await this.userWalletService.createTransaction({
+        wallet_id: uw.id,
+        payment_id: payment.id,
+        subscription_id: null,
+        change_amount: amount,
+        balance_after: updatedWallet.balance,
+        type: 'deposit',
+      });
+      const fmt = (n: number) => new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(n);
+      await this.notificationService.notify(
+        payment.user_id,
+        NotificationType.WALLET_CREDIT,
+        `💰 ${viTitle}`,
+        `${fmt(amount)} đã được cộng vào ví. Số dư mới: ${fmt(updatedWallet.balance)}.`,
+        { amount, balance_after: updatedWallet.balance, payment_id: payment.id },
+        '💰 Credited to wallet',
+        `${fmt(amount)} credited to your wallet. New balance: ${fmt(updatedWallet.balance)}.`,
+      );
+    } catch (postErr: any) {
+      this.logger.error(
+        `[SEPAY] post-credit step failed for payment ${payment.id} (money IS credited, idempotency claim kept): ${postErr?.message ?? postErr}`,
+      );
+    }
+  }
+
   private async handleFullPayment(
     payment: Payment,
     received: number,
@@ -220,39 +258,18 @@ export class SepayService {
       { status: 'success' },
     );
     if (!claim.affected) {
-      this.logger.warn(`[SEPAY] Payment ${payment.id} no longer pending; skipping duplicate full-payment processing.`);
+      // M6: this payment was already completed by a DIFFERENT bank transaction (same-tx
+      // replays are blocked earlier by the bankTxId unique claim). This is a second REAL
+      // transfer for the same payment — credit it to the wallet, don't swallow it.
+      this.logger.warn(`[SEPAY] Payment ${payment.id} already completed by another transfer; crediting ${received} to wallet.`);
+      await this.creditReceivedToWallet(payment, received, 'Khoản chuyển được cộng vào ví');
       return;
     }
 
     try {
       if (payment.payment_type === 'deposit') {
-        // Nạp tiền vào ví: cộng toàn bộ số tiền nhận được
-        const updatedWallet = await this.userWalletService.addBalance(payment.user_id, received);
-        const userWallet = await this.userWalletService.findByUserId(payment.user_id);
-
-        await this.userWalletService.createTransaction({
-          wallet_id: userWallet.id,
-          payment_id: payment.id,
-          subscription_id: null,
-          change_amount: received,
-          balance_after: updatedWallet.balance,
-          type: 'deposit',
-        });
-
-        const fmt = (n: number) => new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(n);
-        try {
-          await this.notificationService.notify(
-            payment.user_id,
-            NotificationType.WALLET_CREDIT,
-            '💰 Nạp tiền thành công',
-            `Bạn đã nạp thành công ${fmt(received)} vào tài khoản. Số dư mới: ${fmt(updatedWallet.balance)}.`,
-            { amount: received, balance_after: updatedWallet.balance, payment_id: payment.id },
-            '💰 Deposit successful',
-            `You have successfully deposited ${fmt(received)}. New balance: ${fmt(updatedWallet.balance)}.`,
-          );
-        } catch (notifyErr) {
-          this.logger.error(`Failed to send deposit notification for payment ${payment.id}: ${notifyErr?.message}`);
-        }
+        // Nạp tiền vào ví (auto-create ví nếu thiếu + giữ claim nếu ledger lỗi).
+        await this.creditReceivedToWallet(payment, received, 'Nạp tiền thành công');
 
       } else if (payment.payment_type === 'subscription') {
         // Activate ONLY while the subscription is still pending. If it was auto-deleted
@@ -269,33 +286,12 @@ export class SepayService {
           : 0;
 
         if (!activated) {
-          const updatedWallet = await this.userWalletService.addBalance(payment.user_id, received);
-          const uw = await this.userWalletService.findByUserId(payment.user_id);
-          await this.userWalletService.createTransaction({
-            wallet_id: uw.id,
-            payment_id: payment.id,
-            subscription_id: null,
-            change_amount: received,
-            balance_after: updatedWallet.balance,
-            type: 'deposit',
-          });
+          // M-S2: subscription gone (auto-deleted) or already active → credit the real
+          // transfer to the wallet (keeps claim on post-credit failure — no replay).
           this.logger.warn(
-            `[SEPAY] Subscription ${payment.subscription_id} not pending (deleted/already-active) for payment ${payment.id}; credited ${received} to wallet (reconciliation).`,
+            `[SEPAY] Subscription ${payment.subscription_id} not pending for payment ${payment.id}; crediting ${received} to wallet (reconciliation).`,
           );
-          const fmtR = (n: number) => new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(n);
-          try {
-            await this.notificationService.notify(
-              payment.user_id,
-              NotificationType.WALLET_CREDIT,
-              '💰 Tiền đã được cộng vào ví',
-              `Khoản chuyển ${fmtR(received)} đã được cộng vào ví (gói không còn ở trạng thái chờ thanh toán). Số dư mới: ${fmtR(updatedWallet.balance)}.`,
-              { amount: received, balance_after: updatedWallet.balance, payment_id: payment.id },
-              '💰 Credited to wallet',
-              `Your ${fmtR(received)} transfer was credited to your wallet. New balance: ${fmtR(updatedWallet.balance)}.`,
-            );
-          } catch (notifyErr: any) {
-            this.logger.error(`Reconciliation notify failed for payment ${payment.id}: ${notifyErr?.message}`);
-          }
+          await this.creditReceivedToWallet(payment, received, 'Tiền đã được cộng vào ví');
           return;
         }
         this.logger.log(`Activated subscription ${payment.subscription_id}`);

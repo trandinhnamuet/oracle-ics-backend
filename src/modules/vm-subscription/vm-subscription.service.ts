@@ -1998,6 +1998,11 @@ net user ${windowsCredentials.username} *</div>
     if (subscription.status === 'expired') {
       throw new BadRequestException('Subscription has expired');
     }
+    if (subscription.status === 'suspended') {
+      // H4: performVmAction had its own status gate that omitted 'suspended', so a
+      // suspended customer could still START/RESTART/TERMINATE the VM (M-S1 residual).
+      throw new BadRequestException('Subscription is suspended');
+    }
 
     this.logger.debug('Step 2: Checking VM instance configuration');
     if (!subscription.vm_instance_id) {
@@ -2167,9 +2172,10 @@ net user ${windowsCredentials.username} *</div>
   async stopExpiredSubscriptionVms(): Promise<void> {
     this.logger.log('[VmSubscription] Checking for VMs to stop due to expired/cancelled subscriptions...');
 
-    // 1. Find all expired or cancelled subscriptions
+    // 1. Find all expired / cancelled / suspended subscriptions (H5: suspended VMs
+    // were never stopped, so suspension left the VM running and terminal-reachable).
     const inactiveSubscriptions = await this.subscriptionRepo.find({
-      where: { status: In(['expired', 'cancelled']) },
+      where: { status: In(['expired', 'cancelled', 'suspended']) },
       select: ['id'],
     });
 

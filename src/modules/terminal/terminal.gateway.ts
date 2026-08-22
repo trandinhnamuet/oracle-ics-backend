@@ -14,6 +14,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { TerminalService } from './terminal.service';
 import { UserSession } from '../../auth/user-session.entity';
+import { User } from '../../entities/user.entity';
 import { TerminalConnectDto, TerminalResizeDto } from './dto';
 
 @WebSocketGateway({
@@ -36,7 +37,24 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
     private readonly jwtService: JwtService,
     @InjectRepository(UserSession)
     private readonly sessionRepository: Repository<UserSession>,
+    @InjectRepository(User)
+    private readonly userRepository: Repository<User>,
   ) {}
+
+  /** True only if the session row exists, is unexpired, AND the user is still active. */
+  private async isSessionAndUserActive(sid: string | undefined, userId: any): Promise<boolean> {
+    if (!sid) return false;
+    const session = await this.sessionRepository.findOne({ where: { id: sid } });
+    if (!session || (session.expiresAt && new Date() > session.expiresAt)) return false;
+    // M9: a deactivated (banned) account must not keep a live root shell, even if a
+    // session row somehow survives (e.g. re-login before M-A3/M9 gates were added).
+    const uid = Number(userId);
+    if (Number.isFinite(uid)) {
+      const user = await this.userRepository.findOne({ where: { id: uid } });
+      if (!user || user.isActive === false) return false;
+    }
+    return true;
+  }
 
   /**
    * Handle client connection
@@ -62,19 +80,15 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
         // password-changed token could still open a root shell until natural expiry.
         // Reject when the token's session no longer exists (or has expired).
         const sid = payload.sid;
-        const session = sid
-          ? await this.sessionRepository.findOne({ where: { id: sid } })
-          : null;
-        const sessionActive =
-          !!session && (!session.expiresAt || new Date() <= session.expiresAt);
-        if (!sessionActive) {
-          this.logger.warn(`Connection rejected: session inactive/revoked from ${client.id}`);
+        const uid = payload.id || payload.sub;
+        if (!(await this.isSessionAndUserActive(sid, uid))) {
+          this.logger.warn(`Connection rejected: session/user inactive/revoked from ${client.id}`);
           client.emit('error', { message: 'Session has been terminated. Please log in again.' });
           client.disconnect();
           return;
         }
 
-        (client as any).userId = payload.id || payload.sub;
+        (client as any).userId = uid;
         (client as any).userEmail = payload.email;
 
         // M-T1: A1 checks the session only at connect. A live root shell must also
@@ -83,10 +97,8 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
         if (sid) {
           const revalidate = setInterval(async () => {
             try {
-              const s = await this.sessionRepository.findOne({ where: { id: sid } });
-              const active = !!s && (!s.expiresAt || new Date() <= s.expiresAt);
-              if (!active) {
-                this.logger.warn(`Session revoked mid-session; closing terminal for ${client.id}`);
+              if (!(await this.isSessionAndUserActive(sid, uid))) {
+                this.logger.warn(`Session/user revoked mid-session; closing terminal for ${client.id}`);
                 client.emit('error', { message: 'Session has been terminated. Please log in again.' });
                 client.disconnect();
               }

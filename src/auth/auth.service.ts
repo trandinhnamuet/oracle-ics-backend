@@ -178,10 +178,11 @@ export class AuthService {
       throw new BadRequestException(t('verifyOtp.invalidOtp', lang));
     }
 
-    // Activate user
+    // Activate user. F4: null (not undefined) so the code is actually cleared from the
+    // row (save() skips undefined). Not replayable anyway (isActive guard), but consistent.
     user.isActive = true;
-    user.emailVerificationOtp = undefined;
-    user.otpExpiresAt = undefined;
+    user.emailVerificationOtp = null as any;
+    user.otpExpiresAt = null as any;
     user.emailVerificationOtpAttempts = 0;
     await this.userRepository.save(user);
     this.logger.log(`User activated successfully: ${email}`);
@@ -333,6 +334,11 @@ export class AuthService {
       }
       throw invalid();
     }
+
+    // M3: correct code — refund the attempt budget so a subsequent legitimate step
+    // (verify-reset-otp proved knowledge, then reset-password with the SAME code) is
+    // not rejected by the atomic counter having reached MAX on correct submissions.
+    await this.userRepository.update({ id: user.id }, { passwordResetOtpAttempts: 0 });
   }
 
   // ==================== CLIENT INFO EXTRACTION ====================
@@ -797,9 +803,12 @@ export class AuthService {
 
       this.logger.log(`Generated new OTP for unverified login: ${email}, expires at: ${otpExpiresAt.toISOString()}`);
 
-      // Update user with new OTP
+      // Update user with new OTP. Reset the attempt counter (M2): the atomic
+      // burn-after-5 counter strictly enforces now, so a freshly issued OTP must start
+      // a fresh budget or it would be dead-on-arrival after a prior lockout.
       user.emailVerificationOtp = otp;
       user.otpExpiresAt = otpExpiresAt;
+      user.emailVerificationOtpAttempts = 0;
       await this.userRepository.save(user);
 
       // Send OTP email
@@ -1149,10 +1158,12 @@ export class AuthService {
     // Hash new password
     const hashedPassword = await bcrypt.hash(newPassword, 10);
 
-    // Update password and clear OTP
+    // Update password and clear OTP. M1: use null (not undefined) — TypeORM save()
+    // SKIPS undefined columns, so the reset OTP was never actually cleared and stayed
+    // replayable within its 10-min window (account re-takeover). null is persisted.
     user.password = hashedPassword;
-    user.passwordResetOtp = undefined;
-    user.passwordResetOtpExpiresAt = undefined;
+    user.passwordResetOtp = null as any;
+    user.passwordResetOtpExpiresAt = null as any;
     user.passwordResetOtpAttempts = 0;
     await this.userRepository.save(user);
 
@@ -1246,6 +1257,14 @@ export class AuthService {
    */
   async loginWithGoogle(user: User, userAgent: string, request: any, lang: string = DEFAULT_LANG) {
     this.logger.log(`Google login for user: ${user.email}`);
+
+    // M9: a deactivated (admin-banned) account must not be able to re-login via Google
+    // and mint a fresh session — the password login path already blocks isActive=false,
+    // but this path minted tokens unconditionally, letting a banned user regain a
+    // session (and, via the terminal gateway, a root shell).
+    if (user.isActive === false) {
+      throw new UnauthorizedException('Account is deactivated');
+    }
 
     // Extract IP address
     const { ipV4, ipV6 } = this.extractIpAddress(request);

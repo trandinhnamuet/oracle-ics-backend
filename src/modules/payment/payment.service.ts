@@ -218,8 +218,22 @@ export class PaymentService {
       }
       payment.status = 'success';
     } else {
+      // Non-pending completion (admin accept / legacy callback). M8: CAS-claim from the
+      // current status so two concurrent completions can't both force success + credit
+      // the wallet twice (the old blind save()+credit double-credited under replay).
+      if (payment.status === 'success') {
+        return payment;
+      }
+      const prev = payment.status;
+      const claim = await this.paymentRepository.update(
+        { id: payment.id, status: prev },
+        { status: 'success' },
+      );
+      if (!claim.affected) {
+        const fresh = await this.paymentRepository.findOne({ where: { id: payment.id } });
+        return fresh ?? payment;
+      }
       payment.status = 'success';
-      await this.paymentRepository.save(payment);
     }
 
     // update user wallet balance if type is deposit
@@ -302,8 +316,21 @@ export class PaymentService {
       throw new NotFoundException(`Subscription with ID ${subscriptionId} not found`);
     }
 
+    // M8: activate ONLY from 'pending' (CAS), not a blind set. The old unconditional
+    // `status='active'` could flip an already suspended/cancelled subscription back to
+    // active (e.g. a late/legacy callback for a leftover pending payment), bypassing an
+    // admin suspension without a reactivate.
+    const activated = await this.subscriptionRepository.update(
+      { id: subscriptionId, status: 'pending' },
+      { status: 'active' },
+    );
+    if (!activated.affected) {
+      this.logger.warn(
+        `[activateSubscription] subscription id=${subscriptionId} not pending (status=${subscription.status}); not activating`,
+      );
+      return;
+    }
     subscription.status = 'active';
-    await this.subscriptionRepository.save(subscription);
     this.logger.log(`[activateSubscription] subscription activated id=${subscriptionId}`);
 
     // Send notification to user about successful subscription payment

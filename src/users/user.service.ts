@@ -26,9 +26,13 @@ export class UserService {
   ) {}
 
   async create(createUserDto: CreateUserDto): Promise<User> {
-    // Nếu không truyền role thì mặc định là 'customer'
+    // Defaults for CREATE live here (removed from the DTO initializers so PartialType
+    // can't leak them into admin PATCH updates — M10).
     if (!createUserDto.role) {
       createUserDto.role = 'customer';
+    }
+    if (createUserDto.isActive === undefined) {
+      createUserDto.isActive = true;
     }
     // Never persist a plaintext password: the entity has no @BeforeInsert hook,
     // and login compares via bcrypt, so an unhashed value would also lock the user out.

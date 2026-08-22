@@ -6,10 +6,12 @@ import { TerminalService } from './terminal.service';
 import { VmInstance } from '../../entities/vm-instance.entity';
 import { SystemSshKey } from '../../entities/system-ssh-key.entity';
 import { UserSession } from '../../auth/user-session.entity';
+import { Subscription } from '../../entities/subscription.entity';
+import { User } from '../../entities/user.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([VmInstance, SystemSshKey, UserSession]),
+    TypeOrmModule.forFeature([VmInstance, SystemSshKey, UserSession, Subscription, User]),
     JwtModule.registerAsync({
       useFactory: () => {
         const secret = process.env.JWT_SECRET;
