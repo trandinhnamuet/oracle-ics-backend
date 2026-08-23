@@ -15,6 +15,7 @@ import {
   buildMoneyTestModule, cleanupTestData, seedUserWithWallet, seedSubscription,
   getBalance, getSubStatus, countTxns, MoneyTestCtx,
 } from './money.setup';
+import { NotificationType } from '../../src/entities/notification.entity';
 
 // Package 1812 = "Starter 1", 2 vCPU, cost_vnd 648751.98. Windows uplift for 1 OCPU
 // = ceil(2/2) * 0.092 * 744 * 26310 = 1,800,867 -> Windows monthly = 2,449,618.98.
@@ -127,6 +128,26 @@ describe('Money paths (integration, real Postgres)', () => {
       expect(await getBalance(ds, userId)).toBe(1000);
       expect((await getSubStatus(ds, subId))!.status).toBe('expired');
       expect(await countTxns(ds, walletId, 'auto_renewal')).toBe(0);
+    });
+
+    it('notifies SUBSCRIPTION_EXPIRED exactly once across repeated cron runs (R8-F1 spam regression)', async () => {
+      // Underfunded auto-renew sub: day 1 transitions active->expired (one notice); the
+      // sub stays expired+auto_renew and is re-selected on every later cron run. The bug
+      // was that the mark-expired UPDATE guarded on status IN (active,expired), so Postgres
+      // counted the no-op SET on an already-expired row as affected -> the "plan expired"
+      // notification fired again every single day. Fixed to guard status='active' only.
+      const { userId } = await seedUserWithWallet(ds, 1000);
+      const subId = await seedSubscription(ds, userId, { status: 'active', osType: 'linux', autoRenew: true, endOffsetDays: -2 });
+      ctx.notify.mockClear();
+      await ctx.subscriptionService.checkExpiredSubscriptions();
+      expect((await getSubStatus(ds, subId))!.status).toBe('expired');
+      // Two more daily ticks — still underfunded, already expired.
+      await ctx.subscriptionService.checkExpiredSubscriptions();
+      await ctx.subscriptionService.checkExpiredSubscriptions();
+      const expiredNotices = ctx.notify.mock.calls.filter(
+        (c: any[]) => c[1] === NotificationType.SUBSCRIPTION_EXPIRED,
+      );
+      expect(expiredNotices.length).toBe(1);
     });
 
     it('expires an overdue sub without auto-renew', async () => {
