@@ -2,6 +2,7 @@ import { Controller, Get, Post, Body, Param, Delete, Patch, HttpCode, HttpStatus
 import { Throttle } from '@nestjs/throttler';
 import { CustomPackageRegistrationService } from './custom-package-registration.service';
 import { CreateCustomPackageRegistrationDto } from '../entities/dto/custom-package-registration.dto';
+import { UpdateCustomPackageRegistrationDto } from '../entities/dto/update-custom-package-registration.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { AdminGuard } from '../auth/admin.guard';
 
@@ -35,7 +36,7 @@ export class CustomPackageRegistrationController {
 
   @Patch(':id')
   @UseGuards(JwtAuthGuard, AdminGuard)
-  async update(@Param('id') id: string, @Body() updateData: Partial<CreateCustomPackageRegistrationDto> & { processed?: boolean }) {
+  async update(@Param('id') id: string, @Body() updateData: UpdateCustomPackageRegistrationDto) {
     return await this.customPackageRegistrationService.update(+id, updateData);
   }
 

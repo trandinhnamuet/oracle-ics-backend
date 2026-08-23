@@ -24,16 +24,16 @@ function deriveKeyBuffer(): Buffer {
   if (!secret) {
     throw new Error('SSH_KEY_ENCRYPTION_SECRET not configured in environment variables');
   }
-  let keyBuffer: Buffer;
-  try {
-    keyBuffer = Buffer.from(secret, 'hex');
-  } catch {
-    keyBuffer = crypto.createHash('sha256').update(secret).digest();
+  // Only treat the secret as a raw AES-256 key when it is EXACTLY 64 hex chars
+  // (→ 32 bytes). Buffer.from(x, 'hex') silently decodes valid leading pairs and
+  // stops at the first invalid nibble, so a secret whose first 64 chars are hex
+  // would be truncated to 32 bytes and accepted, discarding the rest of its
+  // entropy. Anything else (including the current 42-char non-hex secret) is
+  // hashed with sha256, which is unchanged from the previous behavior.
+  if (/^[0-9a-fA-F]{64}$/.test(secret)) {
+    return Buffer.from(secret, 'hex');
   }
-  if (keyBuffer.length !== 32) {
-    keyBuffer = crypto.createHash('sha256').update(secret).digest();
-  }
-  return keyBuffer;
+  return crypto.createHash('sha256').update(secret).digest();
 }
 
 /** True when the stored value is in the encrypted envelope format. */
@@ -68,14 +68,22 @@ export function decryptVmSecret(stored: string | null | undefined): string | nul
   const parts = stored.split(':');
   if (parts.length !== 4) return null;
   const [, ivHex, tagHex, ciphertext] = parts;
-  const decipher = crypto.createDecipheriv(
-    'aes-256-gcm',
-    deriveKeyBuffer(),
-    Buffer.from(ivHex, 'hex'),
-    { authTagLength: GCM_TAG_LENGTH },
-  ) as crypto.DecipherGCM;
-  decipher.setAuthTag(Buffer.from(tagHex, 'hex'));
-  let decrypted = decipher.update(ciphertext, 'hex', 'utf8');
-  decrypted += decipher.final('utf8');
-  return decrypted;
+  try {
+    const decipher = crypto.createDecipheriv(
+      'aes-256-gcm',
+      deriveKeyBuffer(),
+      Buffer.from(ivHex, 'hex'),
+      { authTagLength: GCM_TAG_LENGTH },
+    ) as crypto.DecipherGCM;
+    decipher.setAuthTag(Buffer.from(tagHex, 'hex'));
+    let decrypted = decipher.update(ciphertext, 'hex', 'utf8');
+    decrypted += decipher.final('utf8');
+    return decrypted;
+  } catch {
+    // GCM auth failure (rotated key / corrupted row). Do NOT leak the secret or
+    // key material in the error. Every caller treats null as "no usable secret"
+    // (via `?? undefined` or an explicit null check), so fail closed with null
+    // rather than throwing an opaque 500.
+    return null;
+  }
 }

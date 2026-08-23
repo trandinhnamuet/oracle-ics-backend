@@ -1,8 +1,8 @@
 import { Controller, Get, Post, Patch, Delete, Body, Param, UseGuards } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { RegistrationRequestsService } from './registration-requests.service';
-import { RegistrationRequests } from './registration-requests.entity';
 import { CreateRegistrationRequestDto } from './dto/create-registration-request.dto';
+import { UpdateRegistrationRequestDto } from './dto/update-registration-request.dto';
 import { JwtAuthGuard } from '../../../auth/jwt-auth.guard';
 import { AdminGuard } from '../../../auth/admin.guard';
 
@@ -36,7 +36,7 @@ export class RegistrationRequestsController {
 
 	@UseGuards(JwtAuthGuard, AdminGuard)
 	@Patch(':id')
-	async update(@Param('id') id: number, @Body() data: Partial<RegistrationRequests>) {
+	async update(@Param('id') id: number, @Body() data: UpdateRegistrationRequestDto) {
 		return this.service.update(Number(id), data);
 	}
 

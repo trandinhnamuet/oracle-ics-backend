@@ -34,11 +34,33 @@ export class SepayService {
    */
   private static readonly PG_UNIQUE_VIOLATION = '23505';
 
-  private isUniqueViolation(err: unknown): boolean {
-    return (
-      err instanceof QueryFailedError &&
-      (err as QueryFailedError & { code?: string }).code === SepayService.PG_UNIQUE_VIOLATION
-    );
+  /**
+   * Unique index guarding the bank-tx idempotency claim
+   * (@Index on ProcessedSepayTransaction.bankTxId → column bank_tx_id).
+   */
+  private static readonly PROCESSED_TX_UNIQUE_CONSTRAINT = 'uq_processed_sepay_bank_tx_id';
+
+  /**
+   * True only for a duplicate delivery of the SAME bank transfer — i.e. a 23505
+   * unique violation specifically on the processed-transaction bank_tx_id index.
+   * Any OTHER 23505 (a different unique index, a genuine future conflict) is NOT
+   * a benign duplicate and must propagate so SePay retries instead of us silently
+   * reporting success and losing a credit.
+   */
+  private isDuplicateBankTxViolation(err: unknown): boolean {
+    if (
+      !(err instanceof QueryFailedError) ||
+      (err as QueryFailedError & { code?: string }).code !== SepayService.PG_UNIQUE_VIOLATION
+    ) {
+      return false;
+    }
+    const pgErr = err as QueryFailedError & { constraint?: string; detail?: string };
+    if (pgErr.constraint === SepayService.PROCESSED_TX_UNIQUE_CONSTRAINT) {
+      return true;
+    }
+    // Fallback when the driver doesn't surface the constraint name: the detail
+    // string names the offending column, e.g. `Key (bank_tx_id)=(...) already exists.`
+    return typeof pgErr.detail === 'string' && pgErr.detail.includes('bank_tx_id');
   }
 
   async handleWebhook(webhookData: SepayWebhookDto): Promise<{ success: boolean; message: string }> {
@@ -121,10 +143,12 @@ export class SepayService {
         await this.handleFullPayment(payment, received, expected, excess, bankTxId);
         return { success: true, message: 'Payment processed successfully' };
       } catch (processErr) {
-        if (this.isUniqueViolation(processErr)) {
+        if (this.isDuplicateBankTxViolation(processErr)) {
           this.logger.warn(`[SEPAY] Duplicate webhook for bank tx ${bankTxId} ignored (already processed).`);
           return { success: true, message: 'Duplicate webhook ignored (already processed)' };
         }
+        // A 23505 on a DIFFERENT unique index is a genuine conflict, not a
+        // duplicate delivery — let it propagate to the 5xx handler so SePay retries.
         throw processErr;
       }
 

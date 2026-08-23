@@ -149,13 +149,6 @@ export class UserWalletService {
     return this.findOne(id);
   }
 
-  async updateBalance(userId: number, newBalance: number): Promise<UserWallet> {
-    // Kiểm tra và tạo wallet nếu chưa có (sử dụng findByUserId đã có logic tạo wallet)
-    const wallet = await this.findByUserId(userId);
-    wallet.balance = parseFloat(newBalance.toString());
-    return await this.userWalletRepository.save(wallet);
-  }
-
   async addBalance(userId: number, amount: number): Promise<UserWallet> {
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();

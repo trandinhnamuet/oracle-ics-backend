@@ -14,6 +14,7 @@ import {
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
+import { timingSafeEqual } from 'crypto';
 import { PaymentService } from './payment.service';
 import { CreatePaymentDto } from './dto/create-payment.dto';
 import { UpdatePaymentDto } from './dto/update-payment.dto';
@@ -77,6 +78,8 @@ export class PaymentController {
   @HttpCode(HttpStatus.OK)
   async handleSepayCallback(
     @Headers('authorization') authHeader: string,
+    // TODO: introduce a validated SePay callback DTO once the exact payload the
+    // service reads is pinned down; kept as `any` for now to avoid dropping fields.
     @Body() callbackData: any,
   ) {
     // Webhook authentication: require Sepay API key (fail-close).
@@ -84,7 +87,10 @@ export class PaymentController {
     if (!apiKey) {
       throw new UnauthorizedException('Webhook API key is not configured');
     }
-    if (authHeader !== `Apikey ${apiKey}`) {
+    // Constant-time comparison to avoid leaking the key via response timing.
+    const provided = Buffer.from(authHeader || '');
+    const expected = Buffer.from(`Apikey ${apiKey}`);
+    if (provided.length !== expected.length || !timingSafeEqual(provided, expected)) {
       throw new UnauthorizedException('Invalid webhook API key');
     }
     return await this.paymentService.handleSepayCallback(callbackData);

@@ -38,6 +38,7 @@ export class CreateRegistrationRequestDto {
 
   @IsString()
   @IsOptional()
+  @MaxLength(5000)
   additional_notes?: string;
 
   @IsString()
@@ -47,6 +48,7 @@ export class CreateRegistrationRequestDto {
 
   @IsString()
   @IsOptional()
+  @MaxLength(5000)
   plan_description?: string;
 
   @IsString()

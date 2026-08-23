@@ -252,6 +252,8 @@ export class AuthController {
     };
   }
 
+  // R8: throttle refresh like every other auth endpoint (was the only unthrottled one).
+  @Throttle({ default: { limit: 30, ttl: 60000 } })
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
   async refresh(

@@ -199,15 +199,21 @@ export class ImageController {
   @Get('user/:userId')
   @UseGuards(JwtAuthGuard)
   async getUserImages(
-    @Param('userId') userId: number,
+    @Param('userId') userId: string,
     @Req() req: any,
   ): Promise<Image[]> {
-    // Users can only get their own images
-    if (req.user.id !== userId) {
+    // :userId arrives as a string; coerce before comparing so a legitimate owner
+    // isn't rejected by a string-vs-number mismatch (which made this always fail).
+    const uid = Number(userId);
+    if (!Number.isInteger(uid)) {
       throw new ForbiddenException('Access denied');
     }
-    
-    return await this.imageService.findByUser(userId);
+    // Users can only get their own images; admins may read any user's (mirrors getImage).
+    if (req.user?.role !== 'admin' && req.user?.id !== uid) {
+      throw new ForbiddenException('Access denied');
+    }
+
+    return await this.imageService.findByUser(uid);
   }
 
   @Delete(':id')

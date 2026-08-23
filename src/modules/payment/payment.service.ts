@@ -243,12 +243,64 @@ export class PaymentService {
 
     // if payment type is subscription, change status of subscription to active
     if (payment.payment_type === 'subscription' && payment.subscription_id) {
-      await this.activateSubscription(payment.subscription_id);
-      // Record the expense in wallet_transactions so admin costs page counts it in totalSpent
-      await this.recordSubscriptionExpense(payment);
+      // R8: the payment was already CAS-claimed to 'success' above. If the subscription
+      // was auto-deleted in the meantime (the 30-min pending-cleanup fired), the old code
+      // threw NotFoundException here — stranding a permanently-'success' payment with the
+      // customer's money consumed and nothing delivered. Now: if the sub is gone, reconcile
+      // by crediting the wallet (idempotent) instead of throwing; only activate + record the
+      // expense when the sub actually exists.
+      const sub = await this.subscriptionRepository.findOne({
+        where: { id: payment.subscription_id },
+      });
+      if (!sub) {
+        await this.reconcileMissingSubscriptionPayment(payment);
+      } else {
+        await this.activateSubscription(payment.subscription_id);
+        // Record the expense in wallet_transactions so admin costs page counts it in totalSpent
+        await this.recordSubscriptionExpense(payment);
+      }
     }
 
     return payment;
+  }
+
+  /**
+   * R8 reconcile: a subscription payment reached 'success' but its subscription no longer
+   * exists (auto-deleted). Credit the amount to the user's wallet so the money is not lost,
+   * atomically and idempotently (a prior reconcile row for this payment short-circuits).
+   */
+  private async reconcileMissingSubscriptionPayment(payment: Payment): Promise<void> {
+    await this.dataSource.transaction(async (manager) => {
+      const already = await manager.findOne(WalletTransaction, {
+        where: { payment_id: payment.id, type: 'subscription_reconcile_credit' },
+      });
+      if (already) return; // idempotent: already reconciled
+      const wallet = await manager.findOne(UserWallet, {
+        where: { user_id: payment.user_id },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!wallet) {
+        this.logger.error(
+          `[reconcileMissingSubscriptionPayment] no wallet for user ${payment.user_id}; payment ${payment.id} amount ${payment.amount} needs manual reconcile`,
+        );
+        return;
+      }
+      const balanceAfter = parseFloat(wallet.balance.toString()) + Number(payment.amount);
+      wallet.balance = balanceAfter;
+      await manager.save(wallet);
+      await manager.save(
+        manager.create(WalletTransaction, {
+          wallet_id: wallet.id,
+          payment_id: payment.id,
+          change_amount: payment.amount,
+          balance_after: balanceAfter,
+          type: 'subscription_reconcile_credit',
+        }),
+      );
+      this.logger.warn(
+        `[reconcileMissingSubscriptionPayment] subscription gone; credited ${payment.amount} to wallet ${wallet.id} for payment ${payment.id}`,
+      );
+    });
   }
 
   /**
@@ -312,8 +364,11 @@ export class PaymentService {
     });
 
     if (!subscription) {
-      this.logger.warn(`[activateSubscription] subscription not found id=${subscriptionId}`);
-      throw new NotFoundException(`Subscription with ID ${subscriptionId} not found`);
+      // R8: do NOT throw — the payment may already be CAS-claimed to 'success'; throwing
+      // here would strand it. Callers (completePayment) handle a missing sub via wallet
+      // reconcile. Log and return so no exception propagates.
+      this.logger.error(`[activateSubscription] subscription not found id=${subscriptionId}; skipping (caller reconciles)`);
+      return;
     }
 
     // M8: activate ONLY from 'pending' (CAS), not a blind set. The old unconditional

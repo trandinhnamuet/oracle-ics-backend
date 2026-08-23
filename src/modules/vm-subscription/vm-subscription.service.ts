@@ -281,19 +281,19 @@ export class VmSubscriptionService implements OnModuleInit, OnModuleDestroy {
 
     // ENTITLEMENT: the ocpus/memory/disk above are enforced from the paid package,
     // but for a FIXED (non-Flex) shape those overrides are ignored and the shape's
-    // own (possibly much larger) vCPU/RAM apply. Optionally constrain the shape to a
-    // configured allowlist so a small-package user cannot request a large fixed shape.
-    // ALLOWED_VM_SHAPES = comma-separated list; unset = permit (with a warning).
+    // own (possibly much larger) vCPU/RAM apply. Constrain the shape to an allowlist
+    // so a small-package user cannot request a large fixed shape.
+    // ALLOWED_VM_SHAPES = comma-separated list. When UNSET we FAIL CLOSED to a safe
+    // built-in allowlist of Flex shapes rather than permitting any shape: the ocpus/
+    // memory overrides above fully control the cost of a Flex shape, so these are free
+    // operationally (the platform runs on E5 — see vm-provisioning.service.ts).
     const allowedShapesEnv = process.env.ALLOWED_VM_SHAPES;
-    if (allowedShapesEnv) {
-      const allowed = allowedShapesEnv.split(',').map((s) => s.trim()).filter(Boolean);
-      if (configureVmDto.shape && !allowed.includes(configureVmDto.shape)) {
-        throw new BadRequestException(`Shape "${configureVmDto.shape}" is not permitted.`);
-      }
-    } else {
-      this.logger.warn(
-        `⚠️ ALLOWED_VM_SHAPES is not set — VM shape "${configureVmDto.shape}" is accepted without an entitlement allowlist.`,
-      );
+    const allowed = allowedShapesEnv
+      ? allowedShapesEnv.split(',').map((s) => s.trim()).filter(Boolean)
+      : ['VM.Standard.E5.Flex', 'VM.Standard.A1.Flex'];
+    // An unset/empty shape means "use the package/default" and is left untouched.
+    if (configureVmDto.shape && !allowed.includes(configureVmDto.shape)) {
+      throw new BadRequestException(`Shape "${configureVmDto.shape}" is not permitted.`);
     }
 
     // Update configuration status to 'configuring'
@@ -818,7 +818,6 @@ export class VmSubscriptionService implements OnModuleInit, OnModuleDestroy {
     this.logger.log(`🔐 Generating new SSH key pair...`);
     const newKeyPair = this.generateSshKeyPair();
     this.logger.log(`✅ New SSH key generated`);
-    this.logger.log(`   Fingerprint: ${newKeyPair.fingerprint}`);
 
     let updateResult: { id: string; keysCount: number; userKeysCount: number; removedOldest: boolean };
 

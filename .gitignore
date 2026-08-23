@@ -107,3 +107,8 @@ scripts/demo-*.ts
 # Local debug/ops scripts that may embed secrets (never commit)
 scripts/get_*.js
 scripts/oci-creds.js
+
+# R8: keep ad-hoc test/cred scripts out of the repo (hardcoded secrets)
+scripts/test-*
+scripts/find-*
+scripts/*winrm*

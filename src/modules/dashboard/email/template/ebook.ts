@@ -1,4 +1,5 @@
 import { RegistrationRequests } from '../../registration-requests/registration-requests.entity';
+import { escapeHtml } from '../../../../utils/html.util';
 
 export function getEbookTemplate(data: RegistrationRequests): string {
     return `
@@ -127,7 +128,7 @@ export function getEbookTemplate(data: RegistrationRequests): string {
             
             <div class="content">
                 <p class="welcome-text">
-                    Xin chào <span class="highlight">${data.user_name}</span>,
+                    Xin chào <span class="highlight">${escapeHtml(data.user_name)}</span>,
                 </p>
                 
                 <p>Cảm ơn bạn đã đăng ký sử dụng <strong>Smart Dashboard</strong>! Chúng tôi rất vui mừng chào đón bạn tham gia cộng đồng những người tiên phong trong việc sử dụng công nghệ bảng điều khiển thông minh.</p>
@@ -136,20 +137,20 @@ export function getEbookTemplate(data: RegistrationRequests): string {
                     <h3 style="margin-top: 0; color: #2c3e50;">📋 Thông tin đăng ký của bạn:</h3>
                     <div class="info-row">
                         <span class="label">Họ và tên:</span>
-                        <span class="value">${data.user_name}</span>
+                        <span class="value">${escapeHtml(data.user_name)}</span>
                     </div>
                     <div class="info-row">
                         <span class="label">Email:</span>
-                        <span class="value">${data.email}</span>
+                        <span class="value">${escapeHtml(data.email)}</span>
                     </div>
                     <div class="info-row">
                         <span class="label">Số điện thoại:</span>
-                        <span class="value">${data.phone_number}</span>
+                        <span class="value">${escapeHtml(data.phone_number)}</span>
                     </div>
                     ${data.company ? `
                     <div class="info-row">
                         <span class="label">Công ty:</span>
-                        <span class="value">${data.company}</span>
+                        <span class="value">${escapeHtml(data.company)}</span>
                     </div>
                     ` : ''}
                     <div class="info-row">
@@ -159,15 +160,15 @@ export function getEbookTemplate(data: RegistrationRequests): string {
                 </div>
 
                 <div class="plan-highlight">
-                    <h3 style="margin: 0 0 10px 0;">🚀 Gói đã chọn: ${data.plan_name}</h3>
-                    ${data.plan_description ? `<p style="margin: 5px 0; opacity: 0.9;">${data.plan_description}</p>` : ''}
-                    ${data.plan_price ? `<p style="margin: 5px 0; font-size: 18px; font-weight: bold;">Giá: ${data.plan_price}</p>` : ''}
+                    <h3 style="margin: 0 0 10px 0;">🚀 Gói đã chọn: ${escapeHtml(data.plan_name)}</h3>
+                    ${data.plan_description ? `<p style="margin: 5px 0; opacity: 0.9;">${escapeHtml(data.plan_description)}</p>` : ''}
+                    ${data.plan_price ? `<p style="margin: 5px 0; font-size: 18px; font-weight: bold;">Giá: ${escapeHtml(data.plan_price)}</p>` : ''}
                 </div>
 
                 ${data.additional_notes ? `
                 <div class="info-box">
                     <h4 style="margin-top: 0; color: #2c3e50;">💬 Ghi chú thêm:</h4>
-                    <p style="margin-bottom: 0; font-style: italic;">${data.additional_notes}</p>
+                    <p style="margin-bottom: 0; font-style: italic;">${escapeHtml(data.additional_notes)}</p>
                 </div>
                 ` : ''}
                 

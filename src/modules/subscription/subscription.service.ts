@@ -580,24 +580,30 @@ export class SubscriptionService {
     return subscription;
   }
 
+  // R8-F2: these four transition methods previously did findOne()->mutate->save(entity).
+  // Subscription has no @VersionColumn, so save() rewrites ALL columns from a stale,
+  // unlocked read — including end_date. If the auto-renew cron committed a paid renewal
+  // (new end_date + ledger + wallet debit) between the findOne and the save, save() would
+  // silently revert end_date to the pre-renewal value: the customer paid but lost the time.
+  // Fix: targeted UPDATEs that write ONLY the intended fields and never rewrite end_date.
   async update(id: string, updateSubscriptionDto: UpdateSubscriptionDto): Promise<Subscription> {
-    const subscription = await this.findOne(id);
-    
-    Object.assign(subscription, updateSubscriptionDto);
-    
-    return await this.subscriptionRepository.save(subscription);
+    // Ensure it exists (throws NotFound otherwise) but do not write back the stale row.
+    await this.findOne(id);
+    await this.subscriptionRepository.update(id, updateSubscriptionDto as any);
+    return await this.findOne(id);
   }
 
   async cancel(id: string): Promise<Subscription> {
-    const subscription = await this.findOne(id);
-    subscription.status = 'cancelled';
-    return await this.subscriptionRepository.save(subscription);
+    await this.findOne(id);
+    await this.subscriptionRepository.update({ id }, { status: 'cancelled' });
+    return await this.findOne(id);
   }
 
   async suspend(id: string): Promise<Subscription> {
+    // Load only to read vm_instance_id for the containment step below — the status write
+    // itself is a targeted UPDATE, so a concurrent renewal's end_date is never clobbered.
     const subscription = await this.findOne(id);
-    subscription.status = 'suspended';
-    const saved = await this.subscriptionRepository.save(subscription);
+    await this.subscriptionRepository.update({ id }, { status: 'suspended' });
 
     // VM-A: suspension must actually CONTAIN the customer. The web-terminal gate alone
     // is not enough — the customer holds the SSH private key / RDP password and can
@@ -620,13 +626,13 @@ export class SubscriptionService {
         this.logger.warn(`[suspend] failed to stop VM for subscription ${id}: ${e?.message ?? e}`);
       }
     }
-    return saved;
+    return await this.findOne(id);
   }
 
   async reactivate(id: string): Promise<Subscription> {
-    const subscription = await this.findOne(id);
-    subscription.status = 'active';
-    return await this.subscriptionRepository.save(subscription);
+    await this.findOne(id);
+    await this.subscriptionRepository.update({ id }, { status: 'active' });
+    return await this.findOne(id);
   }
 
   /**
@@ -914,6 +920,13 @@ export class SubscriptionService {
     const scanEndDate = subscription.end_date;
 
     try {
+      // R8-LOW: if the package row was deleted/deactivated, monthlyPriceVnd would throw on
+      // cloudPackage.cost_vnd and the outer catch would mark a WELL-FUNDED sub 'expired'.
+      // Skip instead (like the packageCost<=0 SKIP) so ops can fix the package, not the user.
+      if (!subscription.cloudPackage) {
+        this.appendRenewalLog(`    [AutoRenew SKIP] cloudPackage missing sub=${subId} — bỏ qua, KHÔNG trừ tiền`);
+        return;
+      }
       const userWallet = await this.userWalletService.findByUserId(subscription.user_id);
       const currentBalance = parseFloat(userWallet.balance.toString());
       // Charge must match what the subscription was purchased at: for Windows the
@@ -932,8 +945,15 @@ export class SubscriptionService {
       if (currentBalance < packageCost) {
         // M7: mark expired via a guarded UPDATE (not save() of the stale entity),
         // so a concurrent manualRenew that just renewed this sub isn't erased.
+        // R8-F1: guard on status='active' ONLY (not In(active,expired)). Postgres counts a
+        // no-op `SET status='expired'` on an ALREADY-expired row as an affected row, so the
+        // previous In(active,expired) guard made `marked.affected` truthy on every daily
+        // tick for a still-underfunded expired sub → the "plan expired" notification fired
+        // every single day forever. Matching only 'active' means affected===1 iff this call
+        // performed the real active->expired transition. The end_date<=now guard still makes
+        // a concurrent manualRenew (which pushes end_date into the future) win over us.
         const marked = await this.subscriptionRepository.update(
-          { id: subId, status: In(['active', 'expired']), end_date: LessThanOrEqual(now) },
+          { id: subId, status: 'active', end_date: LessThanOrEqual(now) },
           { status: 'expired' },
         );
         this.appendRenewalLog(`    [AutoRenew FAIL] Số dư không đủ → đánh dấu EXPIRED | sub=${subId}`);

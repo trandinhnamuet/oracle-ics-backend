@@ -18,6 +18,10 @@ import { NotificationService } from '../modules/notification/notification.servic
 import { NotificationType } from '../entities/notification.entity';
 import { OtpService } from '../modules/otp/otp.service';
 
+// R8: a real bcrypt hash used to equalize login timing for accounts that have no password
+// (Google-only) or don't exist, so an attacker can't distinguish them by response time.
+const DUMMY_BCRYPT_HASH = bcrypt.hashSync('timing-equalizer-not-a-real-password', 10);
+
 interface JwtPayload {
   sub: string;
   email: string;
@@ -171,7 +175,7 @@ export class AuthService {
       throw new BadRequestException(t('verifyOtp.invalidOtp', lang));
     }
 
-    if (user.emailVerificationOtp !== otp) {
+    if (!this.otpEquals(user.emailVerificationOtp, otp)) {
       this.logger.warn(`OTP verification failed: Invalid OTP for ${email}`);
       // This wrong guess was already counted atomically above; burn if it hit the cap.
       if ((user.emailVerificationOtpAttempts ?? 0) + 1 >= AuthService.MAX_OTP_ATTEMPTS) {
@@ -246,8 +250,12 @@ export class AuthService {
     // Do not reveal whether the email has an account or is already verified —
     // return the same generic success either way (mirrors forgotPassword). Only a
     // real, still-unverified account actually gets a new OTP sent.
-    if (!user || user.isActive) {
-      this.logger.warn(`Resend OTP no-op (unknown or already-verified): ${email}`);
+    // R8: also short-circuit for admin-disabled accounts. A banned user has isActive=false
+    // (so it wouldn't hit the already-verified branch) but disabledAt set; without this it
+    // could still trigger a fresh OTP email + reset the attempt counter. verifyOtp already
+    // rejects disabledAt, so this only stops the pointless dispatch — same generic response.
+    if (!user || user.isActive || user.disabledAt) {
+      this.logger.warn(`Resend OTP no-op (unknown, already-verified, or disabled): ${email}`);
       return {
         message: t('resendOtp.success', lang),
         success: true,
@@ -295,6 +303,19 @@ export class AuthService {
     return randomInt(0, 1000000).toString().padStart(6, '0');
   }
 
+  // R8: constant-time OTP comparison (was `!==`, a short-circuiting timing side-channel).
+  // Consistent with the timingSafeEqual already used for refresh tokens / OAuth state.
+  private otpEquals(stored: string | null | undefined, provided: string): boolean {
+    if (!stored || typeof provided !== 'string' || stored.length !== provided.length) {
+      return false;
+    }
+    try {
+      return timingSafeEqual(Buffer.from(stored, 'utf8'), Buffer.from(provided, 'utf8'));
+    } catch {
+      return false;
+    }
+  }
+
   /**
    * Verify a password-reset OTP against the user row, enforcing a per-account
    * attempt limit. On a wrong guess the attempt counter is incremented and the
@@ -329,7 +350,7 @@ export class AuthService {
       throw invalid();
     }
 
-    if (user.passwordResetOtp !== otp) {
+    if (!this.otpEquals(user.passwordResetOtp, otp)) {
       // Wrong guess already counted atomically above; burn if it reached the cap.
       if ((user.passwordResetOtpAttempts ?? 0) + 1 >= AuthService.MAX_OTP_ATTEMPTS) {
         await this.userRepository.update(
@@ -709,9 +730,13 @@ export class AuthService {
 
     // Check if user has password (local auth) or is Google OAuth user
     if (!user.password) {
-      // User registered with Google OAuth, no password set
+      // R8: a Google-only account previously returned a DISTINCT `login.noPassword` error
+      // BEFORE any password check — a pre-auth oracle revealing the account exists and uses
+      // Google SSO. Run a dummy compare (equalize timing) and return the SAME generic error
+      // as a wrong password / unknown email, so login leaks nothing about the account.
       this.logger.warn(`Login attempt with password for OAuth user without password: ${email}`);
-      throw new UnauthorizedException(t('login.noPassword', lang));
+      await bcrypt.compare(password, DUMMY_BCRYPT_HASH);
+      throw new UnauthorizedException(t('login.invalidCredentials', lang));
     }
 
     // Check password first (before checking email verification)
@@ -1231,6 +1256,15 @@ export class AuthService {
         user.authProvider = 'google'; // Update to Google as primary
         if (picture && !user.avatarUrl) {
           user.avatarUrl = picture;
+        }
+        // R8: if the pre-existing local row was merely UNVERIFIED (isActive=false, no ban),
+        // verified Google ownership of the address proves the email — activate it, same as a
+        // brand-new Google user is auto-verified. Otherwise an attacker who pre-registered the
+        // victim's Gmail (and never verified) would permanently block the victim's Google SSO
+        // (loginWithGoogle rejects isActive===false). Do NOT clear an admin ban: only flip
+        // when disabledAt is null, so a banned account can't be reactivated via Google.
+        if (user.isActive === false && !user.disabledAt) {
+          user.isActive = true;
         }
         await this.userRepository.save(user);
       } else if (user.authProvider === 'google' || user.googleId === googleId) {

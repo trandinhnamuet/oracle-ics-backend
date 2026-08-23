@@ -1,7 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { SubscriptionLog } from '../../entities/subscription-log.entity';
+import { Subscription } from '../../entities/subscription.entity';
 import { CreateSubscriptionLogDto } from './dto/create-subscription-log.dto';
 import { UpdateSubscriptionLogDto } from './dto/update-subscription-log.dto';
 
@@ -10,9 +11,30 @@ export class SubscriptionLogService {
   constructor(
     @InjectRepository(SubscriptionLog)
     private subscriptionLogRepository: Repository<SubscriptionLog>,
+    @InjectRepository(Subscription)
+    private subscriptionRepository: Repository<Subscription>,
   ) {}
 
   async create(createSubscriptionLogDto: CreateSubscriptionLogDto): Promise<SubscriptionLog> {
+    // Enforce subscription ownership before writing any audit-log row. Every
+    // action route funnels through logAction -> create, and the generic create
+    // route lands here directly, so this single check covers all write paths and
+    // prevents a caller from injecting fabricated events into another user's
+    // subscription timeline (audit-log injection / repudiation).
+    const subscription = await this.subscriptionRepository.findOne({
+      where: { id: createSubscriptionLogDto.subscription_id },
+    });
+
+    if (!subscription) {
+      throw new NotFoundException(
+        `Subscription with ID ${createSubscriptionLogDto.subscription_id} not found`,
+      );
+    }
+
+    if (subscription.user_id !== createSubscriptionLogDto.user_id) {
+      throw new ForbiddenException('You do not have access to this subscription');
+    }
+
     const subscriptionLog = this.subscriptionLogRepository.create(createSubscriptionLogDto);
     return await this.subscriptionLogRepository.save(subscriptionLog);
   }

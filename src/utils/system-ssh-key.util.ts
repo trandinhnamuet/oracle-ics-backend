@@ -128,16 +128,16 @@ function calculateFingerprint(publicKey: string): string {
 }
 
 function deriveKeyBuffer(encryptionKey: string): Buffer {
-  let keyBuffer: Buffer;
-  try {
-    keyBuffer = Buffer.from(encryptionKey, 'hex');
-  } catch {
-    keyBuffer = crypto.createHash('sha256').update(encryptionKey).digest();
+  // Only treat the secret as a raw AES-256 key when it is EXACTLY 64 hex chars
+  // (→ 32 bytes). Buffer.from(x, 'hex') silently decodes valid leading pairs and
+  // stops at the first invalid nibble, so a secret whose first 64 chars are hex
+  // would be truncated to 32 bytes and accepted, discarding the rest of its
+  // entropy. Anything else (including the current 42-char non-hex secret) is
+  // hashed with sha256, which is unchanged from the previous behavior.
+  if (/^[0-9a-fA-F]{64}$/.test(encryptionKey)) {
+    return Buffer.from(encryptionKey, 'hex');
   }
-  if (keyBuffer.length !== 32) {
-    keyBuffer = crypto.createHash('sha256').update(encryptionKey).digest();
-  }
-  return keyBuffer;
+  return crypto.createHash('sha256').update(encryptionKey).digest();
 }
 
 /**

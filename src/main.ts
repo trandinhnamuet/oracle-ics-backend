@@ -42,6 +42,19 @@ if (process.env.NODE_ENV === 'production') {
     console.error('FATAL: SSH_KEY_ENCRYPTION_SECRET is not set or too short (min 32). Set it in environment and restart.');
     process.exit(1);
   }
+  // R8: HS256 tokens signed with a short/low-entropy secret are forgeable offline. Enforce
+  // the same min-32 fail-fast for the JWT secrets that the SSH secret already gets — a weak
+  // JWT_SECRET lets an attacker mint tokens for any existing user/session.
+  const jwt = process.env.JWT_SECRET;
+  if (!jwt || jwt.length < 32) {
+    console.error('FATAL: JWT_SECRET is not set or too short (min 32). Set it in environment and restart.');
+    process.exit(1);
+  }
+  const jwtRefresh = process.env.JWT_REFRESH_SECRET;
+  if (!jwtRefresh || jwtRefresh.length < 32) {
+    console.error('FATAL: JWT_REFRESH_SECRET is not set or too short (min 32). Set it in environment and restart.');
+    process.exit(1);
+  }
 }
 
 async function bootstrap() {
@@ -73,6 +86,11 @@ async function bootstrap() {
 
   // Trust proxy - only trust first reverse proxy (nginx)
   app.set('trust proxy', 'loopback');
+
+  // R8: register helmet BEFORE static assets so /uploads/* responses also receive the
+  // security headers (HSTS/CSP/frameguard/nosniff); previously helmet ran after
+  // useStaticAssets and those responses only got the manual nosniff/Content-Disposition.
+  app.use(helmet());
 
   // Serve static files from uploads directory
   app.useStaticAssets(join(__dirname, '..', 'uploads'), {
@@ -107,9 +125,6 @@ async function bootstrap() {
   // If we ever introduce non-Bearer cookie-based session auth for state-
   // changing endpoints, add a double-submit-cookie or csurf middleware here.
   // ──────────────────────────────────────────────────────────────────────────
-
-  // Security headers
-  app.use(helmet());
 
   // Global class serializer interceptor for transforming DTOs
   app.useGlobalInterceptors(new ClassSerializerInterceptor(app.get(Reflector)));
