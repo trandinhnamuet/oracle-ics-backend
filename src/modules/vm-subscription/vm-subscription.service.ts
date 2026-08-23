@@ -629,6 +629,11 @@ export class VmSubscriptionService implements OnModuleInit, OnModuleDestroy {
     if (!subscription?.vm_instance_id) {
       throw new NotFoundException('Subscription not found');
     }
+    // VM-B: a suspended (or expired/cancelled) customer must not retrieve working RDP
+    // admin credentials to a VM that is being contained.
+    if (subscription.status !== 'active') {
+      throw new BadRequestException('Subscription is not active');
+    }
 
     const vm = await this.vmInstanceRepo.findOne({
       where: { id: subscription.vm_instance_id },
@@ -2081,6 +2086,11 @@ net user ${windowsCredentials.username} *</div>
 
     if (!subscription) {
       throw new NotFoundException('Subscription not found');
+    }
+    // VM-C: a suspended customer must not be able to terminate the VM the admin just
+    // suspended (evidence destruction). Admins may still delete.
+    if (!isAdmin && subscription.status === 'suspended') {
+      throw new BadRequestException('Subscription is suspended');
     }
 
     if (!subscription.vm_instance_id) {

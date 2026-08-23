@@ -62,6 +62,12 @@ export class User {
   @Column({ name: 'is_active', default: false })
   isActive: boolean;
 
+  // Auth-F1: set when an admin disables/bans the account. Distinct from is_active
+  // (which also means "email not yet verified"). A user cannot clear this via their own
+  // email verification, so a ban cannot be self-lifted through the login/verify-otp flow.
+  @Column({ name: 'disabled_at', type: 'timestamp', nullable: true })
+  disabledAt: Date | null;
+
   @Exclude()
   @Column({ name: 'email_verification_otp', length: 6, nullable: true })
   emailVerificationOtp?: string;

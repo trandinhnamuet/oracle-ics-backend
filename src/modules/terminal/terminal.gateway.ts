@@ -97,8 +97,13 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
         if (sid) {
           const revalidate = setInterval(async () => {
             try {
-              if (!(await this.isSessionAndUserActive(sid, uid))) {
-                this.logger.warn(`Session/user revoked mid-session; closing terminal for ${client.id}`);
+              const sessionOk = await this.isSessionAndUserActive(sid, uid);
+              // VM-E: also re-check the VM's subscription is still active — a shell must
+              // die when the subscription is suspended/cancelled/expired mid-session.
+              const sessionId = this.socketToSession.get(client.id);
+              const vmOk = !sessionId || (await this.terminalService.revalidateSessionAccess(sessionId, Number(uid)));
+              if (!sessionOk || !vmOk) {
+                this.logger.warn(`Session/user/subscription revoked mid-session; closing terminal for ${client.id}`);
                 client.emit('error', { message: 'Session has been terminated. Please log in again.' });
                 client.disconnect();
               }

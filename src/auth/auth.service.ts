@@ -136,6 +136,11 @@ export class AuthService {
       this.logger.warn(`OTP verification failed: Email already verified - ${email}`);
       throw new BadRequestException(t('verifyOtp.alreadyVerified', lang));
     }
+    // Auth-F1: never re-activate an admin-disabled account via email verification.
+    if (user.disabledAt) {
+      this.logger.warn(`OTP verification blocked: account is disabled - ${email}`);
+      throw new BadRequestException(t('verifyOtp.invalidOtp', lang));
+    }
 
     // Check OTP presence
     if (!user.emailVerificationOtp || !user.otpExpiresAt) {
@@ -777,6 +782,14 @@ export class AuthService {
       } catch (error) {
         this.logger.error('Failed to record non-admin login attempt', error);
       }
+      throw new UnauthorizedException(t('login.invalidCredentials', lang));
+    }
+
+    // Auth-F1: an admin-disabled account must NOT be treated as merely "unverified".
+    // Reject it here (same generic error as the Google path) so it can't self-unban via
+    // the OTP-reissue + verify-otp flow. disabledAt is set only on admin deactivation.
+    if (user.disabledAt) {
+      this.logger.warn(`Login rejected: account is disabled - ${email}`);
       throw new UnauthorizedException(t('login.invalidCredentials', lang));
     }
 

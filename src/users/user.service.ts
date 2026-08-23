@@ -122,12 +122,17 @@ export class UserService {
   // Hash any password coming through the admin update path (UpdateUserDto still
   // carries an optional password); otherwise it would overwrite the bcrypt hash
   // with plaintext and lock the user out.
-  const toUpdate: UpdateUserDto = { ...updateUserDto };
+  const toUpdate: any = { ...updateUserDto };
   const passwordChanged = !!toUpdate.password;
   const deactivated = toUpdate.isActive === false;
+  const reactivated = toUpdate.isActive === true;
   if (toUpdate.password) {
     toUpdate.password = await bcrypt.hash(toUpdate.password, 10);
   }
+  // Auth-F1: stamp the ban explicitly so it cannot be self-lifted via verify-otp; clear
+  // it only when an admin explicitly re-enables the account.
+  if (deactivated) toUpdate.disabledAt = new Date();
+  if (reactivated) toUpdate.disabledAt = null;
   await this.userRepository.update(id, toUpdate);
   if (passwordChanged || deactivated) {
     // Admin reset the password or disabled the account → terminate every session so

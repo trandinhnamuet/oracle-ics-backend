@@ -145,6 +145,49 @@ describe('Money paths (integration, real Postgres)', () => {
       expect(after!.status).toBe('active');
       expect(new Date(after!.end_date).getTime()).toBe(new Date(before).getTime());
     });
+
+    it('does NOT auto-renew a suspended subscription (candidate-query exclusion)', async () => {
+      const { userId, walletId } = await seedUserWithWallet(ds, 50000000);
+      const subId = await seedSubscription(ds, userId, { status: 'suspended', autoRenew: true, endOffsetDays: -2 });
+      await ctx.subscriptionService.checkExpiredSubscriptions();
+      expect((await getSubStatus(ds, subId))!.status).toBe('suspended');
+      expect(await getBalance(ds, userId)).toBe(50000000);
+      expect(await countTxns(ds, walletId, 'auto_renewal')).toBe(0);
+    });
+
+    it('charges a DEEPLY-lapsed sub exactly once and dates it ~now+1mo (not prevEnd+1mo)', async () => {
+      const { userId, walletId } = await seedUserWithWallet(ds, 50000000);
+      const subId = await seedSubscription(ds, userId, { status: 'active', osType: 'linux', autoRenew: true, endOffsetDays: -90 });
+      await ctx.subscriptionService.checkExpiredSubscriptions();
+      // Exactly ONE charge, not one-per-lapsed-month.
+      expect(await countTxns(ds, walletId, 'auto_renewal')).toBe(1);
+      expect(await getBalance(ds, userId)).toBeCloseTo(50000000 - LINUX_COST, 2);
+      const sub = await getSubStatus(ds, subId);
+      // end_date must be ~1 month from NOW (H2 max(prevEnd,now)); the buggy prevEnd+1mo
+      // for a 90-day lapse would land in the PAST.
+      const end = new Date(sub!.end_date).getTime();
+      expect(end).toBeGreaterThan(Date.now());
+      expect(end).toBeLessThan(Date.now() + 40 * 24 * 3600 * 1000);
+    });
+
+    it('charges once when two cron instances run concurrently on the same overdue sub (CAS)', async () => {
+      const { userId, walletId } = await seedUserWithWallet(ds, 50000000);
+      await seedSubscription(ds, userId, { status: 'active', osType: 'linux', autoRenew: true, endOffsetDays: -2 });
+      // A second module = a second SubscriptionService instance with its own
+      // isRenewalRunning flag, simulating horizontal scaling. The end_date<=now CAS must
+      // still serialize them to a single charge.
+      const ctx2 = await buildMoneyTestModule();
+      try {
+        await Promise.all([
+          ctx.subscriptionService.checkExpiredSubscriptions(),
+          ctx2.subscriptionService.checkExpiredSubscriptions(),
+        ]);
+      } finally {
+        await ctx2.moduleRef.close();
+      }
+      expect(await countTxns(ds, walletId, 'auto_renewal')).toBe(1);
+      expect(await getBalance(ds, userId)).toBeCloseTo(50000000 - LINUX_COST, 2);
+    });
   });
 
   // ---------------------------------------------------------------- subscribe (account balance)

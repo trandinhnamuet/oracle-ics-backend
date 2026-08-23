@@ -132,6 +132,8 @@ export class SubscriptionService {
 
     const subscription = this.subscriptionRepository.create({
       ...createSubscriptionDto,
+      // Default applied here (removed from the DTO initializer — Auth-F2).
+      auto_renew: createSubscriptionDto.auto_renew ?? true,
       start_date: startDate,
       end_date: normalizedEndDate,
       status: 'active',
@@ -595,7 +597,30 @@ export class SubscriptionService {
   async suspend(id: string): Promise<Subscription> {
     const subscription = await this.findOne(id);
     subscription.status = 'suspended';
-    return await this.subscriptionRepository.save(subscription);
+    const saved = await this.subscriptionRepository.save(subscription);
+
+    // VM-A: suspension must actually CONTAIN the customer. The web-terminal gate alone
+    // is not enough — the customer holds the SSH private key / RDP password and can
+    // connect directly to a still-running instance. Stop the VM immediately instead of
+    // waiting up to an hour for the sweep. Best-effort; the sweep is the backstop.
+    if (subscription.vm_instance_id) {
+      try {
+        const vm = await this.vmInstanceRepository.findOne({ where: { id: subscription.vm_instance_id } });
+        if (
+          vm?.instance_id &&
+          vm.instance_id !== 'PENDING' &&
+          ['RUNNING', 'STARTING'].includes(vm.lifecycle_state)
+        ) {
+          await this.ociService.stopInstance(vm.instance_id);
+          vm.lifecycle_state = 'STOPPING';
+          await this.vmInstanceRepository.save(vm);
+          this.logger.log(`[suspend] stopped VM ${vm.instance_id} for suspended subscription ${id}`);
+        }
+      } catch (e: any) {
+        this.logger.warn(`[suspend] failed to stop VM for subscription ${id}: ${e?.message ?? e}`);
+      }
+    }
+    return saved;
   }
 
   async reactivate(id: string): Promise<Subscription> {
@@ -907,12 +932,15 @@ export class SubscriptionService {
       if (currentBalance < packageCost) {
         // M7: mark expired via a guarded UPDATE (not save() of the stale entity),
         // so a concurrent manualRenew that just renewed this sub isn't erased.
-        await this.subscriptionRepository.update(
+        const marked = await this.subscriptionRepository.update(
           { id: subId, status: In(['active', 'expired']), end_date: LessThanOrEqual(now) },
           { status: 'expired' },
         );
         this.appendRenewalLog(`    [AutoRenew FAIL] Số dư không đủ → đánh dấu EXPIRED | sub=${subId}`);
 
+        // F1: only notify on the actual active->expired transition, not on every daily
+        // tick for a sub that is already expired (avoids "your plan just expired" spam).
+        if (marked.affected)
         await this.notificationService.notify(
           subscription.user_id,
           NotificationType.SUBSCRIPTION_EXPIRED,

@@ -18,9 +18,14 @@ export class CreateSubscriptionDto {
   @IsOptional()
   months_paid?: number;
 
+  // No default initializer: UpdateSubscriptionDto = PartialType(CreateSubscriptionDto),
+  // and class-transformer copies a field initializer onto every instance, so an admin
+  // PATCH /subscriptions/:id that omits auto_renew would silently force it to true and
+  // re-enable auto-renew the customer had turned off (Auth-F2). Default is applied in
+  // SubscriptionService.create instead.
   @IsBoolean()
   @IsOptional()
-  auto_renew?: boolean = true;
+  auto_renew?: boolean;
 
   @IsOptional()
   configuration?: any;

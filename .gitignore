@@ -103,3 +103,7 @@ test_reset.py
 # Keep such scripts out of the repository.
 scripts/verify-*.ts
 scripts/demo-*.ts
+
+# Local debug/ops scripts that may embed secrets (never commit)
+scripts/get_*.js
+scripts/oci-creds.js

@@ -124,12 +124,16 @@ async function bootstrap() {
     },
   }));
 
-  // Enable CORS for frontend
+  // Enable CORS for frontend. localhost origins are dev-only — allowing them with
+  // credentials in production lets a malicious app on a victim's own machine make
+  // credentialed cross-origin calls (CORS-M4).
+  const isProd = process.env.NODE_ENV === 'production';
+  const localOrigins = isProd
+    ? []
+    : ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:5173'];
   const corsOptions: CorsOptions = {
     origin: [
-      'http://localhost:3000',
-      'http://localhost:3001',
-      'http://localhost:5173',
+      ...localOrigins,
       'https://oracle-ics-frontend.vercel.app',
       'https://oraclecloud.vn', //2 main domain
       'http://oraclecloud.vn',

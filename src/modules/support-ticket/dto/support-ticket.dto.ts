@@ -1,4 +1,4 @@
-import { IsString, IsNotEmpty, IsEmail, IsOptional, IsEnum, MinLength, MaxLength } from 'class-validator';
+import { IsString, IsNotEmpty, IsEmail, IsOptional, IsEnum, MinLength, MaxLength, IsUrl } from 'class-validator';
 import { TicketPriority } from '../../../entities/support-ticket.entity';
 
 export class CreateSupportTicketDto {
@@ -34,14 +34,19 @@ export class CreateSupportTicketDto {
   @IsString()
   @IsNotEmpty()
   @MinLength(10)
+  @MaxLength(10000) // F3: bound content (was unbounded — only the 10MB body cap limited it)
   content: string;
 
+  // F3: validate the URL so a `javascript:`/arbitrary URL can't be stored and later
+  // rendered/linked in the admin ticket UI (stored-XSS / open-redirect feeder).
   @IsOptional()
-  @IsString()
+  @IsUrl({ protocols: ['http', 'https'], require_protocol: true })
+  @MaxLength(2048)
   attachment_url?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(20000)
   attachments?: string; // JSON string: Array<{ url, name, mimeType, size }>
 
   @IsOptional()

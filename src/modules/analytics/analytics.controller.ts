@@ -7,6 +7,7 @@ import {
   BadRequestException,
   UseGuards,
 } from '@nestjs/common'
+import { Throttle } from '@nestjs/throttler'
 import { AnalyticsService } from './analytics.service'
 import { CreatePageAnalyticsDto } from '../../entities/dto/create-page-analytics.dto'
 import { JwtAuthGuard } from '../../auth/jwt-auth.guard'
@@ -19,6 +20,9 @@ export class AnalyticsController {
   /**
    * Record a page view (public endpoint - no auth required)
    */
+  // F1: public unauth write — throttle per-IP so it can't be used to flood the DB with
+  // attacker-controlled junk (DoS / cost). Field length caps are on the DTO.
+  @Throttle({ default: { limit: 30, ttl: 60000 } })
   @Post()
   async recordPageView(@Body() createAnalyticsDto: CreatePageAnalyticsDto) {
     try {

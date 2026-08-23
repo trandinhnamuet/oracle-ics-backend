@@ -58,14 +58,16 @@ export class TerminalService {
       throw new NotFoundException('VM not found or you do not have access');
     }
 
-    // H5: the web terminal is a root shell, so it must respect subscription status.
+    // H5/VM-F: the web terminal is a root shell, so it must respect subscription status.
     // Previously only VM ownership + RUNNING were checked, letting a suspended (or
-    // expired/cancelled) owner open a shell on a VM the sweep hadn't stopped yet.
-    if (vm.subscription_id) {
-      const sub = await this.subscriptionRepo.findOne({ where: { id: vm.subscription_id } });
-      if (!sub || sub.status !== 'active') {
-        throw new ForbiddenException('Subscription is not active for this VM');
-      }
+    // expired/cancelled) owner open a shell on a VM the sweep hadn't stopped yet. Fail
+    // CLOSED — a VM with no active subscription (incl. a missing subscription_id) is
+    // not accessible.
+    const sub = vm.subscription_id
+      ? await this.subscriptionRepo.findOne({ where: { id: vm.subscription_id } })
+      : null;
+    if (!sub || sub.status !== 'active') {
+      throw new ForbiddenException('Subscription is not active for this VM');
     }
 
     if (vm.lifecycle_state !== 'RUNNING') {
@@ -85,6 +87,23 @@ export class TerminalService {
     }
 
     return vm;
+  }
+
+  /**
+   * VM-E: re-validate an already-open terminal session's VM access (ownership + RUNNING
+   * + subscription active). Called periodically by the gateway so a shell opened while
+   * active is torn down if the subscription is suspended/cancelled/expired mid-session
+   * (validateVmAccess now checks subscription status). Returns true if still allowed.
+   */
+  async revalidateSessionAccess(sessionId: string, userId: number): Promise<boolean> {
+    const session = this.activeSessions.get(sessionId);
+    if (!session) return true; // connected but no terminal started yet — nothing to guard
+    try {
+      await this.validateVmAccess(userId, session.vmId);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /**

@@ -73,8 +73,11 @@ export class SepayService {
             .where('payment.status = :status', { status: 'pending' })
             .andWhere('payment.created_at >= :validFrom', { validFrom })
             .andWhere('payment.transaction_code IS NOT NULL')
+            .andWhere("payment.transaction_code <> ''")
             .getMany();
-          payment = pendingPayments.find(p => content.includes(p.transaction_code.toUpperCase())) || null;
+          // F3: guard against an empty transaction_code — content.includes('') is always
+          // true and would let an unrelated transfer match/credit the wrong payment.
+          payment = pendingPayments.find(p => p.transaction_code && content.includes(p.transaction_code.toUpperCase())) || null;
         }
       }
 
@@ -93,51 +96,34 @@ export class SepayService {
         return { success: false, message: 'Payment expired (over 15 minutes)' };
       }
 
-      // IDEMPOTENCY: claim this bank transaction before applying any money side
-      // effect. A retried/duplicate delivery (esp. of an underpayment, which keeps
-      // the payment 'pending' and would otherwise re-match) hits the unique index
-      // and is skipped; two concurrent deliveries race on the same insert and only
-      // one wins. The claim is rolled back below if processing then throws, so a
-      // genuine operator replay is still possible.
       const bankTxId = String(webhookData.id);
-      try {
-        await this.processedTxRepository.insert({ bankTxId, paymentId: payment.id });
-      } catch (claimErr) {
-        if (this.isUniqueViolation(claimErr)) {
-          this.logger.warn(`[SEPAY] Duplicate webhook for bank tx ${bankTxId} ignored (already processed).`);
-          return { success: true, message: 'Duplicate webhook ignored (already processed)' };
-        }
-        throw claimErr;
-      }
-
       const received = webhookData.transferAmount;
       const expected = Number(payment.amount);
 
       this.logger.log(`[SEPAY] Payment ${payment.id}: received=${received}, expected=${expected}`);
 
       try {
+        // IDEMPOTENCY (F1): the bank-tx claim is inserted INSIDE the money transaction
+        // (handleFullPayment / handleUnderpayment), so the claim + the credit commit or
+        // roll back together. A duplicate delivery hits the unique index and rolls the
+        // whole (no-op) transaction back — caught below and reported as already-processed.
+        // A genuine failure also rolls back with NO claim persisted, so SePay's
+        // redelivery reprocesses cleanly (no stranded payment, no lost credit, and no
+        // fragile outside-the-transaction claim-release to get wrong).
         if (received < expected) {
-          // Thiếu tiền: cộng số tiền nhận được vào ví, giữ payment pending
-          await this.handleUnderpayment(payment, received, expected);
+          await this.handleUnderpayment(payment, received, expected, bankTxId);
           return {
             success: true,
             message: `Underpayment: received ${received}, expected ${expected}. Amount credited to wallet; payment still pending.`,
           };
         }
-
-        // Đủ hoặc dư tiền: kích hoạt subscription / deposit, hoàn tiền dư vào ví
         const excess = received - expected;
-        await this.handleFullPayment(payment, received, expected, excess);
+        await this.handleFullPayment(payment, received, expected, excess, bankTxId);
         return { success: true, message: 'Payment processed successfully' };
       } catch (processErr) {
-        // Release the idempotency claim so the operator/Sepay can replay this
-        // transfer after the underlying failure is resolved.
-        try {
-          await this.processedTxRepository.delete({ bankTxId });
-        } catch (releaseErr) {
-          this.logger.error(
-            `CRITICAL: failed to release idempotency claim for bank tx ${bankTxId}; a replay will be blocked. Error: ${(releaseErr as Error)?.message}`,
-          );
+        if (this.isUniqueViolation(processErr)) {
+          this.logger.warn(`[SEPAY] Duplicate webhook for bank tx ${bankTxId} ignored (already processed).`);
+          return { success: true, message: 'Duplicate webhook ignored (already processed)' };
         }
         throw processErr;
       }
@@ -160,44 +146,28 @@ export class SepayService {
    * - Cộng số tiền đã nhận vào ví để user không mất tiền.
    * - Payment giữ nguyên trạng thái pending để user có thể tạo lại.
    */
-  private async handleUnderpayment(payment: Payment, received: number, expected: number): Promise<void> {
+  private async handleUnderpayment(payment: Payment, received: number, expected: number, bankTxId: string): Promise<void> {
     this.logger.log(`[SEPAY] Underpayment for payment ${payment.id}: crediting ${received} VND to wallet`);
 
-    const updatedWallet = await this.userWalletService.addBalance(payment.user_id, received);
-
-    // IMPORTANT: once the wallet has been credited we must NOT let a later failure
-    // propagate to handleWebhook's catch — that would release the idempotency claim
-    // while the payment is still 'pending', and a webhook replay would re-credit the
-    // wallet (double-credit). So from here on we swallow errors (logged for manual
-    // reconciliation) and keep the claim, guaranteeing the credit happens at most once.
-    try {
-      const userWallet = await this.userWalletService.findByUserId(payment.user_id);
-      await this.userWalletService.createTransaction({
-        wallet_id: userWallet.id,
-        payment_id: payment.id,
-        subscription_id: payment.subscription_id ?? null,
-        change_amount: received,
-        balance_after: updatedWallet.balance,
-        type: 'underpayment_deposit',
-      });
-    } catch (ledgerErr) {
-      this.logger.error(
-        `CRITICAL: wallet credited for underpayment on payment ${payment.id} but ledger write failed; ` +
-          `manual reconciliation needed. Error: ${(ledgerErr as Error)?.message}`,
-      );
-    }
+    // F1: claim the bank tx + credit the wallet + write the ledger in ONE transaction.
+    // A duplicate delivery throws a unique violation on the claim and rolls back (no
+    // re-credit); a crash rolls back with no claim, so redelivery reprocesses cleanly.
+    // The payment stays 'pending' (not touched here) so the user can complete it later.
+    const balanceAfter = await this.dataSource.transaction(async (manager) => {
+      await manager.insert(ProcessedSepayTransaction, { bankTxId, paymentId: payment.id });
+      return this.creditWalletTx(manager, payment.user_id, received, payment.id, 'underpayment_deposit');
+    });
 
     const fmt = (n: number) => new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(n);
-
     try {
       await this.notificationService.notify(
         payment.user_id,
         NotificationType.WALLET_CREDIT,
         '⚠️ Thanh toán chưa đủ - Đã nạp vào ví',
-        `Bạn đã chuyển ${fmt(received)} nhưng cần ${fmt(expected)} để kích hoạt gói dịch vụ. Số tiền đã được nạp vào ví. Số dư mới: ${fmt(updatedWallet.balance)}. Vui lòng tạo lại giao dịch mới để thanh toán đủ.`,
-        { received, expected, balance_after: updatedWallet.balance, payment_id: payment.id },
+        `Bạn đã chuyển ${fmt(received)} nhưng cần ${fmt(expected)} để kích hoạt gói dịch vụ. Số tiền đã được nạp vào ví. Số dư mới: ${fmt(balanceAfter)}. Vui lòng tạo lại giao dịch mới để thanh toán đủ.`,
+        { received, expected, balance_after: balanceAfter, payment_id: payment.id },
         '⚠️ Underpayment – Credited to wallet',
-        `You transferred ${fmt(received)} but needed ${fmt(expected)} to activate the subscription. The amount has been credited to your wallet. New balance: ${fmt(updatedWallet.balance)}. Please create a new payment to complete the purchase.`,
+        `You transferred ${fmt(received)} but needed ${fmt(expected)} to activate the subscription. The amount has been credited to your wallet. New balance: ${fmt(balanceAfter)}. Please create a new payment to complete the purchase.`,
       );
     } catch (notifyErr) {
       this.logger.error(`Failed to send underpayment notification for payment ${payment.id}: ${notifyErr?.message}`);
@@ -217,10 +187,17 @@ export class SepayService {
    * a downstream failure rolls the credit AND ledger back together — no lost/duplicated
    * money and no ledger-less credit.
    */
-  private async creditWalletTx(manager: EntityManager, userId: number, amount: number, paymentId: string): Promise<number> {
+  private async creditWalletTx(manager: EntityManager, userId: number, amount: number, paymentId: string, type: string = 'deposit'): Promise<number> {
     let wallet = await manager.findOne(UserWallet, { where: { user_id: userId }, lock: { mode: 'pessimistic_write' } });
     if (!wallet) {
-      await manager.insert(UserWallet, { user_id: userId, balance: 0, currency: 'VND', status: 'active', is_active: true } as any);
+      // F2: race-safe create. A caught unique violation would abort the whole Postgres
+      // transaction, so use ON CONFLICT DO NOTHING and re-find the row (ours or the
+      // concurrent winner's) under the lock.
+      await manager.query(
+        `INSERT INTO oracle.user_wallets(user_id,balance,currency,status,is_active,created_at,updated_at)
+         VALUES ($1, 0, 'VND', 'active', true, now(), now()) ON CONFLICT (user_id) DO NOTHING`,
+        [userId],
+      );
       wallet = await manager.findOne(UserWallet, { where: { user_id: userId }, lock: { mode: 'pessimistic_write' } });
     }
     const balAfter = parseFloat(wallet!.balance.toString()) + Number(amount);
@@ -233,7 +210,7 @@ export class SepayService {
         subscription_id: null,
         change_amount: amount,
         balance_after: balAfter,
-        type: 'deposit',
+        type,
       }),
     );
     return balAfter;
@@ -244,6 +221,7 @@ export class SepayService {
     received: number,
     expected: number,
     excess: number,
+    bankTxId: string,
   ): Promise<void> {
     // M4: the payment CAS, wallet credit / subscription activation, and every ledger
     // row commit in ONE transaction. A crash or any error rolls it ALL back — the
@@ -252,6 +230,10 @@ export class SepayService {
     // bankTx idempotency claim (inserted by the caller) still blocks same-tx replays,
     // and is released by the caller on throw. Notifications run AFTER commit.
     const outcome = await this.dataSource.transaction(async (manager) => {
+      // F1: claim the bank tx INSIDE this transaction so claim + money are atomic. A
+      // duplicate delivery throws a unique violation here → the whole no-op transaction
+      // rolls back → handleWebhook reports it as already-processed.
+      await manager.insert(ProcessedSepayTransaction, { bankTxId, paymentId: payment.id });
       const claim = await manager.update(Payment, { id: payment.id, status: 'pending' }, { status: 'success' });
       if (!claim.affected) {
         // M6: already completed by a DIFFERENT bank tx — this is a 2nd real transfer.
@@ -278,7 +260,11 @@ export class SepayService {
       // wallet) + excess refund — all in the same transaction.
       let wallet = await manager.findOne(UserWallet, { where: { user_id: payment.user_id }, lock: { mode: 'pessimistic_write' } });
       if (!wallet) {
-        await manager.insert(UserWallet, { user_id: payment.user_id, balance: 0, currency: 'VND', status: 'active', is_active: true } as any);
+        await manager.query(
+          `INSERT INTO oracle.user_wallets(user_id,balance,currency,status,is_active,created_at,updated_at)
+           VALUES ($1, 0, 'VND', 'active', true, now(), now()) ON CONFLICT (user_id) DO NOTHING`,
+          [payment.user_id],
+        );
         wallet = await manager.findOne(UserWallet, { where: { user_id: payment.user_id }, lock: { mode: 'pessimistic_write' } });
       }
       const bal = parseFloat(wallet!.balance.toString());

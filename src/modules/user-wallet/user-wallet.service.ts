@@ -137,11 +137,16 @@ export class UserWalletService {
   }
 
   async update(id: number, updateUserWalletDto: UpdateUserWalletDto): Promise<UserWallet> {
-    const wallet = await this.findOne(id);
-    
-    Object.assign(wallet, updateUserWalletDto);
-    
-    return await this.userWalletRepository.save(wallet);
+    await this.findOne(id); // 404 if missing
+    // Wallet-F2: apply only the provided (non-balance) fields via a targeted UPDATE. A
+    // full-entity save() of a stale, unlocked read would rewrite `balance` and clobber
+    // a concurrent deposit. `balance` is not in the DTO; strip it defensively too.
+    const fields: any = { ...(updateUserWalletDto as any) };
+    delete fields.balance;
+    if (Object.keys(fields).length > 0) {
+      await this.userWalletRepository.update(id, fields);
+    }
+    return this.findOne(id);
   }
 
   async updateBalance(userId: number, newBalance: number): Promise<UserWallet> {
@@ -247,15 +252,16 @@ export class UserWalletService {
   }
 
   async deactivate(id: number): Promise<UserWallet> {
-    const wallet = await this.findOne(id);
-    wallet.is_active = false;
-    return await this.userWalletRepository.save(wallet);
+    await this.findOne(id);
+    // Wallet-F2: targeted UPDATE of the flag only — never rewrite balance from a stale read.
+    await this.userWalletRepository.update(id, { is_active: false });
+    return this.findOne(id);
   }
 
   async activate(id: number): Promise<UserWallet> {
-    const wallet = await this.findOne(id);
-    wallet.is_active = true;
-    return await this.userWalletRepository.save(wallet);
+    await this.findOne(id);
+    await this.userWalletRepository.update(id, { is_active: true });
+    return this.findOne(id);
   }
 
   async createTransaction(transactionData: {

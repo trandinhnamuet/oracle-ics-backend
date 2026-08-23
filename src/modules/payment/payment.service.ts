@@ -431,6 +431,13 @@ export class PaymentService {
   }
 
   async handleSepayCallback(data: any): Promise<any> {
+    // DEPRECATED legacy webhook (Wallet-F1). This path has NO bank-tx idempotency ledger
+    // (it relies only on the payment-status CAS) and does not share idempotency with the
+    // primary /sepay/webhook handler, so if the SAME transfer were delivered to BOTH
+    // endpoints it could be credited twice. The modern SePay integration uses
+    // /sepay/webhook (SepayService). This endpoint should be retired once ops confirm
+    // SePay is not configured to call it. Logging loudly so any real use is visible.
+    this.logger.warn('[DEPRECATED] /payments/sepay-callback invoked — confirm SePay webhook URL and retire this endpoint (Wallet-F1).');
     try {
       const { amount, content, status } = data;
       
