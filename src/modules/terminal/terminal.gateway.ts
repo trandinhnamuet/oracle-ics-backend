@@ -227,7 +227,7 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
     } catch (error) {
       this.logger.error(`Failed to start terminal for VM ${data.vmId}:`, error);
       client.emit('terminal:error', {
-        message: error.message || 'Failed to start terminal',
+        message: 'Failed to start terminal',
       });
     }
   }

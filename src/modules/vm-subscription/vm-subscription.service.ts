@@ -535,18 +535,16 @@ export class VmSubscriptionService implements OnModuleInit, OnModuleDestroy {
       // Update subscription status to failed
       try {
         subscription.configuration_status = 'failed';
-        subscription.provisioning_error = error.message || 'Unknown error occurred';
+        subscription.provisioning_error = 'Provisioning failed';
         await this.subscriptionRepo.update(subscription.id, {
           configuration_status: 'failed',
-          provisioning_error: error.message || 'Unknown error occurred',
+          provisioning_error: 'Provisioning failed',
         });
       } catch (saveError) {
         this.logger.error('Failed to update subscription status:', saveError);
       }
       
-      throw new InternalServerErrorException(
-        `Failed to configure VM: ${error.message}`,
-      );
+      throw new InternalServerErrorException('Failed to configure VM');
     }
   }
 
@@ -938,9 +936,7 @@ export class VmSubscriptionService implements OnModuleInit, OnModuleDestroy {
         throw error;
       }
       // SSH or other internal errors → 500 so frontend shows actual error, not OTP message
-      throw new InternalServerErrorException(
-        `Failed to update SSH keys on VM: ${error.message || 'Unknown error'}`,
-      );
+      throw new InternalServerErrorException('Failed to update SSH keys on VM');
     }
   }
 
@@ -1293,7 +1289,7 @@ export class VmSubscriptionService implements OnModuleInit, OnModuleDestroy {
       if (runCmdError instanceof HttpException) {
         throw runCmdError;
       }
-      throw new InternalServerErrorException(`Failed to reset Windows password: ${runCmdError.message}`);
+      throw new InternalServerErrorException('Failed to reset Windows password');
     }
 
     // Step 9: Mark VM as initialized and store the new password for future resets

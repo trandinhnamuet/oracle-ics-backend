@@ -4031,7 +4031,7 @@ chmod 600 ~/.ssh/authorized_keys`;
           `Please choose a password with at least 8 characters containing uppercase, lowercase, digits, and special characters.`
         );
       }
-      throw new Error(errorMsg);
+      throw new Error(redactWinRmOutput(errorMsg, [newPassword, currentPassword]));
     }
   }
 }

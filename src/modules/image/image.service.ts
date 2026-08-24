@@ -4,6 +4,7 @@ import { Repository } from 'typeorm';
 import { Image } from './image.entity';
 import * as fs from 'fs';
 import * as path from 'path';
+import { randomBytes } from 'crypto';
 
 /**
  * Canonical on-disk extension for every mime type the upload endpoints accept.
@@ -57,9 +58,12 @@ export class ImageService {
       throw new BadRequestException(`Unsupported file type '${file.mimetype}'`);
     }
 
-    // Generate unique filename
+    // Generate unique filename. The random component must be a CSPRNG value, not
+    // Math.random(): GET /images/serve/:filename is unauthenticated, so the filename
+    // is the only thing guarding a stored file (ticket attachments, KYC docs, avatars)
+    // against enumeration. Math.random() (xorshift128+) is predictable; use randomBytes.
     const timestamp = Date.now();
-    const filename = `${timestamp}-${Math.random().toString(36).substring(2)}${extension}`;
+    const filename = `${timestamp}-${randomBytes(16).toString('hex')}${extension}`;
     const filePath = path.join(uploadsDir, filename);
 
     // Save file to disk

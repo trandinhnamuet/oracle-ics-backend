@@ -835,7 +835,7 @@ export class VmProvisioningService {
       }
 
       throw new InternalServerErrorException(
-        `Failed to ${action} VM: ${error.message}`,
+        `Failed to ${action} VM`,
       );
     }
   }

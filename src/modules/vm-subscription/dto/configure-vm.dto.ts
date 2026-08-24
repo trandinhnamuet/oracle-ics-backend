@@ -1,12 +1,14 @@
-import { IsString, IsNotEmpty, IsOptional, IsNumber, Min, Max, IsEmail } from 'class-validator';
+import { IsString, IsNotEmpty, IsOptional, IsNumber, Min, Max, IsEmail, Matches } from 'class-validator';
 
 export class ConfigureVmDto {
   @IsString()
   @IsOptional()
   displayName?: string;
 
+  // Anchored OCID pattern: rejects embedded CR/LF (log forging) and any non-OCID value.
   @IsString()
   @IsNotEmpty()
+  @Matches(/^ocid1\.[a-zA-Z0-9._-]+$/, { message: 'imageId must be a valid OCID' })
   imageId: string;
 
   @IsString()

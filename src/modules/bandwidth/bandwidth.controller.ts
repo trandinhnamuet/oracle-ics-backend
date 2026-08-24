@@ -43,7 +43,7 @@ export class BandwidthController {
       this.logger.error('Error fetching bandwidth:', error);
       return {
         success: false,
-        error: error.message,
+        error: 'Failed to fetch bandwidth usage',
         data: {
           summary: {
             totalVMs: 0,

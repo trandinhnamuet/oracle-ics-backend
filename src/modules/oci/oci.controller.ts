@@ -82,7 +82,7 @@ export class OciController {
       this.logger.error('Error in getComputeImages:', error);
       return {
         success: false,
-        error: error.message,
+        error: 'Failed to fetch compute images',
         data: [],
       };
     }
@@ -110,7 +110,7 @@ export class OciController {
       this.logger.error('Error in getMarketplaceImages:', error);
       return {
         success: false,
-        error: error.message,
+        error: 'Failed to fetch marketplace images',
         data: [],
       };
     }
@@ -138,7 +138,7 @@ export class OciController {
       this.logger.error('Error in getShapes:', error);
       return {
         success: false,
-        error: error.message,
+        error: 'Failed to fetch shapes',
         data: [],
       };
     }
@@ -171,7 +171,7 @@ export class OciController {
       this.logger.error('Error in getCompartments:', error);
       return {
         success: false,
-        error: error.message,
+        error: 'Failed to fetch compartments',
         data: [],
       };
     }
@@ -202,7 +202,7 @@ export class OciController {
       this.logger.error('Error in getAvailabilityDomains:', error);
       return {
         success: false,
-        error: error.message,
+        error: 'Failed to fetch availability domains',
         data: [],
       };
     }
@@ -241,7 +241,7 @@ export class OciController {
       this.logger.error('Error in createVcn:', error);
       return {
         success: false,
-        error: error.message,
+        error: 'Failed to create VCN',
       };
     }
   }
@@ -266,7 +266,7 @@ export class OciController {
       this.logger.error('Error in getVcn:', error);
       return {
         success: false,
-        error: error.message,
+        error: 'Failed to fetch VCN',
       };
     }
   }
@@ -302,7 +302,7 @@ export class OciController {
       this.logger.error('Error in createInternetGateway:', error);
       return {
         success: false,
-        error: error.message,
+        error: 'Failed to create internet gateway',
       };
     }
   }
@@ -336,7 +336,7 @@ export class OciController {
       this.logger.error('Error in updateRouteTable:', error);
       return {
         success: false,
-        error: error.message,
+        error: 'Failed to update route table',
       };
     }
   }
@@ -378,7 +378,7 @@ export class OciController {
       this.logger.error('Error in createSubnet:', error);
       return {
         success: false,
-        error: error.message,
+        error: 'Failed to create subnet',
       };
     }
   }
@@ -428,7 +428,7 @@ export class OciController {
       this.logger.error('Error in launchInstance:', error);
       return {
         success: false,
-        error: error.message,
+        error: 'Failed to launch instance',
       };
     }
   }
@@ -458,7 +458,7 @@ export class OciController {
       this.logger.error('Error in getInstances:', error);
       return {
         success: false,
-        error: error.message,
+        error: 'Failed to fetch instances',
         data: [],
       };
     }
@@ -484,7 +484,7 @@ export class OciController {
       this.logger.error('Error in getInstance:', error);
       return {
         success: false,
-        error: error.message,
+        error: 'Failed to fetch instance',
       };
     }
   }
@@ -522,7 +522,7 @@ export class OciController {
       this.logger.error('Error in getInstancePublicIp:', error);
       return {
         success: false,
-        error: error.message,
+        error: 'Failed to fetch instance public IP',
       };
     }
   }
@@ -548,7 +548,7 @@ export class OciController {
       this.logger.error('Error in startInstance:', error);
       return {
         success: false,
-        error: error.message,
+        error: 'Failed to start instance',
       };
     }
   }
@@ -574,7 +574,7 @@ export class OciController {
       this.logger.error('Error in stopInstance:', error);
       return {
         success: false,
-        error: error.message,
+        error: 'Failed to stop instance',
       };
     }
   }
@@ -600,7 +600,7 @@ export class OciController {
       this.logger.error('Error in restartInstance:', error);
       return {
         success: false,
-        error: error.message,
+        error: 'Failed to restart instance',
       };
     }
   }
@@ -630,7 +630,7 @@ export class OciController {
       this.logger.error('Error in terminateInstance:', error);
       return {
         success: false,
-        error: error.message,
+        error: 'Failed to terminate instance',
       };
     }
   }
@@ -787,7 +787,7 @@ export class OciController {
       );
       return {
         success: false,
-        error: error.message,
+        error: 'Failed to fetch instance metrics',
         data: {
           cpu: [],
           memory: [],

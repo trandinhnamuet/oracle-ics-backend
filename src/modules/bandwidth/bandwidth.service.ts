@@ -287,7 +287,6 @@ export class BandwidthService {
             packageName: vm.package_name,
             vmCreatedAt: vm.vm_created_at,
             bandwidth: {
-              error: error.message,
               bytesOut: 0,
               bytesIn: 0,
               egressTB: 0,
@@ -305,7 +304,7 @@ export class BandwidthService {
       (a, b) => (b.bandwidth.egressTB || 0) - (a.bandwidth.egressTB || 0),
     );
 
-    const validVms = vmData.filter((v) => !(v.bandwidth as any).error);
+    const validVms = vmData.filter((v) => v.bandwidth.dataSource !== 'error');
     const summary = {
       totalVMs: vmData.length,
       vmsWithData: validVms.filter((v) => v.bandwidth.dataSource !== 'none').length,
