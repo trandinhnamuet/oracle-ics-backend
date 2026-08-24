@@ -6,6 +6,7 @@ import {
   UpdateDateColumn,
   Index,
 } from 'typeorm';
+import { Exclude } from 'class-transformer';
 
 @Entity({ name: 'vm_instances', schema: 'oracle' })
 @Index(['user_id', 'lifecycle_state'])
@@ -72,6 +73,9 @@ export class VmInstance {
   @Column({ type: 'text', nullable: true })
   ssh_public_key: string;
 
+  // @Exclude: safe-by-default — never serialized in an HTTP response even if a raw
+  // entity is returned. Encrypted at rest; internal code still reads the property.
+  @Exclude()
   @Column({ type: 'text', nullable: true })
   ssh_private_key_encrypted: string;
 
@@ -79,6 +83,7 @@ export class VmInstance {
    * Initial Windows password, encrypted at rest (see utils/vm-secret.util.ts).
    * Cleared once the owner has revealed it, so it cannot be retrieved again.
    */
+  @Exclude()
   @Column({ type: 'text', nullable: true })
   windows_initial_password: string;
 
@@ -106,6 +111,7 @@ export class VmInstance {
    *   - It is read only by the server-side password-reset path.
    * Revisit if OCI exposes a credential-free password-reset primitive.
    */
+  @Exclude()
   @Column({ type: 'text', nullable: true })
   windows_current_password: string;
 
@@ -128,6 +134,7 @@ export class VmInstance {
    * env password, so the reset path falls back to WINRM_ADMIN_PASSWORD when this
    * is null (backward compatible; no reset breakage).
    */
+  @Exclude()
   @Column({ type: 'text', nullable: true })
   winrm_admin_password: string | null;
 

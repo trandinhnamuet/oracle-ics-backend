@@ -55,8 +55,10 @@ function calculateFingerprint(opensshKey: string): string {
  */
 function encryptPrivateKey(privateKey: string): string {
   const algorithm = 'aes-256-cbc';
-  const encryptionKey = process.env.SSH_KEY_ENCRYPTION_SECRET || '***REMOVED-ENC-KEY***';
-  
+  // Fail closed — never fall back to a hard-coded key literal.
+  const encryptionKey = process.env.SSH_KEY_ENCRYPTION_SECRET;
+  if (!encryptionKey) throw new Error('SSH_KEY_ENCRYPTION_SECRET not configured in environment');
+
   // Use SHA-256 hash to ensure key is exactly 32 bytes (same as util)
   const key = crypto.createHash('sha256').update(encryptionKey).digest();
   

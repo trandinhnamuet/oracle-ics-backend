@@ -4,13 +4,18 @@ import * as crypto from 'crypto';
 
 config();
 
+// Fail closed: never fall back to a hard-coded key literal (a static analyzer flags a
+// string literal used as AES key material, and a fallback key is a real weakness).
+function getEncSecret(): string {
+  const s = process.env.SSH_KEY_ENCRYPTION_SECRET;
+  if (!s) throw new Error('SSH_KEY_ENCRYPTION_SECRET not configured in environment');
+  return s;
+}
+
 function decryptPrivateKey(encryptedPrivateKey: string): string {
   const [ivHex, encryptedHex] = encryptedPrivateKey.split(':');
   const algorithm = 'aes-256-cbc';
-  const key = Buffer.from(
-    process.env.SSH_KEY_ENCRYPTION_SECRET || '***REMOVED-ENC-KEY***',
-    'utf8'
-  ).slice(0, 32);
+  const key = Buffer.from(getEncSecret(), 'utf8').slice(0, 32);
   const iv = Buffer.from(ivHex, 'hex');
   const decipher = crypto.createDecipheriv(algorithm, key, iv);
   let decrypted = decipher.update(encryptedHex, 'hex', 'utf8');
@@ -20,10 +25,7 @@ function decryptPrivateKey(encryptedPrivateKey: string): string {
 
 function encryptPrivateKey(privateKey: string): string {
   const algorithm = 'aes-256-cbc';
-  const key = Buffer.from(
-    process.env.SSH_KEY_ENCRYPTION_SECRET || '***REMOVED-ENC-KEY***',
-    'utf8'
-  ).slice(0, 32);
+  const key = Buffer.from(getEncSecret(), 'utf8').slice(0, 32);
   const iv = crypto.randomBytes(16);
   const cipher = crypto.createCipheriv(algorithm, key, iv);
   let encrypted = cipher.update(privateKey, 'utf8', 'hex');
@@ -62,8 +64,7 @@ async function reEncryptAdminKey() {
 
     // Try to decrypt with current secret
     console.log('🔓 Attempting to decrypt with current SSH_KEY_ENCRYPTION_SECRET...');
-    console.log(`   Secret: ${process.env.SSH_KEY_ENCRYPTION_SECRET}\n`);
-    
+
     try {
       const privateKey = decryptPrivateKey(adminKey.private_key_encrypted);
       console.log('✅ Decryption successful! (Key is already using current secret)\n');
