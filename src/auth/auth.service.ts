@@ -203,7 +203,7 @@ export class AuthService {
       try {
         const userAgentStr: string = request.headers?.['user-agent'] || '';
         const { browser, os, deviceType } = this.parseUserAgent(userAgentStr);
-        const geo = GeolocationUtil.getLocationFromIP(ipv4 || ipv6);
+        const geo = await GeolocationUtil.getLocationFromIP(ipv4 || ipv6);
         await this.adminLoginHistoryService.recordLogin({
           adminId: user.id,
           username: user.email,
@@ -1333,7 +1333,7 @@ export class AuthService {
     if (user.role === 'admin') {
       try {
         const { browser, os, deviceType } = this.parseUserAgent(userAgent);
-        const geo = GeolocationUtil.getLocationFromIP(ipV4 || ipV6);
+        const geo = await GeolocationUtil.getLocationFromIP(ipV4 || ipV6);
         const isNewDevice = await this.adminLoginHistoryService.isNewDevice(user.id, ipV4 || ipV6 || '');
 
         await this.adminLoginHistoryService.recordLogin({
