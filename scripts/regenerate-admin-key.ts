@@ -2,6 +2,7 @@ import { config } from 'dotenv';
 import { Client } from 'pg';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
+import { encryptPrivateKey } from '../src/utils/system-ssh-key.util';
 
 // Load environment variables
 config();
@@ -48,25 +49,6 @@ function calculateFingerprint(opensshKey: string): string {
   const buffer = Buffer.from(base64Key, 'base64');
   const md5 = crypto.createHash('md5').update(buffer).digest('hex');
   return md5.match(/.{2}/g)!.join(':');
-}
-
-/**
- * Encrypt private key (same logic as system-ssh-key.util.ts)
- */
-function encryptPrivateKey(privateKey: string): string {
-  const algorithm = 'aes-256-cbc';
-  // Fail closed — never fall back to a hard-coded key literal.
-  const encryptionKey = process.env.SSH_KEY_ENCRYPTION_SECRET;
-  if (!encryptionKey) throw new Error('SSH_KEY_ENCRYPTION_SECRET not configured in environment');
-
-  // Use SHA-256 hash to ensure key is exactly 32 bytes (same as util)
-  const key = crypto.createHash('sha256').update(encryptionKey).digest();
-  
-  const iv = crypto.randomBytes(16);
-  const cipher = crypto.createCipheriv(algorithm, key, iv);
-  let encrypted = cipher.update(privateKey, 'utf8', 'hex');
-  encrypted += cipher.final('hex');
-  return iv.toString('hex') + ':' + encrypted;
 }
 
 /**
