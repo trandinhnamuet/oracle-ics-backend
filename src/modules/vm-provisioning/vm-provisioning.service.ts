@@ -966,7 +966,7 @@ export class VmProvisioningService {
         user_id: userId,
         compartment_ocid: existingOciCompartment.id,
         compartment_name: compartmentName,
-        region: 'ap-tokyo-1',
+        region: this.ociService.getRegionId(),
         lifecycle_state: 'ACTIVE',
         created_at: new Date(),
       }) as UserCompartment;
@@ -1008,7 +1008,7 @@ export class VmProvisioningService {
       user_id: userId,
       compartment_ocid: ociCompartmentId,
       compartment_name: resolvedCompartmentName,
-      region: 'ap-tokyo-1',
+      region: this.ociService.getRegionId(),
       lifecycle_state: 'ACTIVE',
       created_at: new Date(),
     }) as UserCompartment;

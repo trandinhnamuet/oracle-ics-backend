@@ -307,6 +307,16 @@ export class OciService {
   }
 
   /**
+   * Region hiện hành, đọc từ ~/.oci/config (profile DEFAULT).
+   * Giá trị này được lưu vào user_compartments.region rồi truyền xuống vm_instances.region,
+   * và cuối cùng dùng để chọn regional endpoint cho Monitoring (xem getMonitoringClient).
+   * Trước đây bị hardcode 'ap-tokyo-1' — sai region thì query metrics trả items: [].
+   */
+  getRegionId(): string {
+    return this.provider.getRegion().regionId;
+  }
+
+  /**
    * Create a compartment for a user
    * @param name - Name of the compartment
    * @param description - Description of the compartment
