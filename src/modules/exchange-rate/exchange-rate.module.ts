@@ -1,16 +1,14 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { ScheduleModule } from '@nestjs/schedule';
 import { ExchangeRate } from './exchange-rate.entity';
 import { ExchangeRateService } from './exchange-rate.service';
 import { ExchangeRateScheduler } from './exchange-rate.scheduler';
 import { ExchangeRateController } from './exchange-rate.controller';
 
 @Module({
-  imports: [
-    TypeOrmModule.forFeature([ExchangeRate]),
-    ScheduleModule.forRoot(),
-  ],
+  // ScheduleModule.forRoot() lives in SchedulerModule only. Registering it here too
+  // created a second cron explorer, so every @Cron in the app fired twice.
+  imports: [TypeOrmModule.forFeature([ExchangeRate])],
   controllers: [ExchangeRateController],
   providers: [ExchangeRateService, ExchangeRateScheduler],
   exports: [ExchangeRateService],

@@ -12,11 +12,10 @@ export class ExchangeRateController {
     @Query('currency_to') currencyTo?: string,
     @Query('direction') direction?: string,
   ): Promise<ExchangeRate[]> {
-    const today = new Date().toISOString().slice(0, 10);
-    const where: any = { date: today };
-    if (currencyFrom) where.currency_from = currencyFrom;
-    if (currencyTo) where.currency_to = currencyTo;
-    if (direction) where.direction = direction;
-    return this.exchangeRateService['exchangeRateRepository'].find({ where });
+    return this.exchangeRateService.getTodayRates({
+      currency_from: currencyFrom,
+      currency_to: currencyTo,
+      direction,
+    });
   }
 }

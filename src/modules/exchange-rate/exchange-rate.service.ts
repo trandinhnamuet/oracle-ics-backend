@@ -14,6 +14,41 @@ export class ExchangeRateService {
     private readonly exchangeRateRepository: Repository<ExchangeRate>,
   ) {}
 
+  // Rates are keyed by calendar day in Vietnam: the cron runs at 01:00 Asia/Ho_Chi_Minh
+  // and the site is read during Vietnamese business hours. Keying by the UTC date left
+  // /exchange-rate/today empty from 07:00 to 01:00 VN every day.
+  static todayKey(): string {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Ho_Chi_Minh', year: 'numeric', month: '2-digit', day: '2-digit',
+    }).format(new Date());
+  }
+
+  private async upsertRate(from: string, to: string, date: string, direction: string, rate: number) {
+    const existing = await this.exchangeRateRepository.findOne({
+      where: { currency_from: from, currency_to: to, date, direction },
+    });
+    if (existing) {
+      existing.rate = rate;
+      await this.exchangeRateRepository.save(existing);
+    } else {
+      await this.exchangeRateRepository.save({ currency_from: from, currency_to: to, date, direction, rate });
+    }
+  }
+
+  /**
+   * Today's rates (Vietnam calendar day). If today's fetch has not run yet, fall back to
+   * the most recent day on record rather than returning an empty list.
+   */
+  async getTodayRates(filters: { currency_from?: string; currency_to?: string; direction?: string }): Promise<ExchangeRate[]> {
+    const where: Record<string, string> = {};
+    for (const [k, v] of Object.entries(filters)) if (v) where[k] = v;
+    const rows = await this.exchangeRateRepository.find({ where: { ...where, date: ExchangeRateService.todayKey() } });
+    if (rows.length) return rows;
+    const latest = await this.exchangeRateRepository.findOne({ where, order: { date: 'DESC' } });
+    if (!latest) return [];
+    return this.exchangeRateRepository.find({ where: { ...where, date: latest.date } });
+  }
+
   // Hàm lấy tỉ giá từ Vietcombank và lưu vào DB
   async fetchAndSaveRates() {
     try {
@@ -33,24 +68,12 @@ export class ExchangeRateService {
       // Lấy giá mua và bán, loại bỏ dấu phẩy
       const buy = parseFloat(usdRate.Buy.replace(/,/g, ''));
       const sell = parseFloat(usdRate.Sell.replace(/,/g, ''));
-      const today = new Date().toISOString().slice(0, 10);
+      const today = ExchangeRateService.todayKey();
       // Lưu USD/VND giá mua
-      await this.exchangeRateRepository.save({
-        currency_from: 'USD',
-        currency_to: 'VND',
-        date: today,
-        rate: buy,
-        direction: 'buy',
-      });
+      await this.upsertRate('USD', 'VND', today, 'buy', buy);
       // Lưu USD/VND giá bán
       if (sell) {
-        await this.exchangeRateRepository.save({
-          currency_from: 'USD',
-          currency_to: 'VND',
-          date: today,
-          rate: sell,
-          direction: 'sell',
-        });
+        await this.upsertRate('USD', 'VND', today, 'sell', sell);
       }
       this.logger.log(`USD/VND rates updated: buy=${buy}, sell=${sell}`);
     } catch (error) {
