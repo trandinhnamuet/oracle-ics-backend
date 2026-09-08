@@ -534,11 +534,14 @@ export class VmSubscriptionService implements OnModuleInit, OnModuleDestroy {
       
       // Update subscription status to failed
       try {
+        // Keep the real cause (e.g. the OCI validation message) so failures can be
+        // diagnosed from the DB instead of a bare 'Provisioning failed'.
+        const reason = String((error as any)?.message || 'Provisioning failed').slice(0, 1000);
         subscription.configuration_status = 'failed';
-        subscription.provisioning_error = 'Provisioning failed';
+        subscription.provisioning_error = reason;
         await this.subscriptionRepo.update(subscription.id, {
           configuration_status: 'failed',
-          provisioning_error: 'Provisioning failed',
+          provisioning_error: reason,
         });
       } catch (saveError) {
         this.logger.error('Failed to update subscription status:', saveError);
@@ -1992,10 +1995,12 @@ net user ${windowsCredentials.username} *</div>
     if (subscription.status === 'pending') {
       throw new BadRequestException('Subscription payment is pending');
     }
-    if (subscription.status === 'cancelled') {
+    // A cancelled/expired subscription can still own an instance; the customer must be
+    // able to TERMINATE it and stop paying. Every other action stays blocked.
+    if (subscription.status === 'cancelled' && action !== VmActionType.TERMINATE) {
       throw new BadRequestException('Subscription is cancelled');
     }
-    if (subscription.status === 'expired') {
+    if (subscription.status === 'expired' && action !== VmActionType.TERMINATE) {
       throw new BadRequestException('Subscription has expired');
     }
     if (subscription.status === 'suspended') {

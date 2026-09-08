@@ -189,6 +189,7 @@ export class VmProvisioningService {
         vcn_id: vcnResource.vcn_ocid,
         subnet_id: vcnResource.subnet_ocid,
         availability_domain: availabilityDomain,
+        region: this.ociService.getRegionId(),
         subscription_id: createVmDto.subscriptionId,
         winrm_admin_password: encryptVmSecret(winrmAdminPassword),
         vm_started_at: null as any,
@@ -629,6 +630,23 @@ export class VmProvisioningService {
   /**
    * Perform action on VM (start, stop, restart, terminate)
    */
+  // OCI throttles bursts of control-plane calls (HTTP 429 "Too many requests for the
+  // user"). A bulk STOP/TERMINATE surfaced that as a 500 with the DB left unchanged.
+  private async withOciRetry<T>(fn: () => Promise<T>, label: string, attempts = 4): Promise<T> {
+    let delayMs = 2000;
+    for (let i = 1; ; i++) {
+      try {
+        return await fn();
+      } catch (e: any) {
+        const throttled = e?.statusCode === 429 || /too many requests/i.test(e?.message || '');
+        if (!throttled || i >= attempts) throw e;
+        this.logger.warn(`OCI throttled ${label} (attempt ${i}/${attempts}) — retrying in ${delayMs}ms`);
+        await new Promise((r) => setTimeout(r, delayMs));
+        delayMs *= 2;
+      }
+    }
+  }
+
   async performVmAction(userId: number, vmId: number, action: VmActionType): Promise<any> {
     const vm = await this.vmInstanceRepo.findOne({
       where: { id: vmId, user_id: userId },
@@ -746,7 +764,7 @@ export class VmProvisioningService {
       let result;
       switch (action) {
         case VmActionType.START:
-          result = await this.ociService.startInstance(vm.instance_id);
+          result = await this.withOciRetry(() => this.ociService.startInstance(vm.instance_id), 'START');
           vm.lifecycle_state = result.lifecycleState;
           // Set vm_started_at when VM transitions to RUNNING
           if (result.lifecycleState === 'RUNNING' && !vm.vm_started_at) {
@@ -755,12 +773,12 @@ export class VmProvisioningService {
           break;
 
         case VmActionType.STOP:
-          result = await this.ociService.stopInstance(vm.instance_id);
+          result = await this.withOciRetry(() => this.ociService.stopInstance(vm.instance_id), 'STOP');
           vm.lifecycle_state = result.lifecycleState;
           break;
 
         case VmActionType.RESTART:
-          result = await this.ociService.restartInstance(vm.instance_id);
+          result = await this.withOciRetry(() => this.ociService.restartInstance(vm.instance_id), 'RESTART');
           vm.lifecycle_state = result.lifecycleState;
           // Update vm_started_at when restarting
           if (result.lifecycleState === 'RUNNING') {
@@ -769,7 +787,7 @@ export class VmProvisioningService {
           break;
 
         case VmActionType.TERMINATE:
-          result = await this.ociService.terminateInstance(vm.instance_id, false);
+          result = await this.withOciRetry(() => this.ociService.terminateInstance(vm.instance_id, false), 'TERMINATE');
           vm.lifecycle_state = 'TERMINATING';
           break;
 
@@ -950,10 +968,13 @@ export class VmProvisioningService {
       throw new NotFoundException(`User with ID ${userId} not found`);
     }
 
+    // OCI compartment names only allow [a-zA-Z0-9.-_]. Replacing just '@' and '.'
+    // let e.g. the '+' of Gmail plus-addressing through, and createCompartment failed
+    // with a bare 500. Collapse every other run of characters into a single '-'.
     const emailPart = user.email
       .toLowerCase()
-      .replace('@', '-')
-      .replace(/\./g, '-');
+      .replace(/[^a-z0-9_]+/g, '-')
+      .replace(/^-+|-+$/g, '');
     const compartmentPrefix = process.env.COMPARTMENT_PREFIX?.trim();
     const compartmentName = compartmentPrefix ? `${compartmentPrefix}-${emailPart}` : emailPart;
     const compartmentDesc = `Compartment for user ${user.email}`;
