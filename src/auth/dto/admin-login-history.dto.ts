@@ -1,25 +1,28 @@
 import { Type } from 'class-transformer';
-import { IsOptional, IsNumber, IsString, IsEnum, IsDateString } from 'class-validator';
+import { IsOptional, IsNumber, IsString, IsEnum, IsDateString, IsBoolean, IsDate } from 'class-validator';
 
+// The global ValidationPipe runs with whitelist + forbidNonWhitelisted, so a DTO with
+// no class-validator decorators rejects every property ("property adminId should not
+// exist") and the endpoint was unusable.
 export class CreateAdminLoginHistoryDto {
-  adminId?: number | null;
-  username: string;
-  role: string;
-  loginTime: Date;
-  loginStatus: 'success' | 'failed' | 'locked';
-  ipV4?: string | null;
-  ipV6?: string | null;
-  country?: string | null;
-  city?: string | null;
-  isp?: string | null;
-  browser?: string | null;
-  os?: string | null;
-  deviceType?: 'desktop' | 'mobile' | 'tablet' | 'unknown' | null;
-  userAgent?: string | null;
-  twoFaStatus?: 'pending' | 'passed' | 'failed' | 'not_enabled';
-  sessionId?: string;
-  isNewDevice: boolean;
-  failedAttemptsBeforeSuccess?: number;
+  @IsOptional() @IsNumber() adminId?: number | null;
+  @IsString() username: string;
+  @IsString() role: string;
+  @Type(() => Date) @IsDate() loginTime: Date;
+  @IsEnum(['success', 'failed', 'locked']) loginStatus: 'success' | 'failed' | 'locked';
+  @IsOptional() @IsString() ipV4?: string | null;
+  @IsOptional() @IsString() ipV6?: string | null;
+  @IsOptional() @IsString() country?: string | null;
+  @IsOptional() @IsString() city?: string | null;
+  @IsOptional() @IsString() isp?: string | null;
+  @IsOptional() @IsString() browser?: string | null;
+  @IsOptional() @IsString() os?: string | null;
+  @IsOptional() @IsEnum(['desktop', 'mobile', 'tablet', 'unknown']) deviceType?: 'desktop' | 'mobile' | 'tablet' | 'unknown' | null;
+  @IsOptional() @IsString() userAgent?: string | null;
+  @IsOptional() @IsEnum(['pending', 'passed', 'failed', 'not_enabled']) twoFaStatus?: 'pending' | 'passed' | 'failed' | 'not_enabled';
+  @IsOptional() @IsString() sessionId?: string;
+  @IsBoolean() isNewDevice: boolean;
+  @IsOptional() @IsNumber() failedAttemptsBeforeSuccess?: number;
 }
 
 export class AdminLoginHistoryQueryDto {

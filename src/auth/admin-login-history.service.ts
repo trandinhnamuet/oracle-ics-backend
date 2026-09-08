@@ -274,19 +274,20 @@ export class AdminLoginHistoryService {
   /**
    * Update logout time for a session
    */
-  async recordLogout(sessionId: string, logoutTime: Date): Promise<void> {
+  /** @returns false when no login record exists for the session. */
+  async recordLogout(sessionId: string, logoutTime: Date): Promise<boolean> {
     const loginRecord = await this.adminLoginHistoryRepository.findOne({
       where: { sessionId },
     });
+    if (!loginRecord) return false;
 
-    if (loginRecord) {
-      const sessionDuration = Math.floor(
-        (logoutTime.getTime() - loginRecord.loginTime.getTime()) / (1000 * 60),
-      );
-      loginRecord.logoutTime = logoutTime;
-      loginRecord.sessionDurationMinutes = sessionDuration;
-      await this.adminLoginHistoryRepository.save(loginRecord);
-    }
+    const sessionDuration = Math.floor(
+      (logoutTime.getTime() - loginRecord.loginTime.getTime()) / (1000 * 60),
+    );
+    loginRecord.logoutTime = logoutTime;
+    loginRecord.sessionDurationMinutes = sessionDuration;
+    await this.adminLoginHistoryRepository.save(loginRecord);
+    return true;
   }
 
   /**

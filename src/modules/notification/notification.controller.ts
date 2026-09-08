@@ -10,6 +10,7 @@ import {
   ParseIntPipe,
   HttpCode,
   HttpStatus,
+  NotFoundException,
 } from '@nestjs/common';
 import { NotificationService } from './notification.service';
 import { JwtAuthGuard } from '../../auth/jwt-auth.guard';
@@ -54,7 +55,8 @@ export class NotificationController {
   @HttpCode(HttpStatus.OK)
   async markRead(@Param('id', ParseIntPipe) id: number, @Req() req: any) {
     const result = await this.notificationService.markRead(id, req.user.id);
-    return result ?? { message: 'Notification not found or not owned by user' };
+    if (!result) throw new NotFoundException('Notification not found or not owned by user');
+    return result;
   }
 
   /** DELETE /notifications/clear-read */

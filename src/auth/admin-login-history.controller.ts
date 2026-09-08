@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Param, Query, UseGuards, Logger, UseFilters } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, Query, UseGuards, Logger, UseFilters, NotFoundException, BadRequestException } from '@nestjs/common';
 import { AdminLoginHistoryService } from './admin-login-history.service';
 import { JwtAuthGuard } from './jwt-auth.guard';
 import { AdminGuard } from './admin.guard';
@@ -96,9 +96,13 @@ export class AdminLoginHistoryController {
    */
   @Post(':sessionId/logout')
   @UseGuards(JwtAuthGuard, AdminGuard)
-  async recordLogout(@Param('sessionId') sessionId: string, @Body() body: { logoutTime: string }) {
+  async recordLogout(@Param('sessionId') sessionId: string, @Body() body?: { logoutTime?: string }) {
     this.logger.log(`Recording logout for session ${sessionId}`);
-    await this.adminLoginHistoryService.recordLogout(sessionId, new Date(body.logoutTime));
+    // A missing body used to throw a TypeError (500); an unknown session silently 200'd.
+    const logoutAt = body?.logoutTime ? new Date(body.logoutTime) : new Date();
+    if (Number.isNaN(logoutAt.getTime())) throw new BadRequestException('logoutTime must be an ISO-8601 date string');
+    const found = await this.adminLoginHistoryService.recordLogout(sessionId, logoutAt);
+    if (!found) throw new NotFoundException(`Login session ${sessionId} not found`);
     return { success: true };
   }
 }
