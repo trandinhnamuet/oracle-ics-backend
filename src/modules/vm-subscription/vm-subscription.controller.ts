@@ -10,8 +10,7 @@ import {
   Headers,
   HttpStatus,
   HttpCode,
-  Logger,
-} from '@nestjs/common';
+  Logger, ParseUUIDPipe, } from '@nestjs/common';
 import { JwtAuthGuard } from '../../auth/jwt-auth.guard';
 import { VmSubscriptionService } from './vm-subscription.service';
 import { ConfigureVmDto, RequestNewKeyDto, ResetWindowsPasswordDto, SendActionOtpDto } from './dto';
@@ -30,7 +29,7 @@ export class VmSubscriptionController {
   @Get(':subscriptionId')
   async getSubscriptionVm(
     @Request() req,
-    @Param('subscriptionId') subscriptionId: string,
+    @Param('subscriptionId', new ParseUUIDPipe({ errorHttpStatusCode: 400 })) subscriptionId: string,
   ) {
     const userId = req.user.id;
     const role = req.user.role;
@@ -49,7 +48,7 @@ export class VmSubscriptionController {
   @HttpCode(HttpStatus.OK)
   async revealInitialWindowsPassword(
     @Request() req,
-    @Param('subscriptionId') subscriptionId: string,
+    @Param('subscriptionId', new ParseUUIDPipe({ errorHttpStatusCode: 400 })) subscriptionId: string,
   ) {
     return this.vmSubscriptionService.revealInitialWindowsPassword(
       subscriptionId,
@@ -66,7 +65,7 @@ export class VmSubscriptionController {
   @HttpCode(HttpStatus.OK)
   async configureVm(
     @Request() req,
-    @Param('subscriptionId') subscriptionId: string,
+    @Param('subscriptionId', new ParseUUIDPipe({ errorHttpStatusCode: 400 })) subscriptionId: string,
     @Body() configureVmDto: ConfigureVmDto,
     @Headers('accept-language') acceptLanguage?: string,
   ) {
@@ -90,7 +89,7 @@ export class VmSubscriptionController {
   @HttpCode(HttpStatus.OK)
   async sendActionOtp(
     @Request() req,
-    @Param('subscriptionId') subscriptionId: string,
+    @Param('subscriptionId', new ParseUUIDPipe({ errorHttpStatusCode: 400 })) subscriptionId: string,
     @Body() body: SendActionOtpDto,
     @Headers('accept-language') acceptLanguage?: string,
   ) {
@@ -112,7 +111,7 @@ export class VmSubscriptionController {
   @HttpCode(HttpStatus.OK)
   async requestNewKey(
     @Request() req,
-    @Param('subscriptionId') subscriptionId: string,
+    @Param('subscriptionId', new ParseUUIDPipe({ errorHttpStatusCode: 400 })) subscriptionId: string,
     @Body() requestNewKeyDto: RequestNewKeyDto,
     @Headers('accept-language') acceptLanguage?: string,
   ) {
@@ -138,7 +137,7 @@ export class VmSubscriptionController {
   @HttpCode(HttpStatus.OK)
   async performVmAction(
     @Request() req,
-    @Param('subscriptionId') subscriptionId: string,
+    @Param('subscriptionId', new ParseUUIDPipe({ errorHttpStatusCode: 400 })) subscriptionId: string,
     @Body() vmActionDto: VmActionDto,
   ) {
     const userId = req.user.id;
@@ -165,7 +164,7 @@ export class VmSubscriptionController {
   @HttpCode(HttpStatus.ACCEPTED)
   async resetWindowsPassword(
     @Request() req,
-    @Param('subscriptionId') subscriptionId: string,
+    @Param('subscriptionId', new ParseUUIDPipe({ errorHttpStatusCode: 400 })) subscriptionId: string,
     @Body() body: ResetWindowsPasswordDto,
   ) {
     this.logger.log(
@@ -189,7 +188,7 @@ export class VmSubscriptionController {
   @Get(':subscriptionId/reset-windows-password-status/:jobId')
   async getResetWindowsPasswordStatus(
     @Request() req,
-    @Param('subscriptionId') subscriptionId: string,
+    @Param('subscriptionId', new ParseUUIDPipe({ errorHttpStatusCode: 400 })) subscriptionId: string,
     @Param('jobId') jobId: string,
   ) {
     const isAdmin = req.user?.role === 'admin';
@@ -220,7 +219,7 @@ export class VmSubscriptionController {
   @HttpCode(HttpStatus.OK)
   async deleteVmOnly(
     @Request() req,
-    @Param('subscriptionId') subscriptionId: string,
+    @Param('subscriptionId', new ParseUUIDPipe({ errorHttpStatusCode: 400 })) subscriptionId: string,
   ) {
     const userId = req.user.id;
     const userRole = req.user.role;

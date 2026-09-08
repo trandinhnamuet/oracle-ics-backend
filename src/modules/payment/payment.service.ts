@@ -156,12 +156,16 @@ export class PaymentService {
         if (!claim.affected) {
           return; // a concurrent completion already credited this payment
         }
-        const wallet = await manager.findOne(UserWallet, {
+        let wallet = await manager.findOne(UserWallet, {
           where: { user_id: payment.user_id },
           lock: { mode: 'pessimistic_write' },
         });
         if (!wallet) {
-          throw new NotFoundException(`User wallet for user ${payment.user_id} not found`);
+          // Wallets are created lazily on the user's first wallet read. A deposit accepted
+          // (admin or webhook) before that read used to 404 here and leave the payment
+          // stuck in 'pending'. Create the wallet inside the same transaction instead.
+          wallet = await manager.save(manager.create(UserWallet, { user_id: payment.user_id, balance: 0, is_active: true }));
+          this.logger.log(`Created wallet on first deposit for user ${payment.user_id}`);
         }
         const balanceAfter = parseFloat(wallet.balance.toString()) + Number(payment.amount);
         wallet.balance = balanceAfter;
