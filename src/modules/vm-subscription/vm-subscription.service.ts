@@ -525,6 +525,10 @@ export class VmSubscriptionService implements OnModuleInit, OnModuleDestroy {
           privateKey: userSshKeyPair.privateKey,
           fingerprint: userSshKeyPair.fingerprint,
         } : undefined,
+        // Linux VMs are always reached as root (cloud-init installs the user key into
+        // /root/.ssh/authorized_keys). Returned here so the UI never derives it from the
+        // OS name — that duplication is what silently regressed the root login before.
+        sshUsername: isWindows ? undefined : 'root',
         message: isWindowsPending 
           ? 'Máy ảo đã tạo thành công. Mật khẩu ban đầu đang được lấy (5-10 phút), sẽ hiển thị trong trang quản lý VM.'
           : 'Máy ảo đã tạo thành công. Vui lòng lưu lại thông tin truy cập đang hiển thị trên màn hình.',
