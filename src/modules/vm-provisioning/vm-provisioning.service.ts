@@ -429,10 +429,13 @@ export class VmProvisioningService {
 
       let publicIp: string | null = null;
       try {
-        publicIp = await this.ociService.getInstancePublicIp(
-          launchCompartmentId,
-          ociInstance.id,
-        );
+        // The VNIC usually gets its IP a few seconds after RUNNING. A single attempt left
+        // public_ip null and the UI printed "ubuntu@YOUR_IP"; retry up to 8 times (~40s).
+        for (let attempt = 1; attempt <= 8 && !publicIp; attempt++) {
+          if (attempt > 1) await this.sleep(5000);
+          publicIp = await this.ociService.getInstancePublicIp(launchCompartmentId, ociInstance.id);
+          if (!publicIp) this.logger.log(`⏳ Public IP not available yet (attempt ${attempt}/8)`);
+        }
         
         if (publicIp) {
           savedVm.public_ip = publicIp;
