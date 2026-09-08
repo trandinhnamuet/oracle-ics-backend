@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, ConflictException, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource, EntityManager } from 'typeorm';
 import { UserWallet } from '../../entities/user-wallet.entity';
@@ -218,6 +218,9 @@ export class UserWalletService {
       lock: { mode: 'pessimistic_write' },
     });
     if (!wallet) throw new NotFoundException(`Wallet not found for user ${userId}`);
+    // Admin-deactivated wallets must not be able to pay; every purchase/renewal debits
+    // through here, so this is the single enforcement point.
+    if (wallet.is_active === false) throw new ForbiddenException('Wallet is deactivated');
     const current = parseFloat(wallet.balance.toString());
     if (current < amt) throw new ConflictException('Insufficient balance');
     wallet.balance = current - amt;

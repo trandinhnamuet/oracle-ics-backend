@@ -594,8 +594,29 @@ export class SubscriptionService {
   }
 
   async cancel(id: string): Promise<Subscription> {
-    await this.findOne(id);
-    await this.subscriptionRepository.update({ id }, { status: 'cancelled' });
+    // Cancelling releases the machine — there is no "keep running until end_date" tier,
+    // and a cancelled subscription used to block TERMINATE, leaving the instance running
+    // and billing with no way out. Terminate now (best-effort; the customer can still
+    // TERMINATE via the VM action and the hourly sweep is the backstop).
+    const subscription = await this.findOne(id);
+    await this.subscriptionRepository.update({ id }, { status: 'cancelled', auto_renew: false });
+    if (subscription.vm_instance_id) {
+      try {
+        const vm = await this.vmInstanceRepository.findOne({ where: { id: subscription.vm_instance_id } });
+        if (
+          vm?.instance_id &&
+          vm.instance_id !== 'PENDING' &&
+          !['TERMINATED', 'TERMINATING'].includes(vm.lifecycle_state)
+        ) {
+          await this.ociService.terminateInstance(vm.instance_id, false);
+          vm.lifecycle_state = 'TERMINATING';
+          await this.vmInstanceRepository.save(vm);
+          this.logger.log(`[cancel] terminated VM ${vm.instance_id} for cancelled subscription ${id}`);
+        }
+      } catch (e: any) {
+        this.logger.warn(`[cancel] failed to terminate VM for subscription ${id}: ${e?.message ?? e}`);
+      }
+    }
     return await this.findOne(id);
   }
 
