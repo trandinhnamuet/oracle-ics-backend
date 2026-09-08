@@ -5,7 +5,7 @@ import * as oci from 'oci-sdk';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { redactWinRmOutput } from '../../utils/winrm-log.util';
 
 // Backend admin account credentials injected into Windows VM userdata and used for WinRM auth.
@@ -41,6 +41,22 @@ export class OciService {
     @InjectDataSource() private dataSource: DataSource,
   ) {
     this.initializeOciClients();
+    this.checkWinrmHelperDeps();
+  }
+
+  // Windows password reset shells out to scripts/winrm-password-reset.py, which needs
+  // pywinrm. When it was missing every reset silently fell through to the slow fallback
+  // strategies (~10 min). Surface it at boot instead.
+  private checkWinrmHelperDeps() {
+    try {
+      const r = spawnSync('python3', ['-c', 'import winrm, requests_ntlm'], { encoding: 'utf8', timeout: 10_000 });
+      if (r.status !== 0) {
+        const last = (r.stderr || '').trim().split('\n').pop();
+        this.logger.warn(`⚠️ pywinrm is not importable by python3 (${last}). Windows password reset will use fallback strategies. Run: pip3 install -r requirements.txt --break-system-packages`);
+      }
+    } catch (e: any) {
+      this.logger.warn(`⚠️ Could not verify pywinrm: ${e?.message}`);
+    }
   }
 
   private initializeOciClients() {
@@ -999,12 +1015,14 @@ ssh_pwauth: false
 disable_root: false
 
 # First boot commands: only configure sudo (no firewall manipulation - OCI security lists handle port access)
+# Each command is single-quoted: an unquoted "NOPASSWD: ALL" is parsed by YAML as a
+# mapping, which made cloud-init reject the whole runcmd module on every Linux VM.
 runcmd:
-  - echo "opc ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/90-cloud-init-users
-  - echo "ubuntu ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers.d/90-cloud-init-users
-  - echo "centos ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers.d/90-cloud-init-users
-  - echo "rocky ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers.d/90-cloud-init-users
-  - echo "root ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers.d/90-cloud-init-users
+  - 'echo "opc ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/90-cloud-init-users'
+  - 'echo "ubuntu ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers.d/90-cloud-init-users'
+  - 'echo "centos ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers.d/90-cloud-init-users'
+  - 'echo "rocky ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers.d/90-cloud-init-users'
+  - 'echo "root ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers.d/90-cloud-init-users'
   - chmod 0440 /etc/sudoers.d/90-cloud-init-users
   - sed -i 's/^#*PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config 2>/dev/null; grep -q 'PermitRootLogin' /etc/ssh/sshd_config || echo 'PermitRootLogin prohibit-password' >> /etc/ssh/sshd_config
   - systemctl reload sshd || service sshd reload || true
@@ -3272,6 +3290,11 @@ chmod 600 ~/.ssh/authorized_keys`;
             this.logger.warn(`⚠️ WinRM: Windows rejected the password — propagating to caller`);
             throw winrmErr;
           }
+          if (/python dependency missing/.test(winrmErr.message || '')) {
+            // Retrying cannot help and each retry waited 30-45s before giving up.
+            this.logger.error(`❌ ${winrmErr.message} — not retrying WinRM`);
+            break;
+          }
           const isAuthError = winrmErr.message && (
             winrmErr.message.toLowerCase().includes('credential') ||
             winrmErr.message.toLowerCase().includes('rejected') ||
@@ -3650,7 +3673,10 @@ chmod 600 ~/.ssh/authorized_keys`;
     setMustChange: boolean = true,
   ): Promise<void> {
     this.logger.log(`🔑 Opening SSH port 22 in security list: ${securityListId}`);
-    await this.ensureSshPortOpen(securityListId);
+    // The security list is shared by every VM in the customer's compartment. Only remove
+    // the rule afterwards if THIS call added it — unconditionally removing it cut SSH (and
+    // the web terminal) to all of the customer's Linux VMs after a Windows password reset.
+    const openedHere = await this.ensureSshPortOpen(securityListId);
 
     try {
       // Wait for security list to propagate
@@ -3771,11 +3797,15 @@ chmod 600 ~/.ssh/authorized_keys`;
 
       throw lastError;
     } finally {
-      try {
-        await this.removeSshPort(securityListId);
-        this.logger.log(`🔒 SSH port 22 rule removed from security list`);
-      } catch (cleanErr: any) {
-        this.logger.warn(`⚠️ Failed to remove SSH port 22 rule: ${cleanErr.message}`);
+      if (openedHere) {
+        try {
+          await this.removeSshPort(securityListId);
+          this.logger.log(`🔒 SSH port 22 rule removed from security list`);
+        } catch (cleanErr: any) {
+          this.logger.warn(`⚠️ Failed to remove SSH port 22 rule: ${cleanErr.message}`);
+        }
+      } else {
+        this.logger.log('🔒 SSH port 22 was already open before the reset — leaving the shared rule in place');
       }
     }
   }
@@ -3783,7 +3813,8 @@ chmod 600 ~/.ssh/authorized_keys`;
   /**
    * Temporarily open SSH port 22 in a security list.
    */
-  private async ensureSshPortOpen(securityListId: string): Promise<void> {
+  /** @returns true if this call added the rule, false if port 22 was already open. */
+  private async ensureSshPortOpen(securityListId: string): Promise<boolean> {
     const securityList = await this.getSecurityList(securityListId);
 
     const alreadyOpen = securityList.ingressSecurityRules.some((rule: any) =>
@@ -3794,7 +3825,7 @@ chmod 600 ~/.ssh/authorized_keys`;
 
     if (alreadyOpen) {
       this.logger.log('✅ SSH port 22 is already open');
-      return;
+      return false;
     }
 
     const newIngressRules = [
@@ -3819,6 +3850,7 @@ chmod 600 ~/.ssh/authorized_keys`;
     });
 
     this.logger.log('✅ SSH port 22 opened');
+    return true;
   }
 
   /**
@@ -4035,6 +4067,10 @@ chmod 600 ~/.ssh/authorized_keys`;
           }
         }
       } catch { /* ignore parse error */ }
+      if (/No module named|ModuleNotFoundError/.test(stderr || '')) {
+        const mod = (stderr.match(/No module named '?([\w.]+)'?/) || [])[1] || 'pywinrm';
+        throw new Error(`WinRM helper cannot run: python dependency missing (${mod}). Install with: pip3 install -r requirements.txt --break-system-packages`);
+      }
       if (isPasswordRejected) {
         throw new BadRequestException(
           `Windows rejected the new password: ${errorMsg.trim()}. ` +
