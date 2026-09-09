@@ -4009,7 +4009,12 @@ chmod 600 ~/.ssh/authorized_keys`;
       // Use the VM's per-VM icsreset password; legacy VMs (provisioned before
       // per-VM passwords) have none stored, so fall back to the shared env value
       // they were baked with — keeps their reset working.
-      adminPassword: adminPassword || getWinrmAdminPassword(),
+      //
+      // Resolved without getWinrmAdminPassword(): that throws when the env var is
+      // unset (it is, in prod), which would abort this strategy outright even when
+      // we hold opc's own password and the opc tier could have succeeded. The helper
+      // already skips the admin tier when no admin password is supplied.
+      adminPassword: adminPassword || WINRM_ADMIN_PASSWORD || null,
     });
 
     const TIMEOUT_MS = 90_000;
