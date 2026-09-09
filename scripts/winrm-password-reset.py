@@ -166,6 +166,26 @@ if admin_password:
         # Auth error on admin — fall through to opc fallback
 
 # ─── Step 2: OPC fallback ────────────────────────────────────────────────────
+# Only meaningful when we actually hold opc's current password. The backend passes
+# an empty string for VMs whose stored password was erased (revealed or reset), and
+# authenticating with an empty password just burns a full transport timeout cascade
+# per attempt before failing, so skip straight to reporting the admin-tier error.
+if not current_password:
+    last_error = 'no opc password available and icsreset admin auth did not succeed'
+    if all_attempt_errors:
+        print(json.dumps({
+            'error': f'All auth transports failed. Last error: {last_error}',
+            'exitCode': -1,
+            'attempts': all_attempt_errors,
+        }))
+    else:
+        print(json.dumps({
+            'error': 'no icsreset admin password supplied and no opc password available',
+            'exitCode': -1,
+            'attempts': [],
+        }))
+    sys.exit(1)
+
 result, error_info = try_winrm(username, current_password, opc_ps, 'opc')
 if result is not None:
     print(json.dumps(result))

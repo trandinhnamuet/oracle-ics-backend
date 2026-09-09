@@ -1504,6 +1504,10 @@ export class VmProvisioningService {
               // Save new password to DB only after successful reset — prevents frontend from
               // showing the intermediate OCI password before the reset completes.
               freshVm.windows_initial_password = encryptVmSecret(newPassword)!;
+              // Also keep it as the *current* password. windows_initial_password is
+              // erased when the customer reveals it once, and without this column a
+              // later portal reset has no opc credential left to authenticate with.
+              freshVm.windows_current_password = encryptVmSecret(newPassword)!;
               freshVm.windows_password_initialized = true;
               await this.vmInstanceRepo.save(freshVm);
               emailPassword = newPassword;
@@ -1514,6 +1518,7 @@ export class VmProvisioningService {
               // Also mark as initialized so the recovery path in getSubscriptionVm knows the background
               // job finished and the stored password (OCI initial) is the current valid password.
               freshVm.windows_initial_password = encryptVmSecret(credentials.password)!;
+              freshVm.windows_current_password = encryptVmSecret(credentials.password)!;
               freshVm.windows_password_initialized = true;
               await this.vmInstanceRepo.save(freshVm);
             }

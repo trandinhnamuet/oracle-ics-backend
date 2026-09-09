@@ -3249,11 +3249,21 @@ chmod 600 ~/.ssh/authorized_keys`;
       }
     }
 
-    // ── Strategy 1: WinRM (primary — uses current password from DB) ──
+    // ── Strategy 1: WinRM (primary) ──
     // Always attempt WinRM when we have the required info.
     // OCI Windows images (including 2016) have WinRM HTTPS enabled by default on port 5986.
-    // The initial password from OCI credential retrieval works with NTLM auth.
-    if (subnetId && publicIp && currentPassword) {
+    //
+    // The helper authenticates in two tiers (see scripts/winrm-password-reset.py):
+    //   1. the per-VM `icsreset` admin account — needs NO knowledge of opc's password,
+    //   2. opc + currentPassword — only a fallback for VMs predating icsreset.
+    // Tier 1 is therefore sufficient on its own, so this strategy must NOT be gated on
+    // currentPassword. It used to be, which silently skipped the only working strategy
+    // for every VM whose stored password had been erased — that is, every VM whose
+    // initial password had been revealed (reveal burns the column) or reset. Those VMs
+    // fell through to Run Command (8 min, dead agent) and SSH (no sshd) and could never
+    // have their password reset again.
+    const effectiveWinrmAdminPassword = winrmAdminPassword || WINRM_ADMIN_PASSWORD;
+    if (subnetId && publicIp && (currentPassword || effectiveWinrmAdminPassword)) {
       this.logger.log(`🔐 Strategy 1: WinRM password reset (primary)...`);
       const secListId = await this.getSecurityListIdForSubnet(subnetId);
       const portsAdded = await this.ensureWinrmPortOpen(secListId);
@@ -3281,7 +3291,7 @@ chmod 600 ~/.ssh/authorized_keys`;
             this.logger.log(`⏳ WinRM retry ${attempt}/${winrmMaxAttempts} — waiting ${winrmRetryDelays[attempt - 1] / 1000}s for must-change-password flag to be cleared...`);
             await new Promise(resolve => setTimeout(resolve, winrmRetryDelays[attempt - 1]));
           }
-          await this.changePasswordViaWinrm(publicIp, currentPassword, newPassword, setMustChange, winrmAdminPassword);
+          await this.changePasswordViaWinrm(publicIp, currentPassword ?? '', newPassword, setMustChange, winrmAdminPassword);
           this.logger.log(`✅ Password changed via WinRM (attempt ${attempt})`);
           return;
         } catch (winrmErr: any) {
@@ -3331,7 +3341,7 @@ chmod 600 ~/.ssh/authorized_keys`;
           await this.tryClearMustChangeFlagViaRunCommand(instanceId, compartmentId, 60_000);
           this.logger.log(`✅ must-change flag cleared via Run Command — retrying WinRM once...`);
           try {
-            await this.changePasswordViaWinrm(publicIp, currentPassword, newPassword, setMustChange, winrmAdminPassword);
+            await this.changePasswordViaWinrm(publicIp, currentPassword ?? '', newPassword, setMustChange, winrmAdminPassword);
             this.logger.log(`✅ Password changed via WinRM (after must-change clear)`);
             return;
           } catch (retryErr: any) {
@@ -3344,7 +3354,7 @@ chmod 600 ~/.ssh/authorized_keys`;
       }
       // Note: WinRM ports (5985+5986) are intentionally kept open for future resets.
     } else {
-      this.logger.log(`⏭️ WinRM skipped: ${!subnetId ? 'no subnet' : !publicIp ? 'no public IP' : 'no current password in DB'}`);
+      this.logger.log(`⏭️ WinRM skipped: ${!subnetId ? 'no subnet' : !publicIp ? 'no public IP' : 'no icsreset admin password and no current password'}`);
     }
 
     // ── Strategy 2: OCI Run Command (timeout 8 min) ──

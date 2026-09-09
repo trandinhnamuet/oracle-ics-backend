@@ -745,6 +745,10 @@ export class VmSubscriptionService implements OnModuleInit, OnModuleDestroy {
           if (credentials?.password) {
             await this.vmInstanceRepo.update(vm.id, {
               windows_initial_password: encryptVmSecret(credentials.password)!,
+              // Mirrored into windows_current_password so revealing it once (which
+              // nulls windows_initial_password) does not leave a later reset with no
+              // opc credential at all.
+              windows_current_password: encryptVmSecret(credentials.password)!,
               windows_password_initialized: true,
             });
             // The password itself is not attached to the detail payload — the
@@ -1296,7 +1300,12 @@ export class VmSubscriptionService implements OnModuleInit, OnModuleDestroy {
       if (runCmdError instanceof HttpException) {
         throw runCmdError;
       }
-      throw new InternalServerErrorException('Failed to reset Windows password');
+      // Keep the underlying reason: the async job surfaces job.error verbatim in the
+      // progress dialog, and a bare "Failed to reset Windows password" leaves both the
+      // customer and support with nothing to act on.
+      throw new InternalServerErrorException(
+        `Failed to reset Windows password: ${runCmdError?.message || 'unknown error'}`,
+      );
     }
 
     // Step 9: Mark VM as initialized and store the new password for future resets
