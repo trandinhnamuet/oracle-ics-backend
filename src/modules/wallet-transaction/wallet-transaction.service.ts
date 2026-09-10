@@ -77,11 +77,25 @@ export class WalletTransactionService {
   }
 
   async update(id: string, updateWalletTransactionDto: UpdateWalletTransactionDto): Promise<WalletTransaction> {
-    const walletTransaction = await this.findOne(id);
-    
-    Object.assign(walletTransaction, updateWalletTransactionDto);
-    
-    return await this.walletTransactionRepository.save(walletTransaction);
+    // Deliberately loaded WITHOUT relations. `wallet_id` is mapped twice — once as
+    // a plain column and once as the @JoinColumn of the `wallet` relation — so
+    // saving an entity that carries the hydrated relation made TypeORM emit
+    // `wallet_id = NULL` and Postgres rejected it with a not-null violation (500).
+    // Patch the bare row, then re-read through findOne() for the relation-rich
+    // response the API contract promises.
+    const existing = await this.walletTransactionRepository.findOne({ where: { id } });
+    if (!existing) {
+      throw new NotFoundException(`Wallet transaction with ID ${id} not found`);
+    }
+
+    for (const [key, value] of Object.entries(updateWalletTransactionDto)) {
+      if (value !== undefined) {
+        (existing as Record<string, unknown>)[key] = value;
+      }
+    }
+
+    await this.walletTransactionRepository.save(existing);
+    return await this.findOne(id);
   }
 
   async remove(id: string): Promise<void> {
