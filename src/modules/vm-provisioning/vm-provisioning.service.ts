@@ -368,7 +368,21 @@ export class VmProvisioningService {
       savedTempVm.shape = usedShape;
       savedTempVm.lifecycle_state = ociInstance.lifecycleState;
       savedTempVm.vm_started_at = ociInstance.lifecycleState === 'RUNNING' ? new Date() : (null as any);
-      
+
+      // Step 7.1: Cache the billing-relevant shape config so the Oracle cost
+      // report can price this VM even after it is terminated and OCI no longer
+      // returns it. OCI's response is authoritative (it reflects the min-ratio
+      // adjustments made at launch); the DTO is the fallback.
+      const launchedShape = (ociInstance as any).shapeConfig as
+        | { ocpus: number | null; memoryInGBs: number | null; baselineOcpuUtilization: string | null }
+        | null
+        | undefined;
+      savedTempVm.ocpus = launchedShape?.ocpus ?? createVmDto.ocpus ?? null;
+      savedTempVm.memory_gbs = launchedShape?.memoryInGBs ?? createVmDto.memoryInGBs ?? null;
+      savedTempVm.baseline_ocpu_utilization = launchedShape?.baselineOcpuUtilization ?? null;
+      savedTempVm.boot_volume_gbs = createVmDto.bootVolumeSizeInGBs ?? null;
+      savedTempVm.shape_config_synced_at = launchedShape ? new Date() : null;
+
       // Step 7.5: Encrypt and save user's private key if provided (for Linux VMs)
       if (createVmDto.userSshPrivateKey) {
         try {

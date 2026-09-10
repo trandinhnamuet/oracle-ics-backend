@@ -1417,11 +1417,54 @@ runcmd:
         lifecycleState: response.instance.lifecycleState,
         timeCreated: response.instance.timeCreated,
         imageId: response.instance.imageId,
+        shapeConfig: this.pickShapeConfig(response.instance.shapeConfig),
       };
     } catch (error) {
       this.logger.error('Error launching instance:', error);
       throw error;
     }
+  }
+
+  /**
+   * The billing-relevant subset of an instance's shapeConfig: OCPU count, memory
+   * and burstable baseline. Oracle bills OCPU × baseline fraction; memory in full.
+   */
+  private pickShapeConfig(sc?: oci.core.models.InstanceShapeConfig | null) {
+    if (!sc) return null;
+    return {
+      ocpus: typeof sc.ocpus === 'number' ? sc.ocpus : null,
+      memoryInGBs: typeof sc.memoryInGBs === 'number' ? sc.memoryInGBs : null,
+      baselineOcpuUtilization: (sc.baselineOcpuUtilization as string | undefined) ?? null,
+    };
+  }
+
+  /**
+   * Size and performance tier of an instance's boot volume — what Oracle bills as
+   * "Block Volume - Storage" and "Block Volume - Performance Units" for the VM.
+   * Returns null when the instance has no attachment visible (e.g. terminated).
+   */
+  async getInstanceBootVolume(
+    instanceId: string,
+    compartmentId: string,
+    availabilityDomain: string,
+  ): Promise<{ sizeInGBs: number; vpusPerGB: number } | null> {
+    const attachments = await this.computeClient.listBootVolumeAttachments({
+      availabilityDomain,
+      compartmentId,
+      instanceId,
+    });
+    const attached = (attachments.items || []).find(
+      (a) => a.lifecycleState === 'ATTACHED' || a.lifecycleState === 'ATTACHING',
+    ) || attachments.items?.[0];
+    if (!attached?.bootVolumeId) return null;
+
+    const blockstorage = new oci.core.BlockstorageClient({
+      authenticationDetailsProvider: this.provider,
+    });
+    const bv = await blockstorage.getBootVolume({ bootVolumeId: attached.bootVolumeId });
+    const sizeInGBs = Number(bv.bootVolume.sizeInGBs || 0);
+    const vpusPerGB = Number(bv.bootVolume.vpusPerGB ?? 10);
+    return { sizeInGBs, vpusPerGB };
   }
 
   /**
@@ -1446,6 +1489,7 @@ runcmd:
         timeCreated: response.instance.timeCreated,
         imageId: response.instance.imageId,
         region: response.instance.region,
+        shapeConfig: this.pickShapeConfig(response.instance.shapeConfig),
       };
     } catch (error) {
       this.logger.error('Error getting instance:', error);

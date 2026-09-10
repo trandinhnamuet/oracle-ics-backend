@@ -147,6 +147,35 @@ export class VmInstance {
   @Column({ type: 'timestamp', nullable: true })
   vm_started_at: Date | null;
 
+  // ── Oracle-billing tracking (migration 20260911100001) ────────────────────
+  // Stamped by a DB trigger the first time lifecycle_state becomes
+  // TERMINATING/TERMINATED, regardless of which code path wrote it. Marks the
+  // end of storage billing for this instance.
+  @Column({ type: 'timestamp', nullable: true })
+  terminated_at: Date | null;
+
+  // Provisioned shape config, cached so cost can still be computed once OCI
+  // stops returning the (terminated) instance. Filled at launch and re-synced
+  // from OCI for live instances by OciCostService.
+  @Column({ type: 'numeric', precision: 8, scale: 2, nullable: true })
+  ocpus: number | null;
+
+  @Column({ type: 'numeric', precision: 10, scale: 2, nullable: true })
+  memory_gbs: number | null;
+
+  @Column({ type: 'int', nullable: true })
+  boot_volume_gbs: number | null;
+
+  @Column({ type: 'int', nullable: true })
+  boot_volume_vpus_per_gb: number | null;
+
+  /** OCI BaselineOcpuUtilization: BASELINE_1_1 (100%), BASELINE_1_2 (50%), BASELINE_1_8 (12.5%) */
+  @Column({ type: 'varchar', length: 20, nullable: true })
+  baseline_ocpu_utilization: string | null;
+
+  @Column({ type: 'timestamp', nullable: true })
+  shape_config_synced_at: Date | null;
+
   @CreateDateColumn()
   created_at: Date;
 

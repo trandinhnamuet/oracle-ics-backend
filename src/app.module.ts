@@ -30,6 +30,7 @@ import { SupportTicketModule } from './modules/support-ticket/support-ticket.mod
 import { NotificationModule } from './modules/notification/notification.module';
 import { TermsModule } from './modules/terms/terms.module';
 import { VisitLogModule } from './modules/visit-log/visit-log.module';
+import { OciCostModule } from './modules/oci-cost/oci-cost.module';
 
 dotenv.config();
 
@@ -79,6 +80,7 @@ dotenv.config();
     NotificationModule,
     TermsModule,
     VisitLogModule,
+    OciCostModule,
   ],
   controllers: [AppController],
   providers: [
