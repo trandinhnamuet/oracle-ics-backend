@@ -1,9 +1,10 @@
-import { IsEmail, IsNotEmpty, MinLength, IsString, Length, IsOptional, Matches, IsNumber, Min, Max } from 'class-validator';
+import { IsNotEmpty, MinLength, MaxLength, IsString, Length, IsOptional, Matches, IsNumber, Min, Max } from 'class-validator';
+import { NormalizedEmail } from '../../common/decorators/normalized-email.decorator';
 
 const PASSWORD_REGEX = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^a-zA-Z0-9]).{8,}$/;
 
 export class LoginDto {
-  @IsEmail()
+  @NormalizedEmail()
   email: string;
 
   @IsNotEmpty()
@@ -23,12 +24,16 @@ export class LoginDto {
 }
 
 export class RegisterDto {
-  @IsEmail()
+  @NormalizedEmail()
   email: string;
 
   @IsNotEmpty()
   @MinLength(8, { message: 'Password must be at least 8 characters' })
   @Matches(PASSWORD_REGEX, { message: 'Password must contain uppercase, lowercase, digit and special character' })
+  @MaxLength(72, {
+    message:
+      'Password must be at most 72 characters (bcrypt ignores anything beyond that)',
+  })
   password: string;
 
   @IsNotEmpty()
@@ -39,7 +44,7 @@ export class RegisterDto {
 }
 
 export class VerifyOtpDto {
-  @IsEmail()
+  @NormalizedEmail()
   email: string;
 
   @IsString()
@@ -48,17 +53,17 @@ export class VerifyOtpDto {
 }
 
 export class ResendOtpDto {
-  @IsEmail()
+  @NormalizedEmail()
   email: string;
 }
 
 export class ForgotPasswordDto {
-  @IsEmail()
+  @NormalizedEmail()
   email: string;
 }
 
 export class VerifyResetOtpDto {
-  @IsEmail()
+  @NormalizedEmail()
   email: string;
 
   @IsString()
@@ -67,7 +72,7 @@ export class VerifyResetOtpDto {
 }
 
 export class ResetPasswordDto {
-  @IsEmail()
+  @NormalizedEmail()
   email: string;
 
   @IsString()
@@ -77,5 +82,9 @@ export class ResetPasswordDto {
   @IsNotEmpty()
   @MinLength(8, { message: 'Password must be at least 8 characters' })
   @Matches(PASSWORD_REGEX, { message: 'Password must contain uppercase, lowercase, digit and special character' })
+  @MaxLength(72, {
+    message:
+      'Password must be at most 72 characters (bcrypt ignores anything beyond that)',
+  })
   newPassword: string;
 }

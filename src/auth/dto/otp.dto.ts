@@ -1,7 +1,8 @@
-import { IsEmail, IsString, Length, Matches } from 'class-validator';
+import { IsString, Length, Matches } from 'class-validator';
+import { NormalizedEmail } from '../../common/decorators/normalized-email.decorator';
 
 export class VerifyOtpDto {
-  @IsEmail()
+  @NormalizedEmail()
   email: string;
 
   @IsString()
@@ -11,6 +12,6 @@ export class VerifyOtpDto {
 }
 
 export class ResendOtpDto {
-  @IsEmail()
+  @NormalizedEmail()
   email: string;
 }

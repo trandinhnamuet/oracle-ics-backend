@@ -1,11 +1,18 @@
 import { IsEmail, IsString, IsOptional, IsBoolean, MinLength, MaxLength } from 'class-validator';
+import { NormalizedEmail } from '../../common/decorators/normalized-email.decorator';
 
 export class CreateUserDto {
-  @IsEmail({}, { message: 'Email không hợp lệ' })
+  // NormalizedEmail = @IsEmail + trim/lowercase, so an admin cannot create a
+  // second account that differs from an existing one only in letter case.
+  @NormalizedEmail()
   email: string;
 
   @IsString({ message: 'Mật khẩu phải là chuỗi ký tự' })
   @MinLength(8, { message: 'Mật khẩu phải có ít nhất 8 ký tự' })
+  // bcrypt only hashes the first 72 bytes, so anything past that would be
+  // silently ignored and two different passwords would both unlock the account
+  // (QA 2026-09-11, AUTHX/bcrypt-72).
+  @MaxLength(72, { message: 'Mật khẩu tối đa 72 ký tự' })
   password: string;
 
   @IsString({ message: 'Tên phải là chuỗi ký tự' })
