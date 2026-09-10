@@ -60,9 +60,13 @@ export class WalletTransactionService {
   }
 
   async findOne(id: string): Promise<WalletTransaction> {
+    // WalletTransaction has no `user` relation of its own — the owner is reached
+    // through the wallet. Asking for 'user' made TypeORM throw
+    // EntityPropertyNotFoundError, so GET/PATCH/DELETE /wallet-transactions/:id
+    // answered 500 on every call (QA 2026-09-10, WTX/get|patch|delete).
     const walletTransaction = await this.walletTransactionRepository.findOne({
       where: { id },
-      relations: ['user', 'wallet'],
+      relations: ['wallet', 'wallet.user'],
     });
 
     if (!walletTransaction) {

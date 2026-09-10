@@ -3,6 +3,13 @@ import { User } from './user.entity';
 import { Subscription } from './subscription.entity';
 import { CloudPackage } from './cloud-package.entity';
 
+export enum PaymentStatus {
+  PENDING = 'pending',
+  SUCCESS = 'success',
+  FAILED = 'failed',
+  EXPIRED = 'expired',
+}
+
 @Entity('payments', { schema: 'oracle' })
 export class Payment {
   @PrimaryGeneratedColumn('uuid')
@@ -27,7 +34,7 @@ export class Payment {
   amount: number;
 
   @Column({ type: 'varchar', length: 20, default: 'pending' })
-  status: string; // pending, success, failed, expired
+  status: string; // see PaymentStatus
 
   @Column({ type: 'varchar', length: 255, nullable: true })
   transaction_code: string; // Unique transaction code for bank transfer

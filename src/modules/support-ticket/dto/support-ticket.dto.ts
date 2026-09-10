@@ -1,5 +1,5 @@
 import { IsString, IsNotEmpty, IsEmail, IsOptional, IsEnum, MinLength, MaxLength, IsUrl } from 'class-validator';
-import { TicketPriority } from '../../../entities/support-ticket.entity';
+import { TicketPriority, TicketStatus } from '../../../entities/support-ticket.entity';
 
 export class CreateSupportTicketDto {
   @IsString()
@@ -55,13 +55,17 @@ export class CreateSupportTicketDto {
 }
 
 export class UpdateSupportTicketDto {
+  // Enum-checked, not plain strings: a bare @IsString accepted any value and
+  // stored it, after which the admin UI's STATUS_CONFIG / PRIORITY_CONFIG lookup
+  // fell through and the row rendered blank (QA 2026-09-10,
+  // TICKET/status-bogus + TICKET/priority-bogus).
   @IsOptional()
-  @IsString()
-  status?: string;
+  @IsEnum(TicketStatus, { message: 'status must be one of: open, in_progress, resolved, closed' })
+  status?: TicketStatus;
 
   @IsOptional()
-  @IsString()
-  priority?: string;
+  @IsEnum(TicketPriority, { message: 'priority must be one of: low, medium, high, urgent' })
+  priority?: TicketPriority;
 
   @IsOptional()
   @IsString()

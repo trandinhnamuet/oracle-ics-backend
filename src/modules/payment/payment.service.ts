@@ -1,4 +1,10 @@
-import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import { Payment } from '../../entities/payment.entity';
@@ -554,7 +560,13 @@ export class PaymentService {
     const payment = await this.findOne(id);
 
     if (payment.status !== 'pending') {
-      throw new Error(`Cannot accept payment with status: ${payment.status}`);
+      // ConflictException, not a bare Error: accepting an already-accepted
+      // payment answered 500 and the admin UI showed "Internal server error"
+      // instead of telling the operator it was already credited
+      // (QA 2026-09-10, PAY/accept-again).
+      throw new ConflictException(
+        `Cannot accept payment with status: ${payment.status}`,
+      );
     }
 
     // Use the same logic as successful payment processing

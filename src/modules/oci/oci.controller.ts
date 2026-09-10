@@ -11,6 +11,7 @@ import {
   HttpCode,
   HttpStatus,
   ForbiddenException,
+  NotFoundException,
   Request,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -666,6 +667,13 @@ export class OciController {
       };
     } catch (error) {
       this.logger.error('Error in deleteCompartment:', error);
+      // findCompartmentByName throws a bare Error when the name does not exist,
+      // which reached the client as 500 (QA 2026-09-10, OCI/delete-404).
+      if (error instanceof Error && /not found/i.test(error.message)) {
+        throw new NotFoundException(
+          `Compartment with name "${compartmentName}" not found`,
+        );
+      }
       throw error;
     }
   }

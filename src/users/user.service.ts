@@ -1,4 +1,9 @@
-import { Injectable, Logger, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  BadRequestException,
+  ConflictException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
@@ -40,8 +45,27 @@ export class UserService {
     if (toCreate.password) {
       toCreate.password = await bcrypt.hash(toCreate.password, 10);
     }
+    // A duplicate e-mail used to surface as a raw Postgres unique-violation and
+    // therefore a 500 to the admin UI (QA 2026-09-10, USERS/create-dup). Check
+    // first, and still translate the race-condition violation into a 409.
+    const existing = await this.userRepository.findOne({
+      where: { email: toCreate.email },
+      select: ['id'],
+    });
+    if (existing) {
+      throw new ConflictException(`Email ${toCreate.email} is already registered`);
+    }
+
     const user = this.userRepository.create(toCreate);
-    const savedUser = await this.userRepository.save(user);
+    let savedUser: User;
+    try {
+      savedUser = await this.userRepository.save(user);
+    } catch (error: any) {
+      if (error?.code === '23505') {
+        throw new ConflictException(`Email ${toCreate.email} is already registered`);
+      }
+      throw error;
+    }
 
     // Tạo user_wallet cho user mới
     try {
