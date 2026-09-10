@@ -45,20 +45,20 @@ export class AddBareMetalGpuPackages20260910100002 implements MigrationInterface
       INSERT INTO oracle.cloud_packages
         (id, name, type, cost, cost_vnd, cpu, ram, memory, feature, bandwidth, updated_at, is_active)
       VALUES
-        (1900, 'BM.GPU3.8',        'ai', 18197.120000,   478766227.200000, '104 vCPU', '768GB RAM',  '1024GB SSD Storage', E'8 GPU NVIDIA Tesla V100 16GB\nBlock storage only',        'Dedicated AI infrastructure', now(), true),
-        (1901, 'BM.GPU4.8',        'ai', 18197.120000,   478766227.200000, '128 vCPU', '2048GB RAM', '1024GB SSD Storage', E'8 GPU NVIDIA A100 40GB\n27.2TB NVMe local (4 drives)',   'Dedicated AI infrastructure', now(), true),
-        (1902, 'BM.GPU.A10.4',     'ai',  5995.520000,   157742131.200000, '128 vCPU', '1024GB RAM', '1024GB SSD Storage', E'4 GPU NVIDIA A10 24GB\n7.68TB NVMe local (2 drives)',    'Dedicated AI infrastructure', now(), true),
-        (1903, 'BM.GPU.A100-v2.8', 'ai', 23851.520000,   627533491.200000, '256 vCPU', '2048GB RAM', '1024GB SSD Storage', E'8 GPU NVIDIA A100 80GB\n27.2TB NVMe local (4 drives)',   'Dedicated AI infrastructure', now(), true),
-        (1904, 'BM.GPU.L40S.4',    'ai', 10459.520000,   275189971.200000, '224 vCPU', '1024GB RAM', '1024GB SSD Storage', E'4 GPU NVIDIA L40S 48GB\n2 x 3.84TB NVMe local',          'Dedicated AI infrastructure', now(), true),
-        (1905, 'BM.GPU.H100.8',    'ai', 59563.520000,  1567116211.200000, '224 vCPU', '2048GB RAM', '1024GB SSD Storage', E'8 GPU NVIDIA H100 80GB\n16 x 3.84TB NVMe local',         'Dedicated AI infrastructure', now(), true),
-        (1906, 'BM.GPU.H200.8',    'ai', 59563.520000,  1567116211.200000, '224 vCPU', '3072GB RAM', '1024GB SSD Storage', E'8 GPU NVIDIA H200 Tensor Core 141GB\n8 x 3.84TB NVMe local', 'Dedicated AI infrastructure', now(), true),
-        (1907, 'BM.GPU.B200.8',    'ai', 83371.520000,  2193504691.200000, '256 vCPU', '4096GB RAM', '1024GB SSD Storage', E'8 GPU NVIDIA B200 Tensor Core 180GB\n8 x 3.84TB NVMe local', 'Dedicated AI infrastructure', now(), true),
-        (1908, 'BM.GPU.B300.8',    'ai', 89323.520000,  2350101811.200000, '256 vCPU', '4096GB RAM', '1024GB SSD Storage', E'8 GPU NVIDIA B300 Tensor Core 263GB\n8 x 3.84TB NVMe local', 'Dedicated AI infrastructure', now(), true),
-        (1909, 'BM.GPU.GB200.4',   'ai', 47659.520000,  1253921971.200000, '288 vCPU', '960GB RAM',  '1024GB SSD Storage', E'4 GPU NVIDIA Blackwell GB200 192GB\n4 x 7.68TB NVMe local', 'Dedicated AI infrastructure', now(), true),
-        (1910, 'BM.GPU.GB300.4',   'ai', 53611.520000,  1410519091.200000, '288 vCPU', '960GB RAM',  '1024GB SSD Storage', E'4 GPU NVIDIA Blackwell GB300 278GB\n4 x 7.68TB NVMe local', 'Dedicated AI infrastructure', now(), true),
-        (1911, 'BM.GPU.MI300X.8',  'ai', 35755.520000,   940727731.200000, '224 vCPU', '2048GB RAM', '1024GB SSD Storage', E'8 GPU AMD Instinct MI300X 192GB\n8 x 3.84TB NVMe local', 'Dedicated AI infrastructure', now(), true),
-        (1912, 'BM.GPU.MI355X.8',  'ai', 51230.720000,  1347880243.200000, '256 vCPU', '3072GB RAM', '1024GB SSD Storage', E'8 GPU AMD Instinct MI355X 288GB\n8 x 7.68TB NVMe local', 'Dedicated AI infrastructure', now(), true),
-        (1913, 'BM.GPU.RTXPRO.8',  'ai', 26827.520000,   705832051.200000, '288 vCPU', '3072GB RAM', '1024GB SSD Storage', E'8 GPU NVIDIA RTX PRO 6000 Blackwell 96GB\n8 x 7.68TB NVMe local', 'Dedicated AI infrastructure', now(), true)
+        (1900, 'BM.GPU3.8',        'ai', 18197.120000,   478766227.200000, '104 vCPU', '768GB RAM',  '1024GB SSD Storage', '8 GPU NVIDIA Tesla V100 16GB',        'Dedicated AI infrastructure', now(), true),
+        (1901, 'BM.GPU4.8',        'ai', 18197.120000,   478766227.200000, '128 vCPU', '2048GB RAM', '1024GB SSD Storage', '8 GPU NVIDIA A100 40GB',   'Dedicated AI infrastructure', now(), true),
+        (1902, 'BM.GPU.A10.4',     'ai',  5995.520000,   157742131.200000, '128 vCPU', '1024GB RAM', '1024GB SSD Storage', '4 GPU NVIDIA A10 24GB',    'Dedicated AI infrastructure', now(), true),
+        (1903, 'BM.GPU.A100-v2.8', 'ai', 23851.520000,   627533491.200000, '256 vCPU', '2048GB RAM', '1024GB SSD Storage', '8 GPU NVIDIA A100 80GB',   'Dedicated AI infrastructure', now(), true),
+        (1904, 'BM.GPU.L40S.4',    'ai', 10459.520000,   275189971.200000, '224 vCPU', '1024GB RAM', '1024GB SSD Storage', '4 GPU NVIDIA L40S 48GB',          'Dedicated AI infrastructure', now(), true),
+        (1905, 'BM.GPU.H100.8',    'ai', 59563.520000,  1567116211.200000, '224 vCPU', '2048GB RAM', '1024GB SSD Storage', '8 GPU NVIDIA H100 80GB',         'Dedicated AI infrastructure', now(), true),
+        (1906, 'BM.GPU.H200.8',    'ai', 59563.520000,  1567116211.200000, '224 vCPU', '3072GB RAM', '1024GB SSD Storage', '8 GPU NVIDIA H200 141GB', 'Dedicated AI infrastructure', now(), true),
+        (1907, 'BM.GPU.B200.8',    'ai', 83371.520000,  2193504691.200000, '256 vCPU', '4096GB RAM', '1024GB SSD Storage', '8 GPU NVIDIA B200 180GB', 'Dedicated AI infrastructure', now(), true),
+        (1908, 'BM.GPU.B300.8',    'ai', 89323.520000,  2350101811.200000, '256 vCPU', '4096GB RAM', '1024GB SSD Storage', '8 GPU NVIDIA B300 263GB', 'Dedicated AI infrastructure', now(), true),
+        (1909, 'BM.GPU.GB200.4',   'ai', 47659.520000,  1253921971.200000, '288 vCPU', '960GB RAM',  '1024GB SSD Storage', '4 GPU NVIDIA GB200 192GB', 'Dedicated AI infrastructure', now(), true),
+        (1910, 'BM.GPU.GB300.4',   'ai', 53611.520000,  1410519091.200000, '288 vCPU', '960GB RAM',  '1024GB SSD Storage', '4 GPU NVIDIA GB300 278GB', 'Dedicated AI infrastructure', now(), true),
+        (1911, 'BM.GPU.MI300X.8',  'ai', 35755.520000,   940727731.200000, '224 vCPU', '2048GB RAM', '1024GB SSD Storage', '8 GPU AMD MI300X 192GB', 'Dedicated AI infrastructure', now(), true),
+        (1912, 'BM.GPU.MI355X.8',  'ai', 51230.720000,  1347880243.200000, '256 vCPU', '3072GB RAM', '1024GB SSD Storage', '8 GPU AMD MI355X 288GB', 'Dedicated AI infrastructure', now(), true),
+        (1913, 'BM.GPU.RTXPRO.8',  'ai', 26827.520000,   705832051.200000, '288 vCPU', '3072GB RAM', '1024GB SSD Storage', '8 GPU NVIDIA RTX PRO 6000 96GB', 'Dedicated AI infrastructure', now(), true)
       ON CONFLICT (id) DO NOTHING
     `);
 
@@ -67,28 +67,28 @@ export class AddBareMetalGpuPackages20260910100002 implements MigrationInterface
       UPDATE oracle.cloud_packages
       SET cost = 1940.720000, cost_vnd = 51060343.200000,
           cpu = '56 vCPU', ram = '192GB RAM', memory = '1024GB SSD Storage',
-          feature = E'2 GPU NVIDIA Tesla P100 16GB\nBlock storage only', updated_at = now()
+          feature = '2 GPU NVIDIA Tesla P100 16GB', updated_at = now()
       WHERE name = 'BM.GPU2.2'
     `);
     await queryRunner.query(`
       UPDATE oracle.cloud_packages
       SET cost = 992.120000, cost_vnd = 26102677.200000,
           cpu = '24 vCPU', ram = '72GB RAM', memory = '1024GB SSD Storage',
-          feature = E'1 GPU NVIDIA Tesla P100 16GB\nBlock storage only', updated_at = now()
+          feature = '1 GPU NVIDIA Tesla P100 16GB', updated_at = now()
       WHERE name = 'VM.GPU2.1'
     `);
     await queryRunner.query(`
       UPDATE oracle.cloud_packages
       SET cost = 1531.520000, cost_vnd = 40294291.200000,
           cpu = '30 vCPU', ram = '240GB RAM', memory = '1024GB SSD Storage',
-          feature = E'1 GPU NVIDIA A10 24GB\nBlock storage only', updated_at = now()
+          feature = '1 GPU NVIDIA A10 24GB', updated_at = now()
       WHERE name = 'VM.GPU.A10.1'
     `);
     await queryRunner.query(`
       UPDATE oracle.cloud_packages
       SET cost = 3019.520000, cost_vnd = 79443571.200000,
           cpu = '60 vCPU', ram = '480GB RAM', memory = '1024GB SSD Storage',
-          feature = E'2 GPU NVIDIA A10 24GB\nBlock storage only', updated_at = now()
+          feature = '2 GPU NVIDIA A10 24GB', updated_at = now()
       WHERE name = 'VM.GPU.A10.2'
     `);
 
