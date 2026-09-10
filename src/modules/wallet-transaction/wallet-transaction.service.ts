@@ -90,7 +90,7 @@ export class WalletTransactionService {
 
     for (const [key, value] of Object.entries(updateWalletTransactionDto)) {
       if (value !== undefined) {
-        (existing as Record<string, unknown>)[key] = value;
+        (existing as unknown as Record<string, unknown>)[key] = value;
       }
     }
 
