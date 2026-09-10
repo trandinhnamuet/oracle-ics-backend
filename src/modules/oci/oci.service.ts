@@ -1063,16 +1063,15 @@ runcmd:
   - chmod 0440 /etc/sudoers.d/90-cloud-init-users
   - sed -i 's/^#*PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config 2>/dev/null; grep -q 'PermitRootLogin' /etc/ssh/sshd_config || echo 'PermitRootLogin prohibit-password' >> /etc/ssh/sshd_config
   # Only reload sshd if it is ALREADY running, and never block on it.
-  #
-  # A bare `systemctl reload sshd` here deadlocked Oracle-Linux-Cloud-Developer-8.9:
+  # A bare "systemctl reload sshd" here deadlocked Oracle-Linux-Cloud-Developer-8.9:
   # that image is a full desktop build (TigerVNC, PCP, Grafana, kdump) and takes ~8
   # minutes to reach sshd, so when runcmd fires at ~70s uptime sshd.service still has
-  # a START job pending. `systemctl reload` then enqueues a reload job that waits on
-  # that start job, cloud-init blocks forever in modules-final, and sshd never comes
-  # up at all — the VM boots, answers ICMP, and port 22 stays shut permanently.
-  # Lean images won the race (sshd was already up) which is why only this one image
-  # failed. `is-active` makes the reload a no-op when sshd has not started yet, which
-  # is correct: it reads the edited sshd_config when it does start. --no-block and
+  # a START job pending. The reload job then queues behind that start job, cloud-init
+  # blocks forever in modules-final, and sshd never comes up at all: the VM boots,
+  # answers ICMP, and port 22 stays shut permanently. Leaner images won the race
+  # (sshd was already up), which is why exactly one image out of 22 failed.
+  # is-active makes the reload a no-op when sshd has not started yet, which is
+  # correct - it reads the edited sshd_config when it does start. --no-block and the
   # timeout are belt-and-braces so this line can never hang cloud-init again.
   - 'if systemctl is-active --quiet sshd 2>/dev/null; then timeout 15 systemctl reload --no-block sshd 2>/dev/null || true; fi'
   - echo "✅ Cloud-init completed - sudo and SSH root login configured"
