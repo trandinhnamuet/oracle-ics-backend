@@ -29,6 +29,7 @@ import { TerminalModule } from './modules/terminal/terminal.module';
 import { SupportTicketModule } from './modules/support-ticket/support-ticket.module';
 import { NotificationModule } from './modules/notification/notification.module';
 import { TermsModule } from './modules/terms/terms.module';
+import { VisitLogModule } from './modules/visit-log/visit-log.module';
 
 dotenv.config();
 
@@ -77,6 +78,7 @@ dotenv.config();
     SupportTicketModule,
     NotificationModule,
     TermsModule,
+    VisitLogModule,
   ],
   controllers: [AppController],
   providers: [
