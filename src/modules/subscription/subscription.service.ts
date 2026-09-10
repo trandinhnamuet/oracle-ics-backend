@@ -418,8 +418,13 @@ export class SubscriptionService {
     totalPages: number;
   }> {
     try {
-      const page = queryParams?.page || 1;
-      const limit = queryParams?.limit || 20;
+      // The controller forwards raw query strings, so `page=-5` and `limit=abc`
+      // used to reach Postgres as OFFSET -120 / LIMIT NaN and answered 500
+      // (same defect class as the users list — QA 2026-09-11, INPUT/page-*).
+      const rawPage = Number(queryParams?.page);
+      const rawLimit = Number(queryParams?.limit);
+      const page = Number.isFinite(rawPage) && rawPage >= 1 ? Math.floor(rawPage) : 1;
+      const limit = Number.isFinite(rawLimit) && rawLimit >= 1 ? Math.floor(rawLimit) : 20;
       const sortBy = queryParams?.sortBy || 'created_at';
       const sortOrder = queryParams?.sortOrder || 'DESC';
       const skip = (page - 1) * limit;

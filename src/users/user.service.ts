@@ -103,6 +103,12 @@ export class UserService {
     sortBy = 'createdAt',
     sortOrder: 'ASC' | 'DESC' = 'DESC',
   ): Promise<{ data: User[]; total: number; totalActive: number; totalInactive: number; page: number; limit: number; totalPages: number }> {
+    // `page`/`limit` arrive as raw query strings coerced with `+`, so `page=0`,
+    // `page=-5` and `limit=abc` produced OFFSET -20 / LIMIT NaN and Postgres
+    // answered with a 500 (QA 2026-09-11, INPUT/page-*). Clamp instead.
+    const safePage = Number.isFinite(page) && page >= 1 ? Math.floor(page) : 1;
+    const safeLimit = Number.isFinite(limit) && limit >= 1 ? Math.floor(limit) : 20;
+
     const query = this.userRepository.createQueryBuilder('user');
 
     if (search?.trim()) {
@@ -125,8 +131,8 @@ export class UserService {
 
     const [data, total] = await query
       .orderBy(col, order)
-      .skip((page - 1) * limit)
-      .take(limit)
+      .skip((safePage - 1) * safeLimit)
+      .take(safeLimit)
       .getManyAndCount();
 
     // Global active/inactive counts (independent of search/page)
@@ -135,7 +141,7 @@ export class UserService {
       this.userRepository.count({ where: { isActive: false } }),
     ]);
 
-    return { data, total, totalActive, totalInactive, page, limit, totalPages: Math.ceil(total / limit) };
+    return { data, total, totalActive, totalInactive, page: safePage, limit: safeLimit, totalPages: Math.ceil(total / safeLimit) };
   }
 
   async findOne(id: number): Promise<User | null> {

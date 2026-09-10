@@ -3,6 +3,7 @@ import {
   Logger,
   NotFoundException,
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   InternalServerErrorException,
   HttpException,
@@ -296,9 +297,32 @@ export class VmSubscriptionService implements OnModuleInit, OnModuleDestroy {
       throw new BadRequestException(`Shape "${configureVmDto.shape}" is not permitted.`);
     }
 
-    // Update configuration status to 'configuring'
+    // Claim the subscription for provisioning with a single conditional UPDATE.
+    // Postgres locks the row for the statement, so of two concurrent configure
+    // calls exactly one can move the status into 'configuring'; the loser gets a
+    // 409 instead of racing on to launch a SECOND paid instance (previously the
+    // loser answered 500 and, with different timing, could have double-charged
+    // the customer — QA 2026-09-11, STATE/double-configure).
+    //
+    // A run that died mid-flight would otherwise wedge the subscription forever,
+    // so a claim older than 20 minutes is considered stale and can be retaken.
+    const claim = await this.subscriptionRepo
+      .createQueryBuilder()
+      .update()
+      .set({ configuration_status: 'configuring' })
+      .where('id = :id', { id: subscription.id })
+      .andWhere(
+        "(configuration_status IS NULL OR configuration_status NOT IN (:...busy) OR updated_at < now() - interval '20 minutes')",
+        { busy: ['configuring', 'provisioning'] },
+      )
+      .execute();
+    if (!claim.affected) {
+      this.logger.warn(`Configure rejected: subscription ${subscriptionId} is already being provisioned`);
+      throw new ConflictException(
+        'A VM setup is already in progress for this subscription. Please wait for it to finish.',
+      );
+    }
     subscription.configuration_status = 'configuring';
-    await this.subscriptionRepo.update(subscription.id, { configuration_status: 'configuring' });
 
     // Step 2: Check if VM already exists for THIS SPECIFIC SUBSCRIPTION
     let existingVm = await this.vmInstanceRepo.findOne({
