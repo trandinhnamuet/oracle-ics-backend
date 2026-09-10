@@ -37,6 +37,21 @@ export class OciService {
   private computeInstanceAgentClient: oci.computeinstanceagent.ComputeInstanceAgentClient;
   private provider: oci.common.ConfigFileAuthenticationDetailsProvider;
 
+  // OCI supports burstable instances only on these four flexible shapes. Notably
+  // VM.Standard.A1.Flex (Ampere) does NOT support them — passing a baseline there fails
+  // the launch, so ARM instances stay non-burstable.
+  // https://docs.oracle.com/en-us/iaas/Content/Compute/References/burstable-instances.htm
+  private static readonly BURSTABLE_SHAPES = [
+    'VM.Standard3.Flex',
+    'VM.Standard.E3.Flex',
+    'VM.Standard.E4.Flex',
+    'VM.Standard.E5.Flex',
+  ];
+
+  private isBurstableShape(shape: string): boolean {
+    return OciService.BURSTABLE_SHAPES.includes(shape);
+  }
+
   constructor(
     @InjectDataSource() private dataSource: DataSource,
   ) {
@@ -950,10 +965,32 @@ export class OciService {
           `to meet OCI minimum ratio of 1 GB/OCPU (${effectiveOcpus} OCPU × 1 = ${minMemoryForRatio}GB min)`,
         );
       }
+      // Burstable 50%: the published price list bills the vCPU component at half rate
+      // (see cloud_packages seed migration), which only holds if the instance is actually
+      // launched with a 50% baseline. Leaving baselineOcpuUtilization unset makes OCI create
+      // a non-burstable instance charged at the full OCPU rate, so this must stay in sync
+      // with the price table.
+      const burstableBaseline = this.isBurstableShape(shape)
+        ? oci.core.models.LaunchInstanceShapeConfigDetails.BaselineOcpuUtilization.Baseline12
+        : undefined;
+
       const shapeConfig = shape.includes('Flex') ? {
         ocpus: effectiveOcpus,
         memoryInGBs: effectiveMemory,
+        ...(burstableBaseline ? { baselineOcpuUtilization: burstableBaseline } : {}),
       } : undefined;
+
+      if (burstableBaseline) {
+        this.logger.log(
+          `⚡ Burstable baseline 50% (BASELINE_1_2) on ${shape}: billed at ${effectiveOcpus / 2} OCPU, ` +
+          `bursts to ${effectiveOcpus} OCPU. Memory (${effectiveMemory}GB) is billed in full.`,
+        );
+      } else if (shape.includes('Flex')) {
+        this.logger.warn(
+          `⚠️  ${shape} does not support burstable instances — launching at full OCPU rate. ` +
+          `The price table assumes burstable 50%, so this instance costs more than it is sold for.`,
+        );
+      }
 
       // Prepare source details
       const sourceDetails: oci.core.models.InstanceSourceViaImageDetails = {
@@ -1025,7 +1062,19 @@ runcmd:
   - 'echo "root ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers.d/90-cloud-init-users'
   - chmod 0440 /etc/sudoers.d/90-cloud-init-users
   - sed -i 's/^#*PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config 2>/dev/null; grep -q 'PermitRootLogin' /etc/ssh/sshd_config || echo 'PermitRootLogin prohibit-password' >> /etc/ssh/sshd_config
-  - systemctl reload sshd || service sshd reload || true
+  # Only reload sshd if it is ALREADY running, and never block on it.
+  #
+  # A bare `systemctl reload sshd` here deadlocked Oracle-Linux-Cloud-Developer-8.9:
+  # that image is a full desktop build (TigerVNC, PCP, Grafana, kdump) and takes ~8
+  # minutes to reach sshd, so when runcmd fires at ~70s uptime sshd.service still has
+  # a START job pending. `systemctl reload` then enqueues a reload job that waits on
+  # that start job, cloud-init blocks forever in modules-final, and sshd never comes
+  # up at all — the VM boots, answers ICMP, and port 22 stays shut permanently.
+  # Lean images won the race (sshd was already up) which is why only this one image
+  # failed. `is-active` makes the reload a no-op when sshd has not started yet, which
+  # is correct: it reads the edited sshd_config when it does start. --no-block and
+  # timeout are belt-and-braces so this line can never hang cloud-init again.
+  - 'if systemctl is-active --quiet sshd 2>/dev/null; then timeout 15 systemctl reload --no-block sshd 2>/dev/null || true; fi'
   - echo "✅ Cloud-init completed - sudo and SSH root login configured"
 `;
 
@@ -1322,6 +1371,16 @@ runcmd:
         shape: shape,
         shapeConfig: shapeConfig,
         sourceDetails: sourceDetails,
+        // Burstable instances must use paravirtualized networking; an image whose default
+        // launch option is VFIO/SR-IOV would otherwise be rejected. Only pinned when a
+        // baseline is actually set, so non-burstable shapes keep their image defaults.
+        ...(burstableBaseline
+          ? {
+              launchOptions: {
+                networkType: oci.core.models.LaunchOptions.NetworkType.Paravirtualized,
+              },
+            }
+          : {}),
         createVnicDetails: {
           subnetId: subnetId,
           assignPublicIp: true,

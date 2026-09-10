@@ -43,6 +43,24 @@ export class SubscriptionService {
     return String(osType || '').toLowerCase() === 'windows' ? 'windows' : 'linux';
   }
 
+  /**
+   * AI/GPU packages are quoted, not self-served: the GPU and bare-metal shapes they
+   * name are outside this platform's provisioning path (the VM configure step is
+   * constrained to ALLOWED_VM_SHAPES, which is E5.Flex on prod), so subscribing to
+   * one would silently hand the customer an ordinary E5 VM at GPU prices. ICS
+   * provisions these out of band after a sales conversation.
+   *
+   * The pricing UI already routes these to "contact us", but the button alone is a
+   * client-side control — this blocks the self-serve API paths too.
+   */
+  private assertSelfServiceable(cloudPackage: CloudPackage): void {
+    if (String(cloudPackage.type || '').toLowerCase() === 'ai') {
+      throw new BadRequestException(
+        'AI/GPU packages cannot be subscribed online. Please contact ICS for a quote and provisioning.',
+      );
+    }
+  }
+
   /** vCPU count parsed from a package's cpu string (e.g. "10 vCPU"). */
   private parseVcpu(cpu?: string): number {
     const m = String(cpu || '').match(/(\d+)/);
@@ -157,6 +175,7 @@ export class SubscriptionService {
     if (!cloudPackage) {
       throw new NotFoundException(`Cloud package with ID ${cloudPackageId} not found`);
     }
+    this.assertSelfServiceable(cloudPackage);
 
     // Get user wallet (sử dụng UserWalletService để auto-create nếu cần)
     const userWallet = await this.userWalletService.findByUserId(userId);
@@ -254,6 +273,7 @@ export class SubscriptionService {
     if (!cloudPackage) {
       throw new NotFoundException(`Cloud package with ID ${cloudPackageId} not found`);
     }
+    this.assertSelfServiceable(cloudPackage);
 
     // Bound monthsCount (mirror createWithAccountBalance): an unvalidated or
     // negative value makes totalAmount negative, which the Sepay webhook would
