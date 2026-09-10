@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { TermsSection } from '../../entities/terms-section.entity';
@@ -258,6 +258,9 @@ export class TermsService {
   }
 
   async deleteSection(id: number): Promise<void> {
-    await this.termsSectionRepo.delete(id);
+    const result = await this.termsSectionRepo.delete(id);
+    if (!result.affected) {
+      throw new NotFoundException(`Terms section ${id} not found`);
+    }
   }
 }

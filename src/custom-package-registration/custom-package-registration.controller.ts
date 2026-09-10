@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Param, Delete, Patch, HttpCode, HttpStatus, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, Delete, Patch, HttpCode, HttpStatus, UseGuards, NotFoundException } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { CustomPackageRegistrationService } from './custom-package-registration.service';
 import { CreateCustomPackageRegistrationDto } from '../entities/dto/custom-package-registration.dto';
@@ -31,7 +31,11 @@ export class CustomPackageRegistrationController {
   @Get(':id')
   @UseGuards(JwtAuthGuard, AdminGuard)
   async findOne(@Param('id') id: string) {
-    return await this.customPackageRegistrationService.findOne(+id);
+    const row = await this.customPackageRegistrationService.findOne(+id);
+    // Answer 404 instead of 200-with-an-empty-body / {success:true}: the admin UI
+    // could not tell "no such record" from "deleted successfully" (QA 2026-09-11).
+    if (!row) throw new NotFoundException(`Registration ${id} not found`);
+    return row;
   }
 
   @Patch(':id')

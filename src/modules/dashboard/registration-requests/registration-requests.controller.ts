@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Patch, Delete, Body, Param, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Body, Param, UseGuards, NotFoundException } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { RegistrationRequestsService } from './registration-requests.service';
 import { CreateRegistrationRequestDto } from './dto/create-registration-request.dto';
@@ -31,7 +31,10 @@ export class RegistrationRequestsController {
 	@UseGuards(JwtAuthGuard, AdminGuard)
 	@Get(':id')
 	async findOne(@Param('id') id: number) {
-		return this.service.findOne(Number(id));
+		const row = await this.service.findOne(Number(id));
+		// Answer 404 instead of 200-with-an-empty-body (QA 2026-09-11).
+		if (!row) throw new NotFoundException(`Registration request ${id} not found`);
+		return row;
 	}
 
 	@UseGuards(JwtAuthGuard, AdminGuard)

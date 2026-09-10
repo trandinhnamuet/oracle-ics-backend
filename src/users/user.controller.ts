@@ -1,4 +1,6 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, Req, Put, ForbiddenException, HttpCode, HttpStatus, Query, BadRequestException } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, Req, Put, ForbiddenException, HttpCode, HttpStatus, Query, BadRequestException ,
+  NotFoundException,
+} from '@nestjs/common';
 import { UserService } from './user.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -88,7 +90,9 @@ export class UserController {
   @UseGuards(JwtAuthGuard, AdminGuard)
   async findOne(@Param('id') id: string) {
     const user = await this.userService.findOne(Number(id));
-    if (!user) return null;
+    // Answer 404 instead of 200-with-an-empty-body: the admin UI could not tell
+    // "no such record" from "record with no fields" (QA 2026-09-11).
+    if (!user) throw new NotFoundException(`User ${id} not found`);
     return sanitizeUser(user);
   }
 
